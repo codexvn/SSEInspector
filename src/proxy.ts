@@ -142,11 +142,13 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
       const record = baseRecord(id, req, responseStatus, false, apiType, startTime);
       record.responseContent = json as MergedContent;
+      record.responseHeaders = responseHeaders;
       record.state = 'done';
       upsertRecord(record);
     } else {
       // --- Streaming ---
       const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
+      record.responseHeaders = responseHeaders;
       upsertRecord(record);
 
       const reader = upstreamRes.body.getReader();

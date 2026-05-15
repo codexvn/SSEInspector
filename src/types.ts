@@ -80,6 +80,7 @@ export interface RecordedRequest {
   method: string;
   path: string;
   requestHeaders: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   requestBody: unknown;
   responseStatus: number;
   responseContent: MergedContent | null;

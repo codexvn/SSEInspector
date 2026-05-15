@@ -3,6 +3,7 @@ const state = {
   selectedId: null,
   eventSource: null,
   searchQuery: '',
+  currentRecord: null,
 };
 
 // ---- Routing ----
@@ -201,6 +202,7 @@ function renderMetaFromSummary(summary) {
 }
 
 function renderDetail(record) {
+  state.currentRecord = record;
   const statusClass = record.responseStatus < 400 ? 'badge-ok' : (record.responseStatus < 500 ? 'badge-warn' : 'badge-err');
   document.getElementById('detail-meta').innerHTML = `
     <span>ID: ${record.id}</span>
@@ -213,6 +215,7 @@ function renderDetail(record) {
     ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 
+  document.getElementById('detail-request-headers').innerHTML = renderHeaders(record.requestHeaders, '请求头');
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
   document.getElementById('detail-user-request').innerHTML = renderUserRequest(record.requestBody);
 
@@ -237,6 +240,7 @@ function renderDetail(record) {
   }
 
   document.getElementById('detail-chunks').innerHTML = renderChunks(record.chunks, record.apiType);
+  document.getElementById('detail-response-headers').innerHTML = renderHeaders(record.responseHeaders, '响应头');
 }
 
 function renderOpenAIContent(rc) {
@@ -452,6 +456,19 @@ function renderStreamLive(text) {
     </div>`;
 }
 
+function renderHeaders(headers, title) {
+  if (!headers || Object.keys(headers).length === 0) return '';
+  const text = JSON.stringify(headers, null, 2);
+  return `
+    <details class="headers-viewer">
+      <summary>
+        ${esc(title)}
+        ${copyBtnHtml(text)}
+      </summary>
+      <pre>${highlightJSON(text)}</pre>
+    </details>`;
+}
+
 function renderRequestBody(body) {
   if (!body) return '';
   const text = JSON.stringify(body, null, 2);
@@ -531,6 +548,108 @@ window.toggleChunk = function(chunkId) {
   }
 };
 
+// ---- Export ----
+
+function formatExport(record) {
+  let out = '';
+
+  // Header
+  out += `# SSEInspector Export\n`;
+  out += `\n`;
+  out += `| 字段 | 值 |\n`;
+  out += `|------|----|\n`;
+  out += `| ID | ${record.id} |\n`;
+  out += `| 时间 | ${new Date(record.timestamp).toLocaleString('zh-CN')} |\n`;
+  out += `| API | ${record.apiType} |\n`;
+  out += `| 模型 | ${record.responseContent?.model ?? 'unknown'} |\n`;
+  out += `| 耗时 | ${record.durationMs}ms |\n`;
+  out += `| 状态 | ${record.responseStatus} |\n`;
+  out += `\n`;
+
+  // User request
+  const ur = extractUserRequest(record.requestBody);
+  if (ur.text) {
+    out += `## 用户请求\n\n${ur.text}\n\n`;
+  }
+  if (ur.toolResults.length > 0) {
+    out += `## 工具调用结果 (${ur.toolResults.length})\n\n`;
+    for (const tr of ur.toolResults) {
+      out += `### ${tr.id}\n\n\`\`\`\n${tr.content}\n\`\`\`\n\n`;
+    }
+  }
+
+  // Response
+  const rc = record.responseContent;
+  if (!rc) return out;
+
+  if (record.apiType === 'anthropic') {
+    out += `## 响应\n\n`;
+    const content = rc.content || [];
+    for (const block of content) {
+      switch (block.type) {
+        case 'text':
+          out += `### 文本块 #${block.index}\n\n${block.text || ''}\n\n`;
+          break;
+        case 'thinking':
+          out += `### 思考块 #${block.index}\n\n\`\`\`\n${block.thinking || ''}\n\`\`\`\n\n`;
+          break;
+        case 'tool_use': {
+          const inputIsObj = typeof block.input === 'object' && block.input !== null;
+          const inputStr = inputIsObj ? JSON.stringify(block.input, null, 2) : String(block.input || '{}');
+          out += `### 工具调用 #${block.index}: ${block.name || 'unknown'}\n\n\`\`\`json\n${inputStr}\n\`\`\`\n\n`;
+          break;
+        }
+      }
+    }
+  } else {
+    out += `## 响应\n\n`;
+    const choices = rc.choices || [];
+    for (const choice of choices) {
+      const msg = choice.message;
+      if (!msg) continue;
+      if (msg.reasoning_content) {
+        out += `### 推理过程\n\n\`\`\`\n${msg.reasoning_content}\n\`\`\`\n\n`;
+      }
+      if (msg.content) {
+        out += `### 回答\n\n${msg.content}\n\n`;
+      }
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        out += `### 工具调用\n\n`;
+        for (const tc of msg.tool_calls) {
+          const toolName = tc.function?.name || `tool_${tc.index}`;
+          let argsStr = tc.function.arguments || '';
+          try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch { /* keep raw */ }
+          out += `#### ${toolName}\n\n\`\`\`json\n${argsStr}\n\`\`\`\n\n`;
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+async function doExport() {
+  const record = state.currentRecord;
+  if (!record) return;
+  const text = formatExport(record);
+  const btn = document.getElementById('btn-export');
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  }
+}
+
 // ---- Helpers ----
 
 function formatTime(iso) {
@@ -587,6 +706,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-next').addEventListener('click', () => {
     navigateDetail(-1);
   });
+
+  document.getElementById('btn-export').addEventListener('click', doExport);
 
   document.addEventListener('keydown', (e) => {
     if (!state.selectedId) return;
