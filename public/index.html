@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSEInspector</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="summary-bar">
+      <h1>SSEInspector</h1>
+      <div id="summary-stats">
+        <span id="stat-total">Total: 0</span>
+        <span id="stat-openai">OpenAI: 0</span>
+        <span id="stat-anthropic">Anthropic: 0</span>
+        <span id="stat-streaming">Active: 0</span>
+        <span id="stat-errors">Errors: 0</span>
+      </div>
+      <input type="text" id="search-input" placeholder="Search model, content..." autocomplete="off">
+      <button id="btn-clear">Clear All</button>
+    </header>
+
+    <section id="view-list">
+      <table id="requests-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>API</th>
+            <th>Model</th>
+            <th>Status</th>
+            <th>Preview</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody id="requests-tbody"></tbody>
+      </table>
+      <div id="empty-state">No requests recorded yet. Send a request to the proxy.</div>
+    </section>
+
+    <section id="view-detail" style="display:none">
+      <button id="btn-back">&larr; Back to List</button>
+      <div id="detail-meta"></div>
+      <div id="detail-request"></div>
+      <div id="detail-content"></div>
+      <div id="detail-chunks"></div>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
