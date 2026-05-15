@@ -347,32 +347,42 @@ function extractUserRequest(body) {
   if (!body || !body.messages) return { text: null, toolResults: [] };
 
   const result = { text: null, toolResults: [] };
+  const msgs = body.messages;
 
-  for (let i = body.messages.length - 1; i >= 0; i--) {
-    const msg = body.messages[i];
+  // Find the last user message index
+  let lastUserIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') { lastUserIdx = i; break; }
+  }
+  if (lastUserIdx === -1) return result;
 
-    if (msg.role === 'user') {
-      const content = msg.content;
-      if (typeof content === 'string') {
-        if (!result.text) result.text = content;
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block.type === 'text' && !result.text) {
-            result.text = block.text;
-          } else if (block.type === 'tool_result') {
-            result.toolResults.unshift({
-              id: block.tool_use_id || '',
-              content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-            });
-          }
-        }
+  // Extract text + Anthropic tool_result blocks from the last user message
+  const userMsg = msgs[lastUserIdx];
+  const content = userMsg.content;
+  if (typeof content === 'string') {
+    result.text = content;
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (block.type === 'text' && !result.text) {
+        result.text = block.text;
+      } else if (block.type === 'tool_result') {
+        result.toolResults.push({
+          id: block.tool_use_id || '',
+          content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+        });
       }
     }
+  }
 
-    if (msg.role === 'tool') {
+  // Collect OpenAI tool messages that belong to the latest turn:
+  // only those after the last assistant message before the last user message
+  let scanStart = lastUserIdx - 1;
+  for (let i = scanStart; i >= 0; i--) {
+    if (msgs[i].role === 'assistant') break;
+    if (msgs[i].role === 'tool') {
       result.toolResults.unshift({
-        id: msg.tool_call_id || '',
-        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        id: msgs[i].tool_call_id || '',
+        content: typeof msgs[i].content === 'string' ? msgs[i].content : JSON.stringify(msgs[i].content),
       });
     }
   }
