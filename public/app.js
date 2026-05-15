@@ -418,7 +418,7 @@ function renderUserRequest(body) {
   html += `<span class="section-label label-user-request">用户请求</span>`;
 
   if (ur.text) {
-    html += `<div class="message-content">${esc(ur.text)}</div>`;
+    html += wrapCopy(`<div class="message-content">${esc(ur.text)}</div>`, ur.text);
   }
 
   if (ur.toolResults.length > 0) {
@@ -428,7 +428,7 @@ function renderUserRequest(body) {
       html += `
         <div class="tool-result-item">
           <div class="tool-result-id">${esc(tr.id)}</div>
-          <pre><code>${esc(tr.content)}</code></pre>
+          ${wrapCopy(`<pre><code>${esc(tr.content)}</code></pre>`, tr.content)}
         </div>`;
     }
     html += `</div>`;
