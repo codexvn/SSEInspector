@@ -195,7 +195,7 @@ body {
 #detail-meta {
   display: flex;
   gap: 14px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   font-size: 0.82rem;
   color: var(--text-secondary);
   margin-bottom: 16px;
@@ -203,6 +203,7 @@ body {
   background: var(--bg-card);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
+  overflow-x: auto;
 }
 
 #detail-meta span {
