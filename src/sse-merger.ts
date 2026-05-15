@@ -69,8 +69,8 @@ export function mergeOpenAIDeltas(deltas: OpenAIDelta[]): MergedResponse | null 
       const d = cc.delta ?? {};
 
       if (d.role) target.message.role = d.role;
-      if (d.content !== undefined) target.message.content += d.content;
-      if (d.reasoning_content !== undefined) {
+      if (d.content != null) target.message.content += d.content;
+      if (d.reasoning_content != null) {
         target.message.reasoning_content ??= '';
         target.message.reasoning_content += d.reasoning_content;
       }
@@ -84,10 +84,10 @@ export function mergeOpenAIDeltas(deltas: OpenAIDelta[]): MergedResponse | null 
           if (tcDelta.id) tc.id = tcDelta.id;
           if (tcDelta.type) tc.type = tcDelta.type;
           if (tcDelta.function?.name) tc.function.name = tcDelta.function.name;
-          if (tcDelta.function?.arguments !== undefined) tc.function.arguments += tcDelta.function.arguments;
+          if (tcDelta.function?.arguments != null) tc.function.arguments += tcDelta.function.arguments;
         }
       }
-      if (cc.finish_reason !== undefined) target.finish_reason = cc.finish_reason;
+      if (cc.finish_reason != null) target.finish_reason = cc.finish_reason;
     }
   }
   return merged;
