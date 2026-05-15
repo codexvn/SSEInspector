@@ -567,7 +567,25 @@ details.chunks-viewer > summary {
 .label-reasoning { background: #e3f2fd; color: #1565c0; }
 .label-content { background: #e8f5e9; color: #2e7d32; }
 .label-tool { background: #eef2ff; color: #4338ca; }
+.label-streaming { background: #e0e7ff; color: #3730a3; animation: pulse 1.5s ease-in-out infinite; }
 .label-user-request { background: #f3e5f5; color: #7b1fa2; }
+
+/* ---- Streaming Live ---- */
+
+.streaming-live {
+  border-left: 4px solid var(--accent);
+}
+
+.streaming-live pre {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 500px;
+  overflow-y: auto;
+  color: var(--text-primary);
+}
 
 /* ---- User Request Card ---- */
 

@@ -89,6 +89,7 @@ export interface RecordedRequest {
   error?: string;
   state: RecordState;
   chunks: SSEChunk[];
+  streamText?: string;
 }
 
 export interface RecordSummary {
@@ -101,4 +102,5 @@ export interface RecordSummary {
   durationMs: number;
   state: RecordState;
   apiType: ApiType;
+  streamText?: string;
 }

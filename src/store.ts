@@ -33,6 +33,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     durationMs: r.durationMs,
     state: r.state,
     apiType: r.apiType,
+    streamText: r.streamText,
   };
 }
 

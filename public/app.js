@@ -50,6 +50,9 @@ function upsertLocal(summary) {
     }
     if (state.selectedId === summary.id) {
       renderMetaFromSummary(summary);
+      if (summary.streamText) {
+        renderStreamLive(summary.streamText);
+      }
     }
   } else {
     state.requests.unshift(summary);
@@ -133,9 +136,7 @@ function renderList() {
       <td class="cell-preview">${isStreaming ? '<em style="color:var(--accent)">流式传输中…</em>' : esc(r.preview)}</td>
       <td class="cell-duration">${isStreaming ? '…' : r.durationMs + 'ms'}</td>
     `;
-    if (!isStreaming) {
-      tr.addEventListener('click', () => { location.hash = '#detail/' + r.id; });
-    }
+    tr.addEventListener('click', () => { location.hash = '#detail/' + r.id; });
     tbody.appendChild(tr);
   }
 }
@@ -218,7 +219,11 @@ function renderDetail(record) {
   const contentDiv = document.getElementById('detail-content');
 
   if (record.state === 'streaming') {
-    contentDiv.innerHTML = '<p style="color:var(--accent);padding:20px 0;">● 等待响应完成…</p>';
+    if (record.streamText) {
+      renderStreamLive(record.streamText);
+    } else {
+      contentDiv.innerHTML = '<p style="color:var(--accent);padding:20px 0;">● 等待第一块数据…</p>';
+    }
     document.getElementById('detail-chunks').innerHTML = '';
     return;
   }
@@ -436,6 +441,15 @@ function renderUserRequest(body) {
 
   html += `</div>`;
   return html;
+}
+
+function renderStreamLive(text) {
+  const contentDiv = document.getElementById('detail-content');
+  contentDiv.innerHTML = `
+    <div class="card streaming-live">
+      <span class="section-label label-streaming">实时接收中…</span>
+      <pre>${esc(text)}</pre>
+    </div>`;
 }
 
 function renderRequestBody(body) {

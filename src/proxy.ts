@@ -146,7 +146,8 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       upsertRecord(record);
     } else {
       // --- Streaming ---
-      upsertRecord(baseRecord(id, req, responseStatus, true, apiType, startTime));
+      const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
+      upsertRecord(record);
 
       const reader = upstreamRes.body.getReader();
       const rawChunks: Uint8Array[] = [];
@@ -157,6 +158,8 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
           if (done) break;
           res.write(value);
           rawChunks.push(new Uint8Array(value));
+          record.streamText = Buffer.concat(rawChunks).toString('utf-8');
+          upsertRecord(record);
         }
       } finally {
         res.end();
@@ -168,10 +171,10 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       const chunks: SSEChunk[] = parseSSE(fullText, apiType);
       const merged = mergeChunks(chunks, apiType);
 
-      const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
       record.responseContent = merged;
       record.chunks = chunks;
       record.state = 'done';
+      delete record.streamText;
       upsertRecord(record);
     }
   } catch (err) {
