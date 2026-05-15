@@ -532,6 +532,51 @@ details.chunks-viewer > summary {
   border-left: 4px solid #ab47bc;
 }
 
+.tool-results-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.tool-results-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #7b1fa2;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.tool-result-item {
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.tool-result-item:last-child { margin-bottom: 0; }
+
+.tool-result-id {
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: #ede7f6;
+  border-bottom: 1px solid #d1c4e9;
+}
+
+.tool-result-item pre {
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--text-primary);
+}
+
 /* ---- Request Body ---- */
 
 details.req-body {

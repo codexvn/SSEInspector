@@ -343,34 +343,70 @@ function renderChunks(chunks, apiType) {
   return html;
 }
 
-function extractUserMessage(body) {
-  if (!body || !body.messages) return null;
-  const messages = body.messages;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== 'user') continue;
-    const content = msg.content;
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const texts = content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-      if (texts) return texts;
-      const imgs = content.filter(b => b.type === 'image_url' || b.type === 'image');
-      if (imgs.length) return `[图片输入: ${imgs.length} 张]`;
+function extractUserRequest(body) {
+  if (!body || !body.messages) return { text: null, toolResults: [] };
+
+  const result = { text: null, toolResults: [] };
+
+  for (let i = body.messages.length - 1; i >= 0; i--) {
+    const msg = body.messages[i];
+
+    if (msg.role === 'user') {
+      const content = msg.content;
+      if (typeof content === 'string') {
+        if (!result.text) result.text = content;
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'text' && !result.text) {
+            result.text = block.text;
+          } else if (block.type === 'tool_result') {
+            result.toolResults.unshift({
+              id: block.tool_use_id || '',
+              content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+            });
+          }
+        }
+      }
     }
-    return null;
+
+    if (msg.role === 'tool') {
+      result.toolResults.unshift({
+        id: msg.tool_call_id || '',
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+      });
+    }
   }
-  return null;
+
+  return result;
 }
 
 function renderUserRequest(body) {
   if (!body) return '';
-  const userMessage = extractUserMessage(body);
-  if (!userMessage) return '';
-  return `
-    <div class="card user-request-card">
-      <span class="section-label label-user-request">用户请求</span>
-      <div class="message-content">${esc(userMessage)}</div>
-    </div>`;
+  const ur = extractUserRequest(body);
+  if (!ur.text && ur.toolResults.length === 0) return '';
+
+  let html = `<div class="card user-request-card">`;
+  html += `<span class="section-label label-user-request">用户请求</span>`;
+
+  if (ur.text) {
+    html += `<div class="message-content">${esc(ur.text)}</div>`;
+  }
+
+  if (ur.toolResults.length > 0) {
+    html += `<div class="tool-results-section">`;
+    html += `<div class="tool-results-label">工具调用结果 (${ur.toolResults.length})</div>`;
+    for (const tr of ur.toolResults) {
+      html += `
+        <div class="tool-result-item">
+          <div class="tool-result-id">${esc(tr.id)}</div>
+          <pre><code>${esc(tr.content)}</code></pre>
+        </div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
 }
 
 function renderRequestBody(body) {
