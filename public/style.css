@@ -192,6 +192,50 @@ body {
 }
 #btn-back:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+#detail-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  margin-left: 12px;
+}
+
+#btn-prev, #btn-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+  transition: all .15s;
+}
+
+#btn-prev:hover:not(:disabled), #btn-next:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+#btn-prev:disabled, #btn-next:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+#detail-nav-pos {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  padding: 0 4px;
+  min-width: 60px;
+  text-align: center;
+}
+
 #detail-meta {
   display: flex;
   align-items: center;
@@ -307,7 +351,7 @@ details.reasoning .reasoning-content {
 
 .anthropic-block.text .block-header { background: #e8f5e9; color: #2e7d32; }
 .anthropic-block.thinking .block-header { background: #e3f2fd; color: #1565c0; }
-.anthropic-block.tool_use .block-header { background: #fff3e0; color: #e65100; }
+.anthropic-block.tool_use .block-header { background: #eef2ff; color: #4338ca; }
 
 /* ---- Tool Calls ---- */
 
@@ -321,10 +365,10 @@ details.reasoning .reasoning-content {
 
 .tool-call .tool-header {
   padding: 10px 16px;
-  background: #fff3e0;
+  background: #eef2ff;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
-  color: #e65100;
+  color: #4338ca;
   font-family: var(--font-mono);
   font-size: 0.83rem;
 }
@@ -337,14 +381,18 @@ details.reasoning .reasoning-content {
 }
 
 .tool-name {
-  background: #fff0e0;
-  color: #c2410c;
+  background: #e0e7ff;
+  color: #3730a3;
   padding: 3px 8px;
   border-radius: 5px;
   font-weight: 700;
   font-size: 0.85rem;
+  border: 1px solid #c7d2fe;
+}
+
+.block-header .tool-name,
+.block-header .tool-id {
   text-transform: none;
-  border: 1px solid #fed7aa;
 }
 
 /* ---- Field Value Highlights ---- */
@@ -518,7 +566,7 @@ details.chunks-viewer > summary {
 }
 .label-reasoning { background: #e3f2fd; color: #1565c0; }
 .label-content { background: #e8f5e9; color: #2e7d32; }
-.label-tool { background: #fff3e0; color: #e65100; }
+.label-tool { background: #eef2ff; color: #4338ca; }
 .label-user-request { background: #f3e5f5; color: #7b1fa2; }
 
 /* ---- User Request Card ---- */

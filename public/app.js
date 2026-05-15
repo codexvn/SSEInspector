@@ -147,6 +147,8 @@ async function showDetail(id) {
   document.getElementById('view-list').style.display = 'none';
   document.getElementById('view-detail').style.display = 'block';
 
+  updateNavButtons();
+
   const summary = state.requests.find(r => r.id === id);
   if (summary) renderMetaFromSummary(summary);
 
@@ -154,6 +156,23 @@ async function showDetail(id) {
   document.getElementById('detail-chunks').innerHTML = '';
 
   await fetchDetail(id);
+}
+
+function updateNavButtons() {
+  const idx = state.requests.findIndex(r => r.id === state.selectedId);
+  const total = state.requests.length;
+  document.getElementById('btn-prev').disabled = idx >= total - 1 || idx < 0;
+  document.getElementById('btn-next').disabled = idx <= 0;
+  document.getElementById('detail-nav-pos').textContent =
+    total > 0 ? `${idx + 1} / ${total}` : '';
+}
+
+function navigateDetail(delta) {
+  const idx = state.requests.findIndex(r => r.id === state.selectedId);
+  if (idx < 0) return;
+  const newIdx = idx + delta;
+  if (newIdx < 0 || newIdx >= state.requests.length) return;
+  location.hash = '#detail/' + state.requests[newIdx].id;
 }
 
 async function fetchDetail(id) {
@@ -545,6 +564,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-back').addEventListener('click', () => {
     location.hash = 'list';
+  });
+
+  document.getElementById('btn-prev').addEventListener('click', () => {
+    navigateDetail(1);
+  });
+
+  document.getElementById('btn-next').addEventListener('click', () => {
+    navigateDetail(-1);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (!state.selectedId) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') navigateDetail(1);
+    if (e.key === 'ArrowRight') navigateDetail(-1);
   });
 
   document.getElementById('btn-clear').addEventListener('click', async () => {
