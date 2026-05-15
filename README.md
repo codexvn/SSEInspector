@@ -62,6 +62,12 @@ curl http://localhost:3000/v1/chat/completions \
 
 TypeScript + Express + 原生 JS SPA（无框架）
 
+## 样例截图
+
+![](./example/1.png)
+![](./example/2.png)
+
+
 ## License
 
 MIT

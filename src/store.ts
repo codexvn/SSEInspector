@@ -19,7 +19,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
   } else {
     const rc = r.responseContent as { choices?: { message?: { content?: string; reasoning_content?: string } }[] } | null;
     const msg = rc?.choices?.[0]?.message;
-    preview = msg?.content || msg?.reasoning_content || '';
+    preview = msg?.content ?? msg?.reasoning_content ?? '';
   }
   if (!preview && r.error) preview = r.error;
 

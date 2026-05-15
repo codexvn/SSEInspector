@@ -229,8 +229,8 @@ export function mergeAnthropicEvents(chunks: SSEChunk[]): AnthropicMergedRespons
       }
       case 'message_delta': {
         if (ev.delta) {
-          if (ev.delta.stop_reason !== undefined) merged.stop_reason = ev.delta.stop_reason as string;
-          if (ev.delta.stop_sequence !== undefined) merged.stop_sequence = ev.delta.stop_sequence as string;
+          if (ev.delta.stop_reason != null) merged.stop_reason = ev.delta.stop_reason as string;
+          if (ev.delta.stop_sequence != null) merged.stop_sequence = ev.delta.stop_sequence as string;
         }
         if (ev.usage) {
           merged.usage = { ...merged.usage!, output_tokens: ev.usage.output_tokens };
