@@ -1,6 +1,6 @@
 import express from 'express';
 import path from 'path';
-import { handleProxy } from './proxy';
+import { handleProxy, handlePassthrough } from './proxy';
 import { getAll, getById, clear, onUpdate, onClear } from './store';
 import { RecordSummary } from './types';
 
@@ -74,9 +74,14 @@ app.post('/v1/chat/completions', (req, res) => handleProxy(req, res, 'openai'));
 // Proxy: Anthropic
 app.post('/v1/messages', (req, res) => handleProxy(req, res, 'anthropic'));
 
-// Catch-all: serve index.html for SPA routing
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
+// Catch-all: proxy unmatched requests to upstream
+app.use((req, res, next) => {
+  // Skip inspector API (already handled) and root (served by static)
+  if (req.path.startsWith('/api/') || req.path === '/') return next();
+  // Skip static file requests
+  if (req.method === 'GET' && req.path.includes('.')) return next();
+  console.log(`[passthrough] ${req.method} ${req.path}`);
+  handlePassthrough(req, res);
 });
 
 app.listen(PORT, () => {

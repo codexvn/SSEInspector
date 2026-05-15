@@ -41,6 +41,62 @@ function baseRecord(
   };
 }
 
+export async function handlePassthrough(req: Request, res: Response): Promise<void> {
+  const upstreamUrl = process.env.UPSTREAM_URL;
+  if (!upstreamUrl) {
+    res.status(500).json({ error: 'UPSTREAM_URL not configured' });
+    return;
+  }
+
+  const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
+  const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
+  delete upstreamHeaders['host'];
+  delete upstreamHeaders['content-length'];
+
+  const fetchInit: RequestInit = {
+    method: req.method,
+    headers: upstreamHeaders,
+  };
+
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+    fetchInit.body = JSON.stringify(req.body);
+    if (!upstreamHeaders['content-type']) {
+      upstreamHeaders['content-type'] = 'application/json';
+    }
+  }
+
+  try {
+    const upstreamRes = await fetch(targetUrl, fetchInit);
+    const responseHeaders = filterHeaders(Object.fromEntries(upstreamRes.headers.entries()));
+
+    res.status(upstreamRes.status);
+    for (const [key, value] of Object.entries(responseHeaders)) {
+      res.setHeader(key, value);
+    }
+
+    if (upstreamRes.body) {
+      const reader = upstreamRes.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+      } finally {
+        res.end();
+        try { reader.releaseLock(); } catch { /* already released */ }
+      }
+    } else {
+      res.end();
+    }
+  } catch (err) {
+    console.error(`[passthrough] error:`, String(err));
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
+    }
+  }
+}
+
 export async function handleProxy(req: Request, res: Response, apiType: ApiType): Promise<void> {
   const upstreamUrl = process.env.UPSTREAM_URL;
   if (!upstreamUrl) {
