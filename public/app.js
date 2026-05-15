@@ -194,6 +194,7 @@ function renderDetail(record) {
   `;
 
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
+  document.getElementById('detail-user-request').innerHTML = renderUserRequest(record.requestBody);
 
   const contentDiv = document.getElementById('detail-content');
 
@@ -340,6 +341,36 @@ function renderChunks(chunks, apiType) {
 
   html += `</div></details>`;
   return html;
+}
+
+function extractUserMessage(body) {
+  if (!body || !body.messages) return null;
+  const messages = body.messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'user') continue;
+    const content = msg.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const texts = content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      if (texts) return texts;
+      const imgs = content.filter(b => b.type === 'image_url' || b.type === 'image');
+      if (imgs.length) return `[图片输入: ${imgs.length} 张]`;
+    }
+    return null;
+  }
+  return null;
+}
+
+function renderUserRequest(body) {
+  if (!body) return '';
+  const userMessage = extractUserMessage(body);
+  if (!userMessage) return '';
+  return `
+    <div class="card user-request-card">
+      <span class="section-label label-user-request">用户请求</span>
+      <div class="message-content">${esc(userMessage)}</div>
+    </div>`;
 }
 
 function renderRequestBody(body) {

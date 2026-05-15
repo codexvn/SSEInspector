@@ -519,6 +519,18 @@ details.chunks-viewer > summary {
 .label-reasoning { background: #e3f2fd; color: #1565c0; }
 .label-content { background: #e8f5e9; color: #2e7d32; }
 .label-tool { background: #fff3e0; color: #e65100; }
+.label-user-request { background: #f3e5f5; color: #7b1fa2; }
+
+/* ---- User Request Card ---- */
+
+.user-request-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  margin-bottom: 14px;
+  border-left: 4px solid #ab47bc;
+}
 
 /* ---- Request Body ---- */
 
