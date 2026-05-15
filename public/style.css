@@ -335,14 +335,80 @@ details.reasoning .reasoning-content {
 }
 
 .tool-name {
-  background: #ffcc80;
-  color: #bf360c;
-  padding: 2px 6px;
-  border-radius: 4px;
+  background: #fff0e0;
+  color: #c2410c;
+  padding: 3px 8px;
+  border-radius: 5px;
   font-weight: 700;
   font-size: 0.85rem;
   text-transform: none;
+  border: 1px solid #fed7aa;
 }
+
+/* ---- Field Value Highlights ---- */
+
+.kv {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+}
+
+.kv-model {
+  background: #e0e7ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+}
+
+.kv-role {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border: 1px solid #d8b4fe;
+}
+
+.kv-stop {
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #d1d5db;
+}
+
+.kv-stop-end_turn,
+.kv-stop-completed,
+.kv-stop-stop {
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #a7f3d0;
+}
+
+.kv-stop-tool_use {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+
+.kv-stop-max_tokens {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.kv-stop-stop_sequence {
+  background: #e5e7eb;
+  color: #4b5563;
+  border-color: #d1d5db;
+}
+
+.kv-finish {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.kv-finish-stop { background: #d1fae5; color: #065f46; border-color: #a7f3d0; }
+.kv-finish-length { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+.kv-finish-tool_calls { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.kv-finish-content_filter { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
 
 .tool-call pre {
   padding: 14px 16px;
@@ -483,6 +549,83 @@ details.req-body pre {
   border-top: 1px solid var(--border);
   color: var(--text-primary);
 }
+
+/* ---- Copy Button ---- */
+
+.copy-wrap {
+  position: relative;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, background .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+.copy-btn::after {
+  content: '';
+  display: block;
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Crect x='9' y='9' width='13' height='13' rx='2'/%3E%3Cpath d='M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1'/%3E%3C/svg%3E") no-repeat center;
+  mask-size: contain;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Crect x='9' y='9' width='13' height='13' rx='2'/%3E%3Cpath d='M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1'/%3E%3C/svg%3E") no-repeat center;
+  -webkit-mask-size: contain;
+  color: var(--text-secondary);
+}
+.copy-btn:hover { background: var(--bg); border-color: var(--accent); color: var(--accent); }
+.copy-btn.copied::after {
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") no-repeat center;
+  mask-size: contain;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") no-repeat center;
+  -webkit-mask-size: contain;
+  color: var(--success);
+}
+.copy-btn.copied { border-color: var(--success); }
+
+.copy-wrap:hover > .copy-btn,
+.copy-btn.copied,
+details.req-body > summary > .copy-btn,
+details.reasoning > summary > .copy-btn,
+.chunk-row:hover .copy-btn { opacity: 1; }
+
+/* Inline copy buttons in summaries */
+details.req-body > summary,
+details.reasoning > summary {
+  position: relative;
+}
+details.req-body > summary > .copy-btn,
+details.reasoning > summary > .copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+
+/* ---- Chunk Toggle ---- */
+
+.chunk-toggle {
+  font-size: 0.72rem;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.chunk-toggle:hover { background: rgba(99, 102, 241, .1); }
 
 /* ---- Responsive ---- */
 

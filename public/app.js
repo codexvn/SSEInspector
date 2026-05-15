@@ -37,7 +37,7 @@ function connectSSE() {
     } catch { /* ignore */ }
   });
 
-  es.onerror = () => {}; // auto-reconnects
+  es.onerror = () => {};
 }
 
 function upsertLocal(summary) {
@@ -181,7 +181,6 @@ function renderMetaFromSummary(summary) {
 }
 
 function renderDetail(record) {
-  // Meta
   const statusClass = record.responseStatus < 400 ? 'badge-ok' : (record.responseStatus < 500 ? 'badge-warn' : 'badge-err');
   document.getElementById('detail-meta').innerHTML = `
     <span>ID: ${record.id}</span>
@@ -194,10 +193,8 @@ function renderDetail(record) {
     ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 
-  // Request body
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
 
-  // Response content
   const contentDiv = document.getElementById('detail-content');
 
   if (record.state === 'streaming') {
@@ -214,12 +211,11 @@ function renderDetail(record) {
     contentDiv.innerHTML = renderOpenAIContent(record.responseContent);
   }
 
-  // Chunks
   document.getElementById('detail-chunks').innerHTML = renderChunks(record.chunks, record.apiType);
 }
 
 function renderOpenAIContent(rc) {
-  let html = `<div class="card"><div class="card-title">模型: ${esc(rc.model || 'unknown')} | 用量: ${formatUsage(rc.usage)}</div></div>`;
+  let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 用量: ${formatUsage(rc.usage)}</div></div>`;
 
   for (const choice of rc.choices || []) {
     const msg = choice.message;
@@ -228,17 +224,20 @@ function renderOpenAIContent(rc) {
     if (msg.reasoning_content) {
       html += `
         <details class="reasoning" open>
-          <summary><span class="section-label label-reasoning">推理过程</span></summary>
+          <summary>
+            <span class="section-label label-reasoning">推理过程</span>
+            ${copyBtnHtml(msg.reasoning_content)}
+          </summary>
           <div class="reasoning-content">${esc(msg.reasoning_content)}</div>
         </details>`;
     }
 
     if (msg.content) {
-      html += `
+      html += wrapCopy(`
         <div class="card">
           <span class="section-label label-content">回答</span>
           <div class="message-content">${esc(msg.content)}</div>
-        </div>`;
+        </div>`, msg.content);
     }
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -246,59 +245,62 @@ function renderOpenAIContent(rc) {
       for (const tc of msg.tool_calls) {
         const toolName = tc.function?.name || `tool_${tc.index}`;
         let argsDisplay;
+        let argsRaw;
         try {
-          argsDisplay = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
+          const parsed = JSON.parse(tc.function.arguments);
+          argsDisplay = JSON.stringify(parsed, null, 2);
+          argsRaw = argsDisplay;
         } catch {
           argsDisplay = tc.function.arguments || '(无参数)';
+          argsRaw = argsDisplay;
         }
         html += `
           <div class="tool-call">
             <div class="tool-header"><span class="tool-name">${esc(toolName)}</span><span class="tool-id">${esc(tc.id || '')}</span></div>
-            <pre><code>${esc(argsDisplay)}</code></pre>
+            ${wrapCopy(`<pre><code>${argsRaw === argsDisplay ? esc(argsDisplay) : highlightJSON(argsDisplay)}</code></pre>`, argsRaw)}
           </div>`;
       }
     }
 
     if (choice.finish_reason) {
-      html += `<p style="color:var(--text-secondary);font-size:0.8rem;margin-top:8px;">结束原因: ${esc(choice.finish_reason)}</p>`;
+      html += `<p style="color:var(--text-secondary);font-size:0.8rem;margin-top:8px;">结束原因: <span class="kv kv-finish kv-finish-${esc(choice.finish_reason)}">${esc(choice.finish_reason)}</span></p>`;
     }
   }
   return html;
 }
 
 function renderAnthropicContent(rc) {
-  let html = `<div class="card"><div class="card-title">模型: ${esc(rc.model || 'unknown')} | 角色: ${esc(rc.role || '')} | 停止原因: ${esc(rc.stop_reason || '无')}</div></div>`;
+  const stopClass = `kv-stop kv-stop-${esc(rc.stop_reason || 'none')}`;
+  let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 角色: <span class="kv kv-role">${esc(rc.role || '')}</span> | 停止原因: <span class="kv ${stopClass}">${esc(rc.stop_reason || '无')}</span></div></div>`;
   html += `<div class="content-blocks">`;
 
   for (const block of rc.content || []) {
     switch (block.type) {
       case 'text':
-        html += `
+        html += wrapCopy(`
           <div class="anthropic-block text">
             <div class="block-header">文本块 #${block.index}</div>
             <div class="block-body"><div class="message-content">${esc(block.text || '')}</div></div>
-          </div>`;
+          </div>`, block.text || '');
         break;
       case 'thinking':
-        html += `
+        html += wrapCopy(`
           <div class="anthropic-block thinking">
             <div class="block-header">思考块 #${block.index}</div>
             <div class="block-body" style="font-family:var(--font-mono);font-size:0.82rem;white-space:pre-wrap;">${esc(block.thinking || '')}</div>
-          </div>`;
+          </div>`, block.thinking || '');
         break;
-      case 'tool_use':
-        let inputDisplay;
-        if (typeof block.input === 'object' && block.input !== null) {
-          inputDisplay = JSON.stringify(block.input, null, 2);
-        } else {
-          inputDisplay = String(block.input || '{}');
-        }
+      case 'tool_use': {
+        const inputIsObj = typeof block.input === 'object' && block.input !== null;
+        const inputDisplay = inputIsObj ? JSON.stringify(block.input, null, 2) : String(block.input || '{}');
+        const inputRaw = inputIsObj ? JSON.stringify(block.input) : String(block.input || '{}');
         html += `
           <div class="anthropic-block tool_use">
             <div class="block-header">工具调用 #${block.index}: <span class="tool-name">${esc(block.name || 'unknown')}</span> <span class="tool-id">(${esc(block.id || '')})</span></div>
-            <div class="block-body"><pre style="font-family:var(--font-mono);font-size:0.8rem;white-space:pre-wrap;">${esc(inputDisplay)}</pre></div>
+            ${wrapCopy(`<div class="block-body"><pre style="font-family:var(--font-mono);font-size:0.8rem;white-space:pre-wrap;">${inputIsObj ? highlightJSON(inputDisplay) : esc(inputDisplay)}</pre></div>`, inputRaw)}
           </div>`;
         break;
+      }
     }
   }
 
@@ -323,13 +325,16 @@ function renderChunks(chunks, apiType) {
     const prettyStr = typeof c.data === 'string' ? c.data : JSON.stringify(c.data, null, 2);
     const oneLine = dataStr.length > 100 ? dataStr.slice(0, 100) + '…' : dataStr;
     const chunkId = `${uid}-${i}`;
+    const isJson = typeof c.data !== 'string';
 
     html += `
-      <div class="chunk-row" id="${chunkId}" onclick="toggleChunk('${chunkId}')">
+      <div class="chunk-row" id="${chunkId}">
         <span class="chunk-index">#${i + 1}</span>
         <span class="chunk-event">${esc(eventLabel)}</span>
         <code class="chunk-oneline">${esc(oneLine)}</code>
-        <code class="chunk-full" style="display:none">${esc(prettyStr)}</code>
+        <code class="chunk-full" style="display:none">${isJson ? highlightJSON(prettyStr) : esc(prettyStr)}</code>
+        ${copyBtnHtml(dataStr)}
+        <span class="chunk-toggle" onclick="toggleChunk('${chunkId}')">展开</span>
       </div>`;
   }
 
@@ -342,10 +347,79 @@ function renderRequestBody(body) {
   const text = JSON.stringify(body, null, 2);
   return `
     <details class="req-body">
-      <summary>请求体</summary>
-      <pre>${esc(text)}</pre>
+      <summary>
+        请求体
+        ${copyBtnHtml(text)}
+      </summary>
+      <pre>${highlightJSON(text)}</pre>
     </details>`;
 }
+
+// ---- JSON Highlighting ----
+
+function highlightJSON(jsonStr) {
+  try {
+    return hljs.highlight(jsonStr, { language: 'json' }).value;
+  } catch {
+    return esc(jsonStr);
+  }
+}
+
+// ---- Copy ----
+
+function copyBtnHtml(content) {
+  if (!content) return '';
+  return `<button class="copy-btn" onclick="copyFromBtn(event)" data-copy="${escAttr(content)}" title="复制"></button>`;
+}
+
+function wrapCopy(innerHtml, rawContent) {
+  if (!rawContent) return innerHtml;
+  return `<div class="copy-wrap">${innerHtml}${copyBtnHtml(rawContent)}</div>`;
+}
+
+window.copyFromBtn = async function(event) {
+  event.stopPropagation();
+  const btn = event.currentTarget;
+  const text = btn.getAttribute('data-copy') || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  } catch {
+    // fallback for older browsers or insecure context
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  }
+};
+
+// ---- Chunk Toggle ----
+
+window.toggleChunk = function(chunkId) {
+  const row = document.getElementById(chunkId);
+  if (!row) return;
+  const oneline = row.querySelector('.chunk-oneline');
+  const full = row.querySelector('.chunk-full');
+  const toggle = row.querySelector('.chunk-toggle');
+  if (!oneline || !full) return;
+  if (full.style.display === 'none') {
+    oneline.style.display = 'none';
+    full.style.display = '';
+    row.classList.add('expanded');
+    if (toggle) toggle.textContent = '收起';
+  } else {
+    oneline.style.display = '';
+    full.style.display = 'none';
+    row.classList.remove('expanded');
+    if (toggle) toggle.textContent = '展开';
+  }
+};
 
 // ---- Helpers ----
 
@@ -380,22 +454,10 @@ function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-window.toggleChunk = function(chunkId) {
-  const row = document.getElementById(chunkId);
-  if (!row) return;
-  const oneline = row.querySelector('.chunk-oneline');
-  const full = row.querySelector('.chunk-full');
-  if (!oneline || !full) return;
-  if (full.style.display === 'none') {
-    oneline.style.display = 'none';
-    full.style.display = '';
-    row.classList.add('expanded');
-  } else {
-    oneline.style.display = '';
-    full.style.display = 'none';
-    row.classList.remove('expanded');
-  }
-};
+function escAttr(s) {
+  if (typeof s !== 'string') return '';
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 // ---- Init ----
 
