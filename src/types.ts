@@ -91,6 +91,7 @@ export interface RecordedRequest {
   state: RecordState;
   chunks: SSEChunk[];
   streamText?: string;
+  responseBody?: string;
 }
 
 export interface RecordSummary {

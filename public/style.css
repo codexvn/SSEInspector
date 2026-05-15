@@ -698,7 +698,64 @@ details.req-body pre {
 
 /* ---- Headers Viewer ---- */
 
-details.headers-viewer {
+.response-body-viewer > summary {
+  cursor: pointer;
+  padding: 12px 18px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.rb-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 0 18px;
+}
+
+.rb-tab {
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all .15s;
+}
+
+.rb-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.rb-tab:hover:not(.active) {
+  color: var(--text-secondary);
+}
+
+.rb-pane {
+  position: relative;
+}
+
+.rb-pane .copy-btn {
+  top: 4px;
+  right: 4px;
+}
+
+.rb-pane pre {
+  background: var(--bg-inset);
+  padding: 14px 18px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+  color: var(--text-primary);
+}details.headers-viewer {
   margin-bottom: 14px;
   background: var(--bg-card);
   border-radius: var(--radius);
@@ -778,6 +835,7 @@ details.headers-viewer pre {
 details.req-body > summary > .copy-btn,
 details.headers-viewer > summary > .copy-btn,
 details.reasoning > summary > .copy-btn,
+.rb-pane:hover .copy-btn,
 .chunk-row:hover .copy-btn { opacity: 1; }
 
 /* Inline copy buttons in summaries */

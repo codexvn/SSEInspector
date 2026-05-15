@@ -143,6 +143,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       const record = baseRecord(id, req, responseStatus, false, apiType, startTime);
       record.responseContent = json as MergedContent;
       record.responseHeaders = responseHeaders;
+      record.responseBody = JSON.stringify(json);
       record.state = 'done';
       upsertRecord(record);
     } else {
@@ -175,6 +176,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
       record.responseContent = merged;
       record.chunks = chunks;
+      record.responseBody = fullText;
       record.state = 'done';
       delete record.streamText;
       upsertRecord(record);

@@ -240,7 +240,7 @@ function renderDetail(record) {
   }
 
   document.getElementById('detail-chunks').innerHTML = renderChunks(record.chunks, record.apiType);
-  document.getElementById('detail-response-body').innerHTML = renderResponseBody(record.responseContent);
+  document.getElementById('detail-response-body').innerHTML = renderResponseBody(record.responseBody, record.responseContent);
   document.getElementById('detail-response-headers').innerHTML = renderHeaders(record.responseHeaders, '响应头');
 }
 
@@ -457,18 +457,45 @@ function renderStreamLive(text) {
     </div>`;
 }
 
-function renderResponseBody(content) {
-  if (!content) return '';
-  const text = JSON.stringify(content, null, 2);
-  return `
-    <details class="headers-viewer">
-      <summary>
-        响应体
-        ${copyBtnHtml(text)}
-      </summary>
-      <pre>${highlightJSON(text)}</pre>
-    </details>`;
+function renderResponseBody(rawBody, mergedContent) {
+  if (!rawBody && !mergedContent) return '';
+
+  const uid = 'rb' + Math.random().toString(36).slice(2, 8);
+  const mergedText = mergedContent ? JSON.stringify(mergedContent, null, 2) : '';
+  const isJson = !rawBody || rawBody.startsWith('{');
+
+  let html = `<details class="headers-viewer response-body-viewer" id="${uid}">`;
+  html += `<summary>响应体</summary>`;
+  html += `<div class="rb-tabs">`;
+  html += `<button class="rb-tab active" onclick="switchRespBody('${uid}','raw')">原始</button>`;
+  html += `<button class="rb-tab" onclick="switchRespBody('${uid}','merged')">合并</button>`;
+  html += `</div>`;
+
+  // Raw view
+  html += `<div class="rb-pane rb-raw" id="${uid}-raw">`;
+  html += copyBtnHtml(rawBody || '');
+  html += `<pre>${isJson && rawBody ? highlightJSON(rawBody) : esc(rawBody || '')}</pre>`;
+  html += `</div>`;
+
+  // Merged view
+  html += `<div class="rb-pane rb-merged" id="${uid}-merged" style="display:none">`;
+  html += copyBtnHtml(mergedText);
+  html += `<pre>${highlightJSON(mergedText)}</pre>`;
+  html += `</div>`;
+
+  html += `</details>`;
+  return html;
 }
+
+window.switchRespBody = function(uid, mode) {
+  const container = document.getElementById(uid);
+  if (!container) return;
+  container.querySelector('.rb-raw').style.display = mode === 'raw' ? '' : 'none';
+  container.querySelector('.rb-merged').style.display = mode === 'merged' ? '' : 'none';
+  container.querySelectorAll('.rb-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && mode === 'raw') || (i === 1 && mode === 'merged'));
+  });
+};
 
 function renderHeaders(headers, title) {
   if (!headers || Object.keys(headers).length === 0) return '';
