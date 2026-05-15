@@ -75,11 +75,11 @@ async function fetchInitial() {
 // ---- Stats ----
 
 function updateStats() {
-  document.getElementById('stat-total').textContent = `Total: ${state.requests.length}`;
-  document.getElementById('stat-openai').textContent = `OpenAI: ${state.requests.filter(r => r.apiType === 'openai').length}`;
-  document.getElementById('stat-anthropic').textContent = `Anthropic: ${state.requests.filter(r => r.apiType === 'anthropic').length}`;
-  document.getElementById('stat-streaming').textContent = `Active: ${state.requests.filter(r => r.state === 'streaming').length}`;
-  document.getElementById('stat-errors').textContent = `Errors: ${state.requests.filter(r => r.state === 'error').length}`;
+  document.getElementById('stat-total').textContent = `总计 ${state.requests.length}`;
+  document.getElementById('stat-openai').textContent = `OpenAI ${state.requests.filter(r => r.apiType === 'openai').length}`;
+  document.getElementById('stat-anthropic').textContent = `Anthropic ${state.requests.filter(r => r.apiType === 'anthropic').length}`;
+  document.getElementById('stat-streaming').textContent = `进行中 ${state.requests.filter(r => r.state === 'streaming').length}`;
+  document.getElementById('stat-errors').textContent = `错误 ${state.requests.filter(r => r.state === 'error').length}`;
 }
 
 // ---- List View ----
@@ -114,7 +114,7 @@ function renderList() {
 
   if (items.length === 0) {
     empty.style.display = 'block';
-    empty.textContent = state.searchQuery ? 'No matching requests.' : 'No requests recorded yet. Send a request to the proxy.';
+    empty.textContent = state.searchQuery ? '无匹配请求' : '暂无记录，发送请求到代理即可看到';
     document.getElementById('requests-table').style.display = 'none';
     return;
   }
@@ -130,8 +130,8 @@ function renderList() {
       <td class="cell-api">${apiBadge(r.apiType)}</td>
       <td class="cell-model" title="${esc(r.model)}">${esc(r.model)}</td>
       <td>${isStreaming ? streamingBadge() : statusBadge(r.status)}</td>
-      <td class="cell-preview">${isStreaming ? '<em style="color:var(--accent)">streaming...</em>' : esc(r.preview)}</td>
-      <td class="cell-duration">${isStreaming ? '...' : r.durationMs + 'ms'}</td>
+      <td class="cell-preview">${isStreaming ? '<em style="color:var(--accent)">流式传输中…</em>' : esc(r.preview)}</td>
+      <td class="cell-duration">${isStreaming ? '…' : r.durationMs + 'ms'}</td>
     `;
     if (!isStreaming) {
       tr.addEventListener('click', () => { location.hash = '#detail/' + r.id; });
@@ -150,7 +150,7 @@ async function showDetail(id) {
   const summary = state.requests.find(r => r.id === id);
   if (summary) renderMetaFromSummary(summary);
 
-  document.getElementById('detail-content').innerHTML = '<p style="color:var(--text-secondary)">Loading...</p>';
+  document.getElementById('detail-content').innerHTML = '<p style="color:var(--text-secondary)">加载中…</p>';
   document.getElementById('detail-chunks').innerHTML = '';
 
   await fetchDetail(id);
@@ -164,7 +164,7 @@ async function fetchDetail(id) {
     const record = await res.json();
     renderDetail(record);
   } catch {
-    contentDiv.innerHTML = '<p style="color:var(--error)">Failed to load request.</p>';
+    contentDiv.innerHTML = '<p style="color:var(--error)">加载失败</p>';
   }
 }
 
@@ -172,11 +172,11 @@ function renderMetaFromSummary(summary) {
   const meta = document.getElementById('detail-meta');
   meta.innerHTML = `
     <span>ID: ${summary.id}</span>
-    <span>Time: ${new Date(summary.timestamp).toLocaleString()}</span>
+    <span>时间: ${new Date(summary.timestamp).toLocaleString('zh-CN')}</span>
     <span>API: ${apiBadge(summary.apiType)}</span>
-    <span>Streaming: ${summary.streaming}</span>
-    <span>Duration: ${summary.state === 'streaming' ? '...' : summary.durationMs + 'ms'}</span>
-    ${summary.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● Streaming...</span>' : ''}
+    <span>流式: ${summary.streaming ? '是' : '否'}</span>
+    <span>耗时: ${summary.state === 'streaming' ? '…' : summary.durationMs + 'ms'}</span>
+    ${summary.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 }
 
@@ -185,13 +185,13 @@ function renderDetail(record) {
   const statusClass = record.responseStatus < 400 ? 'badge-ok' : (record.responseStatus < 500 ? 'badge-warn' : 'badge-err');
   document.getElementById('detail-meta').innerHTML = `
     <span>ID: ${record.id}</span>
-    <span>Time: ${new Date(record.timestamp).toLocaleString()}</span>
+    <span>时间: ${new Date(record.timestamp).toLocaleString('zh-CN')}</span>
     <span>API: ${apiBadge(record.apiType)}</span>
-    <span>Streaming: ${record.streaming}</span>
-    <span>Duration: ${record.durationMs}ms</span>
-    <span>Status: <span class="badge ${statusClass}">${record.responseStatus}</span></span>
-    ${record.error ? `<span style="color:var(--error)">Error: ${esc(record.error)}</span>` : ''}
-    ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● Streaming...</span>' : ''}
+    <span>流式: ${record.streaming ? '是' : '否'}</span>
+    <span>耗时: ${record.durationMs}ms</span>
+    <span>状态: <span class="badge ${statusClass}">${record.responseStatus}</span></span>
+    ${record.error ? `<span style="color:var(--error)">错误: ${esc(record.error)}</span>` : ''}
+    ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 
   // Request body
@@ -201,13 +201,13 @@ function renderDetail(record) {
   const contentDiv = document.getElementById('detail-content');
 
   if (record.state === 'streaming') {
-    contentDiv.innerHTML = '<p style="color:var(--accent);padding:20px 0;">● Waiting for response to complete...</p>';
+    contentDiv.innerHTML = '<p style="color:var(--accent);padding:20px 0;">● 等待响应完成…</p>';
     document.getElementById('detail-chunks').innerHTML = '';
     return;
   }
 
   if (!record.responseContent) {
-    contentDiv.innerHTML = '<p style="color:var(--text-secondary)">No response content</p>';
+    contentDiv.innerHTML = '<p style="color:var(--text-secondary)">无响应内容</p>';
   } else if (record.apiType === 'anthropic') {
     contentDiv.innerHTML = renderAnthropicContent(record.responseContent);
   } else {
@@ -219,7 +219,7 @@ function renderDetail(record) {
 }
 
 function renderOpenAIContent(rc) {
-  let html = `<div class="card"><div class="card-title">Model: ${esc(rc.model || 'unknown')} | Usage: ${formatUsage(rc.usage)}</div></div>`;
+  let html = `<div class="card"><div class="card-title">模型: ${esc(rc.model || 'unknown')} | 用量: ${formatUsage(rc.usage)}</div></div>`;
 
   for (const choice of rc.choices || []) {
     const msg = choice.message;
@@ -228,7 +228,7 @@ function renderOpenAIContent(rc) {
     if (msg.reasoning_content) {
       html += `
         <details class="reasoning" open>
-          <summary><span class="section-label label-reasoning">Reasoning</span></summary>
+          <summary><span class="section-label label-reasoning">推理过程</span></summary>
           <div class="reasoning-content">${esc(msg.reasoning_content)}</div>
         </details>`;
     }
@@ -236,38 +236,38 @@ function renderOpenAIContent(rc) {
     if (msg.content) {
       html += `
         <div class="card">
-          <span class="section-label label-content">Response</span>
+          <span class="section-label label-content">回答</span>
           <div class="message-content">${esc(msg.content)}</div>
         </div>`;
     }
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
-      html += `<span class="section-label label-tool">Tool Calls</span>`;
+      html += `<span class="section-label label-tool">工具调用</span>`;
       for (const tc of msg.tool_calls) {
         const toolName = tc.function?.name || `tool_${tc.index}`;
         let argsDisplay;
         try {
           argsDisplay = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
         } catch {
-          argsDisplay = tc.function.arguments || '(empty)';
+          argsDisplay = tc.function.arguments || '(无参数)';
         }
         html += `
           <div class="tool-call">
-            <div class="tool-header">${esc(toolName)}<span class="tool-id">${esc(tc.id || '')}</span></div>
+            <div class="tool-header"><span class="tool-name">${esc(toolName)}</span><span class="tool-id">${esc(tc.id || '')}</span></div>
             <pre><code>${esc(argsDisplay)}</code></pre>
           </div>`;
       }
     }
 
     if (choice.finish_reason) {
-      html += `<p style="color:var(--text-secondary);font-size:0.8rem;margin-top:8px;">Finish: ${esc(choice.finish_reason)}</p>`;
+      html += `<p style="color:var(--text-secondary);font-size:0.8rem;margin-top:8px;">结束原因: ${esc(choice.finish_reason)}</p>`;
     }
   }
   return html;
 }
 
 function renderAnthropicContent(rc) {
-  let html = `<div class="card"><div class="card-title">Model: ${esc(rc.model || 'unknown')} | Role: ${esc(rc.role || '')} | Stop: ${esc(rc.stop_reason || 'none')}</div></div>`;
+  let html = `<div class="card"><div class="card-title">模型: ${esc(rc.model || 'unknown')} | 角色: ${esc(rc.role || '')} | 停止原因: ${esc(rc.stop_reason || '无')}</div></div>`;
   html += `<div class="content-blocks">`;
 
   for (const block of rc.content || []) {
@@ -275,14 +275,14 @@ function renderAnthropicContent(rc) {
       case 'text':
         html += `
           <div class="anthropic-block text">
-            <div class="block-header">Text Block #${block.index}</div>
+            <div class="block-header">文本块 #${block.index}</div>
             <div class="block-body"><div class="message-content">${esc(block.text || '')}</div></div>
           </div>`;
         break;
       case 'thinking':
         html += `
           <div class="anthropic-block thinking">
-            <div class="block-header">Thinking Block #${block.index}</div>
+            <div class="block-header">思考块 #${block.index}</div>
             <div class="block-body" style="font-family:var(--font-mono);font-size:0.82rem;white-space:pre-wrap;">${esc(block.thinking || '')}</div>
           </div>`;
         break;
@@ -295,7 +295,7 @@ function renderAnthropicContent(rc) {
         }
         html += `
           <div class="anthropic-block tool_use">
-            <div class="block-header">Tool Use #${block.index}: ${esc(block.name || 'unknown')} (${esc(block.id || '')})</div>
+            <div class="block-header">工具调用 #${block.index}: <span class="tool-name">${esc(block.name || 'unknown')}</span> <span class="tool-id">(${esc(block.id || '')})</span></div>
             <div class="block-body"><pre style="font-family:var(--font-mono);font-size:0.8rem;white-space:pre-wrap;">${esc(inputDisplay)}</pre></div>
           </div>`;
         break;
@@ -309,12 +309,11 @@ function renderAnthropicContent(rc) {
 function renderChunks(chunks, apiType) {
   if (!chunks || chunks.length === 0) return '';
 
-  // Generate unique id base for this chunks group
   const uid = 'c' + Math.random().toString(36).slice(2, 8);
 
   let html = `
     <details class="chunks-viewer">
-      <summary>Raw SSE Chunks (${chunks.length})</summary>
+      <summary>原始 SSE 数据块 (${chunks.length})</summary>
       <div class="chunks-list">`;
 
   for (let i = 0; i < chunks.length; i++) {
@@ -322,7 +321,7 @@ function renderChunks(chunks, apiType) {
     const eventLabel = c.event || '-';
     const dataStr = typeof c.data === 'string' ? c.data : JSON.stringify(c.data);
     const prettyStr = typeof c.data === 'string' ? c.data : JSON.stringify(c.data, null, 2);
-    const oneLine = dataStr.length > 100 ? dataStr.slice(0, 100) + '...' : dataStr;
+    const oneLine = dataStr.length > 100 ? dataStr.slice(0, 100) + '…' : dataStr;
     const chunkId = `${uid}-${i}`;
 
     html += `
@@ -343,7 +342,7 @@ function renderRequestBody(body) {
   const text = JSON.stringify(body, null, 2);
   return `
     <details class="req-body">
-      <summary>Request Body</summary>
+      <summary>请求体</summary>
       <pre>${esc(text)}</pre>
     </details>`;
 }
@@ -352,7 +351,7 @@ function renderRequestBody(body) {
 
 function formatTime(iso) {
   const d = new Date(iso);
-  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
 function statusBadge(code) {
@@ -362,7 +361,7 @@ function statusBadge(code) {
 }
 
 function streamingBadge() {
-  return `<span class="badge badge-streaming">streaming</span>`;
+  return `<span class="badge badge-streaming">传输中</span>`;
 }
 
 function apiBadge(type) {
@@ -372,8 +371,8 @@ function apiBadge(type) {
 
 function formatUsage(usage) {
   if (!usage) return 'N/A';
-  if (usage.input_tokens !== undefined) return `${usage.input_tokens}I + ${usage.output_tokens}O`;
-  return `${usage.prompt_tokens || 0}P + ${usage.completion_tokens || 0}C = ${usage.total_tokens || 0}T`;
+  if (usage.input_tokens !== undefined) return `输入 ${usage.input_tokens} + 输出 ${usage.output_tokens}`;
+  return `提示 ${usage.prompt_tokens || 0} + 生成 ${usage.completion_tokens || 0} = 总计 ${usage.total_tokens || 0}`;
 }
 
 function esc(s) {
@@ -410,7 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btn-clear').addEventListener('click', async () => {
-    if (!confirm('Clear all recorded requests?')) return;
+    if (!confirm('确认清空全部记录？')) return;
     await fetch('/api/requests', { method: 'DELETE' });
     state.requests = [];
     renderList();
