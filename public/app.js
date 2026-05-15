@@ -240,6 +240,7 @@ function renderDetail(record) {
   }
 
   document.getElementById('detail-chunks').innerHTML = renderChunks(record.chunks, record.apiType);
+  document.getElementById('detail-response-body').innerHTML = renderResponseBody(record.responseContent);
   document.getElementById('detail-response-headers').innerHTML = renderHeaders(record.responseHeaders, '响应头');
 }
 
@@ -454,6 +455,19 @@ function renderStreamLive(text) {
       <span class="section-label label-streaming">实时接收中…</span>
       <pre>${esc(text)}</pre>
     </div>`;
+}
+
+function renderResponseBody(content) {
+  if (!content) return '';
+  const text = JSON.stringify(content, null, 2);
+  return `
+    <details class="headers-viewer">
+      <summary>
+        响应体
+        ${copyBtnHtml(text)}
+      </summary>
+      <pre>${highlightJSON(text)}</pre>
+    </details>`;
 }
 
 function renderHeaders(headers, title) {

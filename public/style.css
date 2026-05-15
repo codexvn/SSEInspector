@@ -292,6 +292,10 @@ body {
   margin-bottom: 8px;
 }
 
+.card-title .kv {
+  text-transform: none;
+}
+
 .card-body {
   font-size: 0.9rem;
   line-height: 1.65;
