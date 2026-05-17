@@ -458,11 +458,22 @@ function renderUserRequest(body) {
 
 function renderStreamLive(text) {
   const contentDiv = document.getElementById('detail-content');
-  contentDiv.innerHTML = `
-    <div class="card streaming-live">
-      <span class="section-label label-streaming">实时接收中…</span>
-      <pre>${esc(text)}</pre>
-    </div>`;
+  let card = contentDiv.querySelector('.streaming-live');
+  let pre;
+
+  if (!card) {
+    contentDiv.innerHTML = `
+      <div class="card streaming-live">
+        <span class="section-label label-streaming">实时接收中…</span>
+        <pre></pre>
+      </div>`;
+    card = contentDiv.querySelector('.streaming-live');
+  }
+
+  pre = card.querySelector('pre');
+  const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+  pre.textContent = text;
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
 }
 
 function renderResponseBody(rawBody, mergedContent) {
