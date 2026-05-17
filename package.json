@@ -2,7 +2,6 @@
   "name": "SSEInspector",
   "version": "1.0.0",
   "description": "vLLM/OpenAI-compatible API proxy with SSE recording and inspection",
-  "main": "dist/index.js",
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc"

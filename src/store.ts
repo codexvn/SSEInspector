@@ -60,10 +60,6 @@ export function clear(): void {
   emitter.emit('clear');
 }
 
-export function size(): number {
-  return records.size;
-}
-
 export function onUpdate(cb: (summary: RecordSummary) => void): () => void {
   emitter.on('update', cb);
   return () => emitter.off('update', cb);

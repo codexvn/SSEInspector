@@ -29,7 +29,7 @@ interface OpenAIDelta {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
-export function parseOpenAISSE(rawText: string): SSEChunk[] {
+function parseOpenAISSE(rawText: string): SSEChunk[] {
   const events = rawText.split(/\r?\n\r?\n/);
   const chunks: SSEChunk[] = [];
 
@@ -48,7 +48,7 @@ export function parseOpenAISSE(rawText: string): SSEChunk[] {
   return chunks;
 }
 
-export function mergeOpenAIDeltas(deltas: OpenAIDelta[]): MergedResponse | null {
+function mergeOpenAIDeltas(deltas: OpenAIDelta[]): MergedResponse | null {
   if (deltas.length === 0) return null;
 
   const merged: MergedResponse = { id: '', object: '', created: 0, model: '', choices: [] };
@@ -126,7 +126,7 @@ interface AnthropicSSEEvent {
   usage?: { output_tokens: number };
 }
 
-export function parseAnthropicSSE(rawText: string): SSEChunk[] {
+function parseAnthropicSSE(rawText: string): SSEChunk[] {
   // Anthropic SSE uses \n\n to separate events, with optional "event:" line
   const eventBlocks = rawText.split(/\r?\n\r?\n/);
   const chunks: SSEChunk[] = [];
@@ -155,7 +155,7 @@ export function parseAnthropicSSE(rawText: string): SSEChunk[] {
   return chunks;
 }
 
-export function mergeAnthropicEvents(chunks: SSEChunk[]): AnthropicMergedResponse | null {
+function mergeAnthropicEvents(chunks: SSEChunk[]): AnthropicMergedResponse | null {
   if (chunks.length === 0) return null;
 
   const merged: AnthropicMergedResponse = {

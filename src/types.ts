@@ -10,20 +10,20 @@ export interface MergedToolCall {
   };
 }
 
-export interface MergedMessage {
+interface MergedMessage {
   role: string;
   content: string;
   reasoning_content?: string;
   tool_calls?: MergedToolCall[];
 }
 
-export interface MergedChoice {
+interface MergedChoice {
   index: number;
   message: MergedMessage;
   finish_reason: string | null;
 }
 
-export interface MergedUsage {
+interface MergedUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -67,7 +67,7 @@ export interface AnthropicMergedResponse {
 
 export type ApiType = 'openai' | 'anthropic';
 export type MergedContent = MergedResponse | AnthropicMergedResponse;
-export type RecordState = 'streaming' | 'done' | 'error';
+type RecordState = 'streaming' | 'done' | 'error';
 
 export interface SSEChunk {
   event?: string;
