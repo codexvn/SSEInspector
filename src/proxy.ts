@@ -154,6 +154,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
       const reader = upstreamRes.body.getReader();
       const rawChunks: Uint8Array[] = [];
+      let lastPush = 0;
 
       try {
         while (true) {
@@ -161,8 +162,12 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
           if (done) break;
           res.write(value);
           rawChunks.push(new Uint8Array(value));
-          record.streamText = Buffer.concat(rawChunks).toString('utf-8');
-          upsertRecord(record);
+          const now = Date.now();
+          if (now - lastPush > 200) {
+            record.streamText = Buffer.concat(rawChunks).toString('utf-8');
+            upsertRecord(record);
+            lastPush = now;
+          }
         }
       } finally {
         res.end();

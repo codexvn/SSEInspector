@@ -4,6 +4,7 @@ const state = {
   eventSource: null,
   searchQuery: '',
   currentRecord: null,
+  renderTimer: null,
 };
 
 // ---- Routing ----
@@ -61,7 +62,13 @@ function upsertLocal(summary) {
 
   state.requests.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-  if (!state.selectedId) renderList();
+  if (!state.selectedId) {
+    if (state.renderTimer) clearTimeout(state.renderTimer);
+    state.renderTimer = setTimeout(() => {
+      state.renderTimer = null;
+      renderList();
+    }, 300);
+  }
   updateStats();
 }
 
@@ -146,6 +153,7 @@ function renderList() {
 
 async function showDetail(id) {
   state.selectedId = id;
+  if (state.renderTimer) { clearTimeout(state.renderTimer); state.renderTimer = null; }
   document.getElementById('view-list').style.display = 'none';
   document.getElementById('view-detail').style.display = 'block';
 
