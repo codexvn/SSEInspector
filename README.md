@@ -8,13 +8,16 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 
 - 代理 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 接口
 - SSE 流式 delta 自动合并为完整响应
-- 推理过程、回答正文、工具调用（Tool Call）可视化展示
-- 对话流（user / assistant 消息往返）气泡视图
-- JSON 语法高亮 + 一键复制
-- 原始 SSE 数据块逐条查看
+- **Monaco Editor** 展示 JSON（VS Code 原生代码折叠，词级展开/收起）
+- 推理过程、回答正文、思考块、工具调用可视化展示
+- 文本内容统一使用 Monaco 展示，支持 `Ctrl+F` 搜索
+- 请求地址 / 代理地址分别显示，各自带 curl 复制按钮
+- 工具调用结果 hover 显示对应 tool_use 详情
+- 原始/合并响应体双视图切换
+- 实时更新（Server-Sent Events），动态刷新导航位置
 - 搜索过滤（模型名、内容）
-- 实时更新（Server-Sent Events）
 - 非监控请求自动直通上游（如 `/v1/models`）
+- 控制台打印每次请求的原始路径与代理后上游地址
 
 ## 启动
 
@@ -60,7 +63,7 @@ curl http://localhost:3000/v1/chat/completions \
 
 ## 技术栈
 
-TypeScript + Express + 原生 JS SPA（无框架）
+TypeScript + Express + Monaco Editor + 原生 JS SPA（无框架）
 
 ## 样例截图
 
