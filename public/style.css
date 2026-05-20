@@ -837,6 +837,67 @@ details.reasoning > summary > .copy-btn {
   right: 4px;
 }
 
+/* ---- Request URL ---- */
+
+.request-url-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.request-url-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.request-url-text {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  flex: 1;
+  word-break: break-all;
+}
+
+.curl-copy-btn {
+  position: static;
+  opacity: 1;
+  width: auto;
+  height: auto;
+  padding: 8px 18px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+  border-color: var(--accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.curl-copy-btn::after {
+  display: none;
+}
+
+.curl-copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---- Monaco JSON Container ---- */
+
+.monaco-json-container {
+  min-height: 60px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
 /* ---- Chunk Toggle ---- */
 
 .chunk-toggle {

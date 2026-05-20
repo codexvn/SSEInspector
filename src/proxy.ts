@@ -23,11 +23,13 @@ function baseRecord(
   id: string, req: Request, status: number, streaming: boolean, apiType: ApiType,
   startTime: number, error?: string,
 ): RecordedRequest {
+  const targetUrl = (process.env.UPSTREAM_URL ?? '').replace(/\/$/, '') + req.path;
   return {
     id,
     timestamp: new Date().toISOString(),
     method: req.method,
     path: req.path,
+    upstreamUrl: targetUrl,
     requestHeaders: filterHeaders(req.headers as Record<string, string | string[] | undefined>),
     requestBody: req.body,
     responseStatus: status,

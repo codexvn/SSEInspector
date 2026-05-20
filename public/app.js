@@ -223,6 +223,7 @@ function renderDetail(record) {
     ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 
+  document.getElementById('detail-request-url').innerHTML = renderRequestUrl(record);
   document.getElementById('detail-request-headers').innerHTML = renderHeaders(record.requestHeaders, '请求头');
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
   document.getElementById('detail-user-request').innerHTML = renderUserRequest(record.requestBody);
@@ -295,7 +296,7 @@ function renderOpenAIContent(rc) {
         html += `
           <div class="tool-call">
             <div class="tool-header"><span class="tool-name">${esc(toolName)}</span><span class="tool-id">${esc(tc.id || '')}</span></div>
-            ${wrapCopy(`<pre><code>${argsRaw === argsDisplay ? esc(argsDisplay) : highlightJSON(argsDisplay)}</code></pre>`, argsRaw)}
+            ${wrapCopy(`${renderJSONViewer(argsRaw)}`, argsRaw)}
           </div>`;
       }
     }
@@ -335,7 +336,7 @@ function renderAnthropicContent(rc) {
         html += `
           <div class="anthropic-block tool_use">
             <div class="block-header">工具调用 #${block.index}: <span class="tool-name">${esc(block.name || 'unknown')}</span> <span class="tool-id">(${esc(block.id || '')})</span></div>
-            ${wrapCopy(`<div class="block-body"><pre style="font-family:var(--font-mono);font-size:0.8rem;white-space:pre-wrap;">${inputIsObj ? highlightJSON(inputDisplay) : esc(inputDisplay)}</pre></div>`, inputRaw)}
+            ${wrapCopy(`${inputIsObj ? `<div class="block-body">${renderJSONViewer(inputRaw)}</div>` : `<div class="block-body"><pre>${esc(inputDisplay)}</pre></div>`}`, inputRaw)}
           </div>`;
         break;
       }
@@ -493,13 +494,13 @@ function renderResponseBody(rawBody, mergedContent) {
   // Raw view
   html += `<div class="rb-pane rb-raw" id="${uid}-raw">`;
   html += copyBtnHtml(rawBody || '');
-  html += `<pre>${isJson && rawBody ? highlightJSON(rawBody) : esc(rawBody || '')}</pre>`;
+  html += `${isJson && rawBody ? renderJSONViewer(rawBody) : `<pre>${esc(rawBody || '')}</pre>`}`;
   html += `</div>`;
 
   // Merged view
   html += `<div class="rb-pane rb-merged" id="${uid}-merged" style="display:none">`;
   html += copyBtnHtml(mergedText);
-  html += `<pre>${highlightJSON(mergedText)}</pre>`;
+  html += `${renderJSONViewer(mergedText)}`;
   html += `</div>`;
 
   html += `</details>`;
@@ -525,7 +526,7 @@ function renderHeaders(headers, title) {
         ${esc(title)}
         ${copyBtnHtml(text)}
       </summary>
-      <pre>${highlightJSON(text)}</pre>
+      ${renderJSONViewer(text)}
     </details>`;
 }
 
@@ -538,8 +539,42 @@ function renderRequestBody(body) {
         请求体
         ${copyBtnHtml(text)}
       </summary>
-      <pre>${highlightJSON(text)}</pre>
+      ${renderJSONViewer(text)}
     </details>`;
+}
+
+function renderRequestUrl(record) {
+  if (!record.path) return '';
+  const proxyCurl = buildCurl(record, record.path);
+  const upstreamCurl = record.upstreamUrl ? buildCurl(record, record.upstreamUrl) : '';
+  return `
+    <div class="request-url-card">
+      <div class="card-title">请求地址</div>
+      <div class="request-url-row">
+        <code class="request-url-text">${esc(record.method)} ${esc(record.path)}</code>
+        <button class="copy-btn curl-copy-btn" onclick="copyFromBtn(event)" data-copy="${escAttr(proxyCurl)}" title="复制为 cURL">curl</button>
+      </div>
+      ${record.upstreamUrl ? `
+      <div class="card-title" style="margin-top:10px">代理地址</div>
+      <div class="request-url-row">
+        <code class="request-url-text">${esc(record.method)} ${esc(record.upstreamUrl)}</code>
+        <button class="copy-btn curl-copy-btn" onclick="copyFromBtn(event)" data-copy="${escAttr(upstreamCurl)}" title="复制为 cURL">curl</button>
+      </div>` : ''}
+    </div>`;
+}
+
+function buildCurl(record, url) {
+  const headers = record.requestHeaders || {};
+  let cmd = `curl -X ${record.method} '${url}'`;
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === 'accept-encoding') continue;
+    cmd += ` \\\n  -H '${k}: ${v}'`;
+  }
+  if (record.requestBody && record.method !== 'GET' && record.method !== 'HEAD') {
+    const body = typeof record.requestBody === 'string' ? record.requestBody : JSON.stringify(record.requestBody);
+    cmd += ` \\\n  -d '${body.replace(/'/g, "'\\''")}'`;
+  }
+  return cmd;
 }
 
 // ---- JSON Highlighting ----
@@ -550,6 +585,74 @@ function highlightJSON(jsonStr) {
   } catch {
     return esc(jsonStr);
   }
+}
+
+// ---- Monaco JSON Viewer ----
+
+window._monacoPending = [];
+window._monacoEditors = {};
+
+function createMonacoEditor(containerId, jsonStr) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); } catch { return; }
+  const pretty = JSON.stringify(parsed, null, 2);
+
+  // Dispose previous editor on same container
+  if (window._monacoEditors[containerId]) {
+    window._monacoEditors[containerId].dispose();
+  }
+
+  const editor = monaco.editor.create(el, {
+    value: pretty,
+    language: 'json',
+    readOnly: true,
+    folding: true,
+    minimap: { enabled: false },
+    lineNumbers: 'off',
+    scrollBeyondLastLine: false,
+    wordWrap: 'on',
+    automaticLayout: true,
+    renderLineHighlight: 'none',
+    glyphMargin: false,
+    lineDecorationsWidth: 4,
+    lineNumbersMinChars: 0,
+    overviewRulerLanes: 0,
+    hideCursorInOverviewRuler: true,
+    overviewRulerBorder: false,
+    scrollbar: { alwaysConsumeMouseWheel: false },
+    theme: 'vs',
+  });
+
+  editor.onDidContentSizeChange(() => {
+    const h = Math.min(editor.getContentHeight(), 500);
+    el.style.height = h + 'px';
+    editor.layout();
+  });
+
+  window._monacoEditors[containerId] = editor;
+}
+
+function initMonacoEditors() {
+  for (const item of window._monacoPending) {
+    createMonacoEditor(item.containerId, item.jsonStr);
+  }
+  window._monacoPending = [];
+}
+
+function renderJSONViewer(jsonStr) {
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); } catch { return `<pre>${esc(jsonStr)}</pre>`; }
+  const id = 'mc' + Math.random().toString(36).slice(2, 8);
+  const queue = { containerId: id, jsonStr };
+  if (window._monacoReady) {
+    setTimeout(() => createMonacoEditor(id, jsonStr), 0);
+  } else {
+    window._monacoPending.push(queue);
+  }
+  return `<div class="monaco-json-container" id="${id}"></div>`;
 }
 
 // ---- Copy ----
@@ -607,6 +710,7 @@ window.toggleChunk = function(chunkId) {
     if (toggle) toggle.textContent = '展开';
   }
 };
+
 
 // ---- Export ----
 

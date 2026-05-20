@@ -79,6 +79,7 @@ export interface RecordedRequest {
   timestamp: string;
   method: string;
   path: string;
+  upstreamUrl: string;
   requestHeaders: Record<string, string>;
   responseHeaders?: Record<string, string>;
   requestBody: unknown;
