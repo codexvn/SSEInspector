@@ -569,6 +569,66 @@ details.reasoning .reasoning-content {
   color: var(--text-muted);
   background: #ede7f6;
   border-bottom: 1px solid #d1c4e9;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-result-id:hover .tool-tip-popup,
+.tool-tip-popup:hover {
+  display: block;
+}
+
+.tool-tip-badge {
+  font-family: var(--font-sans);
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: #eef2ff;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid #c7d2fe;
+}
+
+.tool-tip-popup {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 12px 16px;
+  min-width: 320px;
+  max-width: 480px;
+}
+
+.tool-tip-name {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #4338ca;
+  background: #eef2ff;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid #c7d2fe;
+  margin-bottom: 8px;
+}
+
+.tool-tip-popup .monaco-json-container {
+  min-width: 300px;
+  min-height: 60px;
+  max-height: 300px;
+}
+
+.tool-tip-none {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .tool-result-item pre {

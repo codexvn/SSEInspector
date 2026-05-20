@@ -227,7 +227,7 @@ function renderDetail(record) {
   document.getElementById('detail-request-url').innerHTML = renderRequestUrl(record);
   document.getElementById('detail-request-headers').innerHTML = renderHeaders(record.requestHeaders, '请求头');
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
-  document.getElementById('detail-user-request').innerHTML = renderUserRequest(record.requestBody);
+  document.getElementById('detail-user-request').innerHTML = renderUserRequest(record);
 
   const contentDiv = document.getElementById('detail-content');
 
@@ -395,10 +395,35 @@ function extractUserRequest(body) {
   return result;
 }
 
-function renderUserRequest(body) {
+function renderUserRequest(record) {
+  const body = record.requestBody;
   if (!body) return '';
   const ur = extractUserRequest(body);
   if (!ur.text && ur.toolResults.length === 0) return '';
+
+  // Build tool call lookup from messages history
+  const toolCalls = {};
+  const msgs = body.messages || [];
+  for (const msg of msgs) {
+    if (msg.role === 'assistant') {
+      // Anthropic format: content array with tool_use blocks
+      if (Array.isArray(msg.content)) {
+        for (const b of msg.content) {
+          if (b.type === 'tool_use' && b.id) {
+            toolCalls[b.id] = { name: b.name, input: b.input };
+          }
+        }
+      }
+      // OpenAI format: tool_calls array
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (tc.id) {
+            toolCalls[tc.id] = { name: tc.function?.name, input: tc.function?.arguments };
+          }
+        }
+      }
+    }
+  }
 
   let html = `<div class="card user-request-card">`;
   html += `<span class="section-label label-user-request">用户请求</span>`;
@@ -411,10 +436,17 @@ function renderUserRequest(body) {
     html += `<div class="tool-results-section">`;
     html += `<div class="tool-results-label">工具调用结果 (${ur.toolResults.length})</div>`;
     for (const tr of ur.toolResults) {
+      const tc = toolCalls[tr.id];
+      const inputStr = tc ? (typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input)) : '';
+      const tipHtml = tc ? `<span class="tool-tip-name">${esc(tc.name)}</span>${renderJSONViewer(inputStr)}` : '<span class="tool-tip-none">未找到对应调用</span>';
       html += `
         <div class="tool-result-item">
-          <div class="tool-result-id">${esc(tr.id)}</div>
-          ${wrapCopy(`<pre><code>${esc(tr.content)}</code></pre>`, tr.content)}
+          <div class="tool-result-id">
+            <span>${esc(tr.id)}</span>
+            ${tc ? `<span class="tool-tip-badge">${esc(tc.name || 'tool')}</span>` : ''}
+            <div class="tool-tip-popup">${tipHtml}</div>
+          </div>
+          ${wrapCopy(`${renderJSONViewer(tr.content)}`, tr.content)}
         </div>`;
     }
     html += `</div>`;
