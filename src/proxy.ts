@@ -51,6 +51,9 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
   }
 
   const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
+
+  console.log(`[passthrough] ${req.method} ${req.path} -> ${targetUrl}`);
+
   const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
   delete upstreamHeaders['host'];
   delete upstreamHeaders['content-length'];
@@ -110,6 +113,8 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
   const startTime = Date.now();
   const isStreaming = (req.body as Record<string, unknown>)?.stream === true;
   const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
+
+  console.log(`[proxy] ${req.method} ${req.path} -> ${targetUrl}`);
 
   const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
   delete upstreamHeaders['host'];

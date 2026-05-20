@@ -80,7 +80,6 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/') || req.path === '/') return next();
   // Skip static file requests
   if (req.method === 'GET' && req.path.includes('.')) return next();
-  console.log(`[passthrough] ${req.method} ${req.path}`);
   handlePassthrough(req, res);
 });
 
