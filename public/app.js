@@ -493,7 +493,7 @@ function renderResponseBody(rawBody, mergedContent) {
   // Raw view
   html += `<div class="rb-pane rb-raw" id="${uid}-raw">`;
   html += copyBtnHtml(rawBody || '');
-  html += `${isJson && rawBody ? renderJSONViewer(rawBody) : (rawBody ? renderMonacoText(rawBody) : `<pre>${esc(rawBody || '')}</pre>`)}`;
+  html += `${isJson && rawBody ? renderJSONViewer(rawBody) : (rawBody ? renderMonacoText(rawBody, { wordWrap: 'off' }) : `<pre>${esc(rawBody || '')}</pre>`)}`;
   html += `</div>`;
 
   // Merged view
@@ -581,7 +581,7 @@ function buildCurl(record, url) {
 window._monacoPending = [];
 window._monacoEditors = {};
 
-function createMonacoEditor(containerId, value, mode) {
+function createMonacoEditor(containerId, value, mode, opts) {
   const el = document.getElementById(containerId);
   if (!el) return;
 
@@ -590,6 +590,7 @@ function createMonacoEditor(containerId, value, mode) {
   if (isJSON) {
     try { content = JSON.stringify(JSON.parse(value), null, 2); } catch { return; }
   }
+  opts = opts || {};
 
   // Dispose previous editor on same container
   if (window._monacoEditors[containerId]) {
@@ -601,10 +602,11 @@ function createMonacoEditor(containerId, value, mode) {
     language: isJSON ? 'json' : 'plaintext',
     readOnly: true,
     folding: isJSON,
+    fontSize: opts.fontSize,
     minimap: { enabled: false },
     lineNumbers: 'off',
     scrollBeyondLastLine: false,
-    wordWrap: 'on',
+    wordWrap: opts.wordWrap || 'on',
     automaticLayout: true,
     renderLineHighlight: 'none',
     glyphMargin: false,
@@ -613,7 +615,7 @@ function createMonacoEditor(containerId, value, mode) {
     overviewRulerLanes: 0,
     hideCursorInOverviewRuler: true,
     overviewRulerBorder: false,
-    scrollbar: { alwaysConsumeMouseWheel: false },
+    scrollbar: { alwaysConsumeMouseWheel: true },
     unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false, nonBasicAscii: false },
     theme: 'vs',
   });
@@ -629,7 +631,7 @@ function createMonacoEditor(containerId, value, mode) {
 
 function initMonacoEditors() {
   for (const item of window._monacoPending) {
-    createMonacoEditor(item.containerId, item.jsonStr, item.mode || 'json');
+    createMonacoEditor(item.containerId, item.jsonStr, item.mode || 'json', item.opts);
   }
   window._monacoPending = [];
 }
@@ -647,12 +649,12 @@ function renderJSONViewer(jsonStr) {
   return `<div class="monaco-json-container" id="${id}"></div>`;
 }
 
-function renderMonacoText(text) {
+function renderMonacoText(text, opts) {
   if (!text) return '';
   const id = 'mt' + Math.random().toString(36).slice(2, 8);
-  const queue = { containerId: id, jsonStr: text, mode: 'text' };
+  const queue = { containerId: id, jsonStr: text, mode: 'text', opts };
   if (window._monacoReady) {
-    setTimeout(() => createMonacoEditor(id, text, 'text'), 0);
+    setTimeout(() => createMonacoEditor(id, text, 'text', opts), 0);
   } else {
     window._monacoPending.push(queue);
   }
@@ -873,4 +875,5 @@ document.addEventListener('DOMContentLoaded', () => {
     state.searchQuery = e.target.value;
     if (!state.selectedId) renderList();
   });
+
 });
