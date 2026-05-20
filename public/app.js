@@ -163,7 +163,6 @@ async function showDetail(id) {
   if (summary) renderMetaFromSummary(summary);
 
   document.getElementById('detail-content').innerHTML = '<p style="color:var(--text-secondary)">加载中…</p>';
-  document.getElementById('detail-chunks').innerHTML = '';
 
   await fetchDetail(id);
 }
@@ -236,7 +235,8 @@ function renderDetail(record) {
     } else {
       contentDiv.innerHTML = '<p style="color:var(--accent);padding:20px 0;">● 等待第一块数据…</p>';
     }
-    document.getElementById('detail-chunks').innerHTML = '';
+    document.getElementById('detail-response-body').innerHTML = '';
+    document.getElementById('detail-response-headers').innerHTML = '';
     return;
   }
 
@@ -248,7 +248,6 @@ function renderDetail(record) {
     contentDiv.innerHTML = renderOpenAIContent(record.responseContent);
   }
 
-  document.getElementById('detail-chunks').innerHTML = renderChunks(record.chunks, record.apiType);
   document.getElementById('detail-response-body').innerHTML = renderResponseBody(record.responseBody, record.responseContent);
   document.getElementById('detail-response-headers').innerHTML = renderHeaders(record.responseHeaders, '响应头');
 }
@@ -344,40 +343,6 @@ function renderAnthropicContent(rc) {
   }
 
   html += `</div>`;
-  return html;
-}
-
-function renderChunks(chunks, apiType) {
-  if (!chunks || chunks.length === 0) return '';
-
-  const uid = 'c' + Math.random().toString(36).slice(2, 8);
-
-  let html = `
-    <details class="chunks-viewer">
-      <summary>原始 SSE 数据块 (${chunks.length})</summary>
-      <div class="chunks-list">`;
-
-  for (let i = 0; i < chunks.length; i++) {
-    const c = chunks[i];
-    const eventLabel = c.event || '-';
-    const dataStr = typeof c.data === 'string' ? c.data : JSON.stringify(c.data);
-    const prettyStr = typeof c.data === 'string' ? c.data : JSON.stringify(c.data, null, 2);
-    const oneLine = dataStr.length > 100 ? dataStr.slice(0, 100) + '…' : dataStr;
-    const chunkId = `${uid}-${i}`;
-    const isJson = typeof c.data !== 'string';
-
-    html += `
-      <div class="chunk-row" id="${chunkId}">
-        <span class="chunk-index">#${i + 1}</span>
-        <span class="chunk-event">${esc(eventLabel)}</span>
-        <code class="chunk-oneline">${esc(oneLine)}</code>
-        <code class="chunk-full" style="display:none">${isJson ? highlightJSON(prettyStr) : esc(prettyStr)}</code>
-        ${copyBtnHtml(dataStr)}
-        <span class="chunk-toggle" onclick="toggleChunk('${chunkId}')">展开</span>
-      </div>`;
-  }
-
-  html += `</div></details>`;
   return html;
 }
 
@@ -577,16 +542,6 @@ function buildCurl(record, url) {
   return cmd;
 }
 
-// ---- JSON Highlighting ----
-
-function highlightJSON(jsonStr) {
-  try {
-    return hljs.highlight(jsonStr, { language: 'json' }).value;
-  } catch {
-    return esc(jsonStr);
-  }
-}
-
 // ---- Monaco JSON Viewer ----
 
 window._monacoPending = [];
@@ -688,29 +643,6 @@ window.copyFromBtn = async function(event) {
     setTimeout(() => btn.classList.remove('copied'), 1500);
   }
 };
-
-// ---- Chunk Toggle ----
-
-window.toggleChunk = function(chunkId) {
-  const row = document.getElementById(chunkId);
-  if (!row) return;
-  const oneline = row.querySelector('.chunk-oneline');
-  const full = row.querySelector('.chunk-full');
-  const toggle = row.querySelector('.chunk-toggle');
-  if (!oneline || !full) return;
-  if (full.style.display === 'none') {
-    oneline.style.display = 'none';
-    full.style.display = '';
-    row.classList.add('expanded');
-    if (toggle) toggle.textContent = '收起';
-  } else {
-    oneline.style.display = '';
-    full.style.display = 'none';
-    row.classList.remove('expanded');
-    if (toggle) toggle.textContent = '展开';
-  }
-};
-
 
 // ---- Export ----
 

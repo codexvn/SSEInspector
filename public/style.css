@@ -279,9 +279,11 @@ body {
   background: var(--bg-card);
   border-radius: var(--radius);
   padding: 18px 20px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   box-shadow: var(--shadow-sm);
 }
+
+.card + .card { margin-top: -8px; }
 
 .card-title {
   font-size: 0.78rem;
@@ -299,12 +301,14 @@ body {
 /* ---- Reasoning ---- */
 
 details.reasoning {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   background: var(--bg-card);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
+
+details.reasoning + details.reasoning { margin-top: -8px; }
 
 details.reasoning > summary {
   cursor: pointer;
@@ -340,7 +344,7 @@ details.reasoning .reasoning-content {
 
 /* ---- Anthropic Content Blocks ---- */
 
-.content-blocks { display: flex; flex-direction: column; gap: 12px; }
+.content-blocks { display: flex; flex-direction: column; gap: 8px; }
 
 .anthropic-block {
   background: var(--bg-card);
@@ -375,8 +379,10 @@ details.reasoning .reasoning-content {
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
+
+.tool-call + .tool-call { margin-top: -6px; }
 
 .tool-call .tool-header {
   padding: 10px 16px;
@@ -486,87 +492,6 @@ details.reasoning .reasoning-content {
   color: var(--text-primary);
 }
 
-/* ---- Chunks Viewer ---- */
-
-details.chunks-viewer {
-  margin-top: 14px;
-  background: var(--bg-card);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-}
-
-details.chunks-viewer > summary {
-  cursor: pointer;
-  padding: 12px 18px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  user-select: none;
-}
-
-.chunks-list {
-  border-top: 1px solid var(--border);
-  max-height: 500px;
-  overflow-y: auto;
-}
-
-.chunk-row {
-  padding: 6px 18px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  gap: 14px;
-  align-items: baseline;
-  font-size: 0.78rem;
-  cursor: pointer;
-  transition: background .1s;
-}
-.chunk-row:hover { background: var(--bg); }
-.chunk-row.expanded { background: var(--bg); }
-.chunk-row:last-child { border-bottom: none; }
-
-.chunk-index {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.73rem;
-  min-width: 32px;
-  flex-shrink: 0;
-}
-
-.chunk-event {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  min-width: 120px;
-  flex-shrink: 0;
-  text-transform: lowercase;
-}
-
-.chunk-oneline {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: 0.73rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chunk-full {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  line-height: 1.45;
-  background: var(--bg-inset);
-  padding: 8px 10px;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 300px;
-  overflow-y: auto;
-  color: var(--text-primary);
-}
-
 /* ---- Section Labels ---- */
 
 .section-label {
@@ -609,7 +534,7 @@ details.chunks-viewer > summary {
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   border-left: 4px solid #ab47bc;
 }
 
@@ -661,7 +586,7 @@ details.chunks-viewer > summary {
 /* ---- Request Body ---- */
 
 details.req-body {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   background: var(--bg-card);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
@@ -740,8 +665,10 @@ details.req-body pre {
   max-height: 400px;
   overflow-y: auto;
   color: var(--text-primary);
-}details.headers-viewer {
-  margin-bottom: 14px;
+}
+
+details.headers-viewer {
+  margin-bottom: 12px;
   background: var(--bg-card);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
@@ -820,8 +747,7 @@ details.headers-viewer pre {
 details.req-body > summary > .copy-btn,
 details.headers-viewer > summary > .copy-btn,
 details.reasoning > summary > .copy-btn,
-.rb-pane:hover .copy-btn,
-.chunk-row:hover .copy-btn { opacity: 1; }
+.rb-pane:hover .copy-btn { opacity: 1; }
 
 /* Inline copy buttons in summaries */
 details.req-body > summary,
@@ -843,7 +769,7 @@ details.reasoning > summary > .copy-btn {
   background: var(--bg-card);
   border-radius: var(--radius);
   padding: 14px 18px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   box-shadow: var(--shadow-sm);
 }
 
@@ -897,20 +823,6 @@ details.reasoning > summary > .copy-btn {
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-
-/* ---- Chunk Toggle ---- */
-
-.chunk-toggle {
-  font-size: 0.72rem;
-  color: var(--accent);
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  user-select: none;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.chunk-toggle:hover { background: rgba(99, 102, 241, .1); }
 
 /* ---- Responsive ---- */
 
