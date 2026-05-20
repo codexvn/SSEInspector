@@ -268,7 +268,7 @@ function renderOpenAIContent(rc) {
             <span class="section-label label-reasoning">推理过程</span>
             ${copyBtnHtml(msg.reasoning_content)}
           </summary>
-          <div class="reasoning-content">${esc(msg.reasoning_content)}</div>
+          <div class="reasoning-content">${renderMonacoText(msg.reasoning_content)}</div>
         </details>`;
     }
 
@@ -276,7 +276,7 @@ function renderOpenAIContent(rc) {
       html += wrapCopy(`
         <div class="card">
           <span class="section-label label-content">回答</span>
-          <div class="message-content">${esc(msg.content)}</div>
+          <div class="message-content">${renderMonacoText(msg.content)}</div>
         </div>`, msg.content);
     }
 
@@ -320,14 +320,14 @@ function renderAnthropicContent(rc) {
         html += wrapCopy(`
           <div class="anthropic-block text">
             <div class="block-header">文本块 #${block.index}</div>
-            <div class="block-body"><div class="message-content">${esc(block.text || '')}</div></div>
+            <div class="block-body"><div class="message-content">${renderMonacoText(block.text || '')}</div></div>
           </div>`, block.text || '');
         break;
       case 'thinking':
         html += wrapCopy(`
           <div class="anthropic-block thinking">
             <div class="block-header">思考块 #${block.index}</div>
-            <div class="block-body" style="font-family:var(--font-mono);font-size:0.82rem;white-space:pre-wrap;">${esc(block.thinking || '')}</div>
+            <div class="block-body">${renderMonacoText(block.thinking || '')}</div>
           </div>`, block.thinking || '');
         break;
       case 'tool_use': {
@@ -429,7 +429,7 @@ function renderUserRequest(record) {
   html += `<span class="section-label label-user-request">用户请求</span>`;
 
   if (ur.text) {
-    html += wrapCopy(`<div class="message-content">${esc(ur.text)}</div>`, ur.text);
+    html += wrapCopy(`<div class="message-content">${renderMonacoText(ur.text)}</div>`, ur.text);
   }
 
   if (ur.toolResults.length > 0) {
@@ -493,7 +493,7 @@ function renderResponseBody(rawBody, mergedContent) {
   // Raw view
   html += `<div class="rb-pane rb-raw" id="${uid}-raw">`;
   html += copyBtnHtml(rawBody || '');
-  html += `${isJson && rawBody ? renderJSONViewer(rawBody) : `<pre>${esc(rawBody || '')}</pre>`}`;
+  html += `${isJson && rawBody ? renderJSONViewer(rawBody) : (rawBody ? renderMonacoText(rawBody) : `<pre>${esc(rawBody || '')}</pre>`)}`;
   html += `</div>`;
 
   // Merged view
@@ -581,13 +581,15 @@ function buildCurl(record, url) {
 window._monacoPending = [];
 window._monacoEditors = {};
 
-function createMonacoEditor(containerId, jsonStr) {
+function createMonacoEditor(containerId, value, mode) {
   const el = document.getElementById(containerId);
   if (!el) return;
 
-  let parsed;
-  try { parsed = JSON.parse(jsonStr); } catch { return; }
-  const pretty = JSON.stringify(parsed, null, 2);
+  const isJSON = mode !== 'text';
+  let content = value;
+  if (isJSON) {
+    try { content = JSON.stringify(JSON.parse(value), null, 2); } catch { return; }
+  }
 
   // Dispose previous editor on same container
   if (window._monacoEditors[containerId]) {
@@ -595,10 +597,10 @@ function createMonacoEditor(containerId, jsonStr) {
   }
 
   const editor = monaco.editor.create(el, {
-    value: pretty,
-    language: 'json',
+    value: content,
+    language: isJSON ? 'json' : 'plaintext',
     readOnly: true,
-    folding: true,
+    folding: isJSON,
     minimap: { enabled: false },
     lineNumbers: 'off',
     scrollBeyondLastLine: false,
@@ -612,6 +614,7 @@ function createMonacoEditor(containerId, jsonStr) {
     hideCursorInOverviewRuler: true,
     overviewRulerBorder: false,
     scrollbar: { alwaysConsumeMouseWheel: false },
+    unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false, nonBasicAscii: false },
     theme: 'vs',
   });
 
@@ -626,7 +629,7 @@ function createMonacoEditor(containerId, jsonStr) {
 
 function initMonacoEditors() {
   for (const item of window._monacoPending) {
-    createMonacoEditor(item.containerId, item.jsonStr);
+    createMonacoEditor(item.containerId, item.jsonStr, item.mode || 'json');
   }
   window._monacoPending = [];
 }
@@ -635,9 +638,21 @@ function renderJSONViewer(jsonStr) {
   let parsed;
   try { parsed = JSON.parse(jsonStr); } catch { return `<pre>${esc(jsonStr)}</pre>`; }
   const id = 'mc' + Math.random().toString(36).slice(2, 8);
-  const queue = { containerId: id, jsonStr };
+  const queue = { containerId: id, jsonStr, mode: 'json' };
   if (window._monacoReady) {
-    setTimeout(() => createMonacoEditor(id, jsonStr), 0);
+    setTimeout(() => createMonacoEditor(id, jsonStr, 'json'), 0);
+  } else {
+    window._monacoPending.push(queue);
+  }
+  return `<div class="monaco-json-container" id="${id}"></div>`;
+}
+
+function renderMonacoText(text) {
+  if (!text) return '';
+  const id = 'mt' + Math.random().toString(36).slice(2, 8);
+  const queue = { containerId: id, jsonStr: text, mode: 'text' };
+  if (window._monacoReady) {
+    setTimeout(() => createMonacoEditor(id, text, 'text'), 0);
   } else {
     window._monacoPending.push(queue);
   }

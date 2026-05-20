@@ -320,26 +320,17 @@ details.reasoning > summary {
 }
 
 details.reasoning .reasoning-content {
-  background: var(--bg-inset);
-  padding: 14px 18px;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  line-height: 1.55;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 400px;
-  overflow-y: auto;
   border-top: 1px solid var(--border);
+}
+
+details.reasoning .reasoning-content .monaco-json-container {
+  min-height: 60px;
 }
 
 /* ---- Content ---- */
 
 .message-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.7;
-  font-size: 0.9rem;
+  min-height: 40px;
 }
 
 /* ---- Anthropic Content Blocks ---- */
