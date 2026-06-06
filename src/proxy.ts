@@ -146,7 +146,18 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
     if (!isStreaming || !upstreamRes.body) {
       // --- Non-streaming ---
-      const json = await upstreamRes.json();
+      const rawText = await upstreamRes.text();
+      console.error(`[proxy] response status=${responseStatus} contentType=${responseHeaders['content-type']} body=${rawText.slice(0, 2000)}`);
+      let json: unknown;
+      try {
+        json = JSON.parse(rawText);
+      } catch (parseErr) {
+        console.error(`[proxy] JSON parse failed:`, (parseErr as Error).message);
+        res.status(responseStatus).send(rawText);
+        upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime,
+          `JSON parse error: ${(parseErr as Error).message}, raw=${rawText}`));
+        return;
+      }
       res.json(json);
 
       const record = baseRecord(id, req, responseStatus, false, apiType, startTime);
