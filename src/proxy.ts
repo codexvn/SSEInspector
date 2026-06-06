@@ -95,7 +95,8 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
       res.end();
     }
   } catch (err) {
-    console.error(`[passthrough] error:`, String(err));
+    const e = err as Error & { cause?: Error; code?: string };
+    console.error(`[passthrough] error: ${e.message} (code=${e.code}) targetUrl=${targetUrl} cause=${e.cause?.message ?? e.cause ?? '-'}`);
     if (!res.headersSent) {
       res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
     }
@@ -118,6 +119,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
   const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
   delete upstreamHeaders['host'];
+  delete upstreamHeaders['content-length'];
   // Anthropic requires x-api-key header
   if (apiType === 'anthropic' && req.headers['x-api-key']) {
     upstreamHeaders['x-api-key'] = req.headers['x-api-key'] as string;
@@ -194,6 +196,8 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       upsertRecord(record);
     }
   } catch (err) {
+    const e = err as Error & { cause?: Error; code?: string };
+    console.error(`[proxy] error: ${e.message} (code=${e.code}) targetUrl=${targetUrl} cause=${e.cause?.message ?? e.cause ?? '-'}`);
     if (!res.headersSent) {
       res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
     }

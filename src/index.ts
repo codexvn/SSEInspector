@@ -83,7 +83,7 @@ app.use((req, res, next) => {
   handlePassthrough(req, res);
 });
 
-app.listen(PORT, () => {
-  console.log(`SSEInspector running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
   console.log(`Proxying to ${UPSTREAM_URL}`);
 });
