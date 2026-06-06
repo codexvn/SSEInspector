@@ -68,11 +68,11 @@ app.get('/api/events', (req, res) => {
   });
 });
 
-// Proxy: OpenAI-compatible
-app.post('/v1/chat/completions', (req, res) => handleProxy(req, res, 'openai'));
+// Proxy: OpenAI-compatible（任何以 /chat/completions 结尾的 POST 请求）
+app.post(/\/chat\/completions$/, (req, res) => handleProxy(req, res, 'openai'));
 
-// Proxy: Anthropic
-app.post('/v1/messages', (req, res) => handleProxy(req, res, 'anthropic'));
+// Proxy: Anthropic（任何以 /messages 结尾的 POST 请求）
+app.post(/\/messages$/, (req, res) => handleProxy(req, res, 'anthropic'));
 
 // Catch-all: proxy unmatched requests to upstream
 app.use((req, res, next) => {
