@@ -115,6 +115,7 @@ export interface RecordSummary {
   model: string;
   status: number;
   preview: string;
+  searchText?: string;
   streaming: boolean;
   durationMs: number;
   state: RecordState;

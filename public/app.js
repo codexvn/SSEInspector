@@ -109,12 +109,15 @@ function filteredRequests() {
   const q = state.searchQuery.toLowerCase().trim();
   if (!q) return state.requests;
   return state.requests.filter(r => {
-    return (
-      r.model.toLowerCase().includes(q) ||
-      r.preview.toLowerCase().includes(q) ||
-      r.apiType.includes(q) ||
-      String(r.status).includes(q)
-    );
+    const searchText = r.searchText || [
+      r.id,
+      r.model,
+      r.preview,
+      r.apiType,
+      r.status,
+      r.state,
+    ].map(v => String(v ?? '').toLowerCase()).join('\n');
+    return searchText.includes(q);
   });
 }
 

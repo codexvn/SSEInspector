@@ -4,6 +4,7 @@ import { RecordedRequest, RecordSummary } from './types';
 const records = new Map<string, RecordedRequest>();
 const emitter = new EventEmitter();
 emitter.setMaxListeners(100);
+const MAX_SEARCH_TEXT_LENGTH = 50000;
 
 function toSummary(r: RecordedRequest): RecordSummary {
   const model = r.responseContent?.model ?? (r.requestBody as Record<string, unknown>)?.model as string ?? 'unknown';
@@ -38,12 +39,47 @@ function toSummary(r: RecordedRequest): RecordSummary {
     model,
     status: r.responseStatus,
     preview: preview.slice(0, 80),
+    searchText: buildSearchText(r, model, preview),
     streaming: r.streaming,
     durationMs: r.durationMs,
     state: r.state,
     apiType: r.apiType,
     streamText: r.streamText,
   };
+}
+
+function buildSearchText(r: RecordedRequest, model: string, preview: string): string {
+  const parts = [
+    r.id,
+    r.method,
+    r.path,
+    r.upstreamUrl,
+    r.apiType,
+    String(r.responseStatus),
+    r.state,
+    model,
+    preview,
+    r.error ?? '',
+    stringifyForSearch(r.requestBody),
+    stringifyForSearch(r.responseContent),
+    r.responseBody ?? '',
+  ];
+
+  return parts
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, MAX_SEARCH_TEXT_LENGTH)
+    .toLowerCase();
+}
+
+function stringifyForSearch(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function extractOutputText(output: unknown[]): string {
