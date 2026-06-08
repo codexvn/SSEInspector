@@ -38,6 +38,20 @@ export interface MergedResponse {
   usage?: MergedUsage;
 }
 
+export interface OpenAIResponsesMergedResponse {
+  id: string;
+  object: string;
+  created?: number;
+  created_at?: number;
+  model: string;
+  status?: string;
+  output_text?: string;
+  reasoning_text?: string;
+  output?: unknown[];
+  tool_calls?: MergedToolCall[];
+  usage?: Record<string, unknown>;
+}
+
 // ---- Anthropic types ----
 
 export interface AnthropicContentBlock {
@@ -66,7 +80,7 @@ export interface AnthropicMergedResponse {
 // ---- Shared ----
 
 export type ApiType = 'openai' | 'anthropic';
-export type MergedContent = MergedResponse | AnthropicMergedResponse;
+export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
 type RecordState = 'streaming' | 'done' | 'error';
 
 export interface SSEChunk {

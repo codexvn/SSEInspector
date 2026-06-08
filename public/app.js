@@ -255,6 +255,10 @@ function renderDetail(record) {
 }
 
 function renderOpenAIContent(rc) {
+  if (isOpenAIResponsesContent(rc)) {
+    return renderOpenAIResponsesContent(rc);
+  }
+
   let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 用量: ${formatUsage(rc.usage)}</div></div>`;
 
   for (const choice of rc.choices || []) {
@@ -309,6 +313,94 @@ function renderOpenAIContent(rc) {
   return html;
 }
 
+function isOpenAIResponsesContent(rc) {
+  return rc && (rc.object === 'response' || rc.output_text !== undefined || Array.isArray(rc.output));
+}
+
+function extractResponsesOutputText(output) {
+  if (!Array.isArray(output)) return '';
+  const parts = [];
+
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    if (typeof item.text === 'string') parts.push(item.text);
+    if (!Array.isArray(item.content)) continue;
+
+    for (const content of item.content) {
+      if (content && typeof content === 'object' && typeof content.text === 'string') {
+        parts.push(content.text);
+      }
+    }
+  }
+
+  return parts.join('');
+}
+
+function extractResponsesToolCalls(output) {
+  if (!Array.isArray(output)) return [];
+  const toolCalls = [];
+
+  output.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || item.type !== 'function_call') return;
+    toolCalls.push({
+      index,
+      id: item.id || item.call_id || '',
+      type: item.type,
+      function: {
+        name: item.name || '',
+        arguments: item.arguments || '',
+      },
+    });
+  });
+
+  return toolCalls;
+}
+
+function renderOpenAIResponsesContent(rc) {
+  const answer = rc.output_text || extractResponsesOutputText(rc.output);
+  const toolCalls = rc.tool_calls || extractResponsesToolCalls(rc.output);
+  let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 状态: <span class="kv">${esc(rc.status || 'unknown')}</span> | 用量: ${formatUsage(rc.usage)}</div></div>`;
+
+  if (rc.reasoning_text) {
+    html += `
+      <details class="reasoning" open>
+        <summary>
+          <span class="section-label label-reasoning">推理过程</span>
+          ${copyBtnHtml(rc.reasoning_text)}
+        </summary>
+        <div class="reasoning-content">${renderMonacoText(rc.reasoning_text)}</div>
+      </details>`;
+  }
+
+  if (answer) {
+    html += wrapCopy(`
+      <div class="card">
+        <span class="section-label label-content">回答</span>
+        <div class="message-content">${renderMonacoText(answer)}</div>
+      </div>`, answer);
+  }
+
+  if (toolCalls.length > 0) {
+    html += `<span class="section-label label-tool">工具调用</span>`;
+    for (const tc of toolCalls) {
+      const toolName = tc.function?.name || `tool_${tc.index}`;
+      let argsDisplay = tc.function?.arguments || '';
+      try { argsDisplay = JSON.stringify(JSON.parse(argsDisplay), null, 2); } catch { /* keep raw */ }
+      html += `
+        <div class="tool-call">
+          <div class="tool-header"><span class="tool-name">${esc(toolName)}</span><span class="tool-id">${esc(tc.id || '')}</span></div>
+          ${wrapCopy(`${renderJSONViewer(argsDisplay)}`, argsDisplay)}
+        </div>`;
+    }
+  }
+
+  if (!answer && !rc.reasoning_text && toolCalls.length === 0) {
+    html += `<div class="card"><span class="section-label label-content">响应</span>${renderJSONViewer(JSON.stringify(rc, null, 2))}</div>`;
+  }
+
+  return html;
+}
+
 function renderAnthropicContent(rc) {
   const stopClass = `kv-stop kv-stop-${esc(rc.stop_reason || 'none')}`;
   let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 角色: <span class="kv kv-role">${esc(rc.role || '')}</span> | 停止原因: <span class="kv ${stopClass}">${esc(rc.stop_reason || '无')}</span></div></div>`;
@@ -349,9 +441,40 @@ function renderAnthropicContent(rc) {
 }
 
 function extractUserRequest(body) {
-  if (!body || !body.messages) return { text: null, toolResults: [] };
+  if (!body) return { text: null, toolResults: [] };
 
   const result = { text: null, toolResults: [] };
+
+  if (!body.messages && body.input !== undefined) {
+    if (typeof body.input === 'string') {
+      result.text = body.input;
+    } else if (Array.isArray(body.input)) {
+      const lastUser = [...body.input].reverse().find(item => item && item.role === 'user');
+      const content = lastUser?.content ?? body.input;
+      if (typeof content === 'string') {
+        result.text = content;
+      } else if (Array.isArray(content)) {
+        const parts = [];
+        for (const block of content) {
+          if (typeof block === 'string') {
+            parts.push(block);
+          } else if (block && typeof block === 'object') {
+            if (typeof block.text === 'string') parts.push(block.text);
+            if (typeof block.content === 'string') parts.push(block.content);
+          }
+        }
+        result.text = parts.join('\n');
+      } else {
+        result.text = JSON.stringify(content);
+      }
+    } else {
+      result.text = JSON.stringify(body.input);
+    }
+    return result;
+  }
+
+  if (!body.messages) return result;
+
   const msgs = body.messages;
 
   // Find the last user message index
@@ -750,6 +873,27 @@ function formatExport(record) {
     }
   } else {
     out += `## 响应\n\n`;
+    if (isOpenAIResponsesContent(rc)) {
+      const answer = rc.output_text || extractResponsesOutputText(rc.output);
+      const toolCalls = rc.tool_calls || extractResponsesToolCalls(rc.output);
+      if (rc.reasoning_text) {
+        out += `### 推理过程\n\n\`\`\`\n${rc.reasoning_text}\n\`\`\`\n\n`;
+      }
+      if (answer) {
+        out += `### 回答\n\n${answer}\n\n`;
+      }
+      if (toolCalls.length > 0) {
+        out += `### 工具调用\n\n`;
+        for (const tc of toolCalls) {
+          const toolName = tc.function?.name || `tool_${tc.index}`;
+          let argsStr = tc.function?.arguments || '';
+          try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch { /* keep raw */ }
+          out += `#### ${toolName}\n\n\`\`\`json\n${argsStr}\n\`\`\`\n\n`;
+        }
+      }
+      return out;
+    }
+
     const choices = rc.choices || [];
     for (const choice of choices) {
       const msg = choice.message;

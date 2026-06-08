@@ -1,5 +1,6 @@
 import {
   MergedResponse, MergedToolCall,
+  OpenAIResponsesMergedResponse,
   AnthropicMergedResponse, AnthropicContentBlock,
   ApiType, SSEChunk,
 } from './types';
@@ -27,6 +28,34 @@ interface OpenAIDelta {
     finish_reason?: string | null;
   }[];
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+}
+
+interface OpenAIResponsesEvent {
+  type?: string;
+  sequence_number?: number;
+  response?: {
+    id?: string;
+    object?: string;
+    created?: number;
+    created_at?: number;
+    model?: string;
+    status?: string;
+    output?: unknown[];
+    output_text?: string;
+    usage?: Record<string, unknown>;
+  };
+  item?: {
+    id?: string;
+    type?: string;
+    name?: string;
+    arguments?: string;
+    call_id?: string;
+  };
+  output_index?: number;
+  content_index?: number;
+  delta?: string;
+  text?: string;
+  arguments?: string;
 }
 
 function parseOpenAISSE(rawText: string): SSEChunk[] {
@@ -90,6 +119,129 @@ function mergeOpenAIDeltas(deltas: OpenAIDelta[]): MergedResponse | null {
       if (cc.finish_reason != null) target.finish_reason = cc.finish_reason;
     }
   }
+  return merged;
+}
+
+function isOpenAIResponsesEvent(data: unknown): data is OpenAIResponsesEvent {
+  return typeof data === 'object'
+    && data !== null
+    && typeof (data as OpenAIResponsesEvent).type === 'string'
+    && (data as OpenAIResponsesEvent).type!.startsWith('response.');
+}
+
+function extractResponseOutputText(output: unknown): string {
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
+
+  for (const item of output) {
+    if (typeof item !== 'object' || item === null) continue;
+    const typedItem = item as { type?: string; content?: unknown[]; text?: string };
+
+    if (typeof typedItem.text === 'string') {
+      parts.push(typedItem.text);
+    }
+
+    if (Array.isArray(typedItem.content)) {
+      for (const content of typedItem.content) {
+        if (typeof content !== 'object' || content === null) continue;
+        const typedContent = content as { type?: string; text?: string };
+        if (typeof typedContent.text === 'string') {
+          parts.push(typedContent.text);
+        }
+      }
+    }
+  }
+
+  return parts.join('');
+}
+
+function mergeOpenAIResponsesEvents(events: OpenAIResponsesEvent[]): OpenAIResponsesMergedResponse | null {
+  if (events.length === 0) return null;
+
+  const merged: OpenAIResponsesMergedResponse = {
+    id: '',
+    object: 'response',
+    model: '',
+    output_text: '',
+    reasoning_text: '',
+    tool_calls: [],
+  };
+
+  for (const ev of events) {
+    if (ev.response) {
+      if (ev.response.id) merged.id = ev.response.id;
+      if (ev.response.object) merged.object = ev.response.object;
+      if (ev.response.created !== undefined) merged.created = ev.response.created;
+      if (ev.response.created_at !== undefined) merged.created_at = ev.response.created_at;
+      if (ev.response.model) merged.model = ev.response.model;
+      if (ev.response.status) merged.status = ev.response.status;
+      if (ev.response.usage) merged.usage = ev.response.usage;
+      if (ev.response.output) {
+        merged.output = ev.response.output;
+        const outputText = extractResponseOutputText(ev.response.output);
+        if (outputText) merged.output_text = outputText;
+      }
+      if (ev.response.output_text) merged.output_text = ev.response.output_text;
+    }
+
+    switch (ev.type) {
+      case 'response.output_text.delta':
+        merged.output_text = (merged.output_text || '') + (ev.delta || '');
+        break;
+      case 'response.output_text.done':
+        if (ev.text && (!merged.output_text || merged.output_text.length < ev.text.length)) {
+          merged.output_text = ev.text;
+        }
+        break;
+      case 'response.reasoning_text.delta':
+      case 'response.reasoning.delta':
+        merged.reasoning_text = (merged.reasoning_text || '') + (ev.delta || '');
+        break;
+      case 'response.reasoning_text.done':
+        if (ev.text && (!merged.reasoning_text || merged.reasoning_text.length < ev.text.length)) {
+          merged.reasoning_text = ev.text;
+        }
+        break;
+      case 'response.function_call_arguments.delta': {
+        const index = ev.output_index ?? 0;
+        if (!merged.tool_calls) merged.tool_calls = [];
+        if (!merged.tool_calls[index]) {
+          merged.tool_calls[index] = { index, function: { arguments: '' } };
+        }
+        merged.tool_calls[index].function.arguments += ev.delta || '';
+        break;
+      }
+      case 'response.function_call_arguments.done': {
+        const index = ev.output_index ?? 0;
+        if (!merged.tool_calls) merged.tool_calls = [];
+        if (!merged.tool_calls[index]) {
+          merged.tool_calls[index] = { index, function: { arguments: '' } };
+        }
+        if (ev.arguments) merged.tool_calls[index].function.arguments = ev.arguments;
+        break;
+      }
+      case 'response.output_item.added':
+      case 'response.output_item.done': {
+        if (ev.item?.type === 'function_call') {
+          const index = ev.output_index ?? merged.tool_calls?.length ?? 0;
+          if (!merged.tool_calls) merged.tool_calls = [];
+          if (!merged.tool_calls[index]) {
+            merged.tool_calls[index] = { index, function: { arguments: '' } };
+          }
+          const toolCall = merged.tool_calls[index];
+          if (ev.item.id || ev.item.call_id) toolCall.id = ev.item.id || ev.item.call_id;
+          toolCall.type = ev.item.type;
+          if (ev.item.name) toolCall.function.name = ev.item.name;
+          if (ev.item.arguments) toolCall.function.arguments = ev.item.arguments;
+        }
+        break;
+      }
+    }
+  }
+
+  if (!merged.reasoning_text) delete merged.reasoning_text;
+  if (!merged.tool_calls?.length) delete merged.tool_calls;
+
   return merged;
 }
 
@@ -255,9 +407,12 @@ export function parseSSE(rawText: string, apiType: ApiType): SSEChunk[] {
   return apiType === 'anthropic' ? parseAnthropicSSE(rawText) : parseOpenAISSE(rawText);
 }
 
-export function mergeChunks(chunks: SSEChunk[], apiType: ApiType): MergedResponse | AnthropicMergedResponse | null {
+export function mergeChunks(chunks: SSEChunk[], apiType: ApiType): MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse | null {
   if (apiType === 'anthropic') {
     return mergeAnthropicEvents(chunks);
+  }
+  if (chunks.some(c => isOpenAIResponsesEvent(c.data))) {
+    return mergeOpenAIResponsesEvents(chunks.map(c => c.data as OpenAIResponsesEvent));
   }
   return mergeOpenAIDeltas(chunks.map(c => c.data as OpenAIDelta));
 }

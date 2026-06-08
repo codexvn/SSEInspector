@@ -71,6 +71,9 @@ app.get('/api/events', (req, res) => {
 // Proxy: OpenAI-compatible（任何以 /chat/completions 结尾的 POST 请求）
 app.post(/\/chat\/completions$/, (req, res) => handleProxy(req, res, 'openai'));
 
+// Proxy: OpenAI Responses API（任何以 /responses 结尾的 POST 请求）
+app.post(/\/responses$/, (req, res) => handleProxy(req, res, 'openai'));
+
 // Proxy: Anthropic（任何以 /messages 结尾的 POST 请求）
 app.post(/\/messages$/, (req, res) => handleProxy(req, res, 'anthropic'));
 

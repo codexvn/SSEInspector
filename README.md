@@ -6,7 +6,7 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 
 ## 功能
 
-- 代理 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 接口
+- 代理 OpenAI (`/v1/chat/completions`、`/v1/responses`) 和 Anthropic (`/v1/messages`) 接口
 - SSE 流式 delta 自动合并为完整响应
 - **Monaco Editor** 展示 JSON（VS Code 原生代码折叠，词级展开/收起）
 - 推理过程、回答正文、思考块、工具调用可视化展示
@@ -56,6 +56,7 @@ curl http://localhost:3000/v1/chat/completions \
 | 路径 | 处理方式 |
 |------|---------|
 | `POST /v1/chat/completions` | 代理 + 记录（OpenAI 格式） |
+| `POST /v1/responses` | 代理 + 记录（OpenAI Responses 格式） |
 | `POST /v1/messages` | 代理 + 记录（Anthropic 格式） |
 | 其他路径 | 透明代理，不记录 |
 
