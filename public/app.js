@@ -191,13 +191,26 @@ function navigateDetail(delta) {
 
 async function fetchDetail(id) {
   const contentDiv = document.getElementById('detail-content');
+  let record;
+
   try {
     const res = await fetch('/api/requests/' + id);
-    if (!res.ok) throw new Error('Not found');
-    const record = await res.json();
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 500)}`);
+    }
+    record = await res.json();
+  } catch (err) {
+    console.error('[detail] fetch failed', { id, error: err });
+    contentDiv.innerHTML = '<p style="color:var(--error)">加载失败：请求详情失败，详见浏览器控制台</p>';
+    return;
+  }
+
+  try {
     renderDetail(record);
-  } catch {
-    contentDiv.innerHTML = '<p style="color:var(--error)">加载失败</p>';
+  } catch (err) {
+    console.error('[detail] render failed', { id, record, error: err });
+    contentDiv.innerHTML = '<p style="color:var(--error)">加载失败：详情渲染异常，详见浏览器控制台</p>';
   }
 }
 
@@ -287,9 +300,10 @@ function renderOpenAIContent(rc) {
         </div>`, msg.content);
     }
 
-    if (msg.tool_calls && msg.tool_calls.length > 0) {
+    const toolCalls = normalizeToolCalls(msg.tool_calls);
+    if (toolCalls.length > 0) {
       html += `<span class="section-label label-tool">工具调用</span>`;
-      for (const tc of msg.tool_calls) {
+      for (const tc of toolCalls) {
         const toolName = tc.function?.name || `tool_${tc.index}`;
         let argsDisplay;
         let argsRaw;
@@ -359,9 +373,24 @@ function extractResponsesToolCalls(output) {
   return toolCalls;
 }
 
+function normalizeToolCalls(toolCalls) {
+  if (!Array.isArray(toolCalls)) return [];
+  return toolCalls
+    .filter(tc => tc && typeof tc === 'object')
+    .map((tc, fallbackIndex) => ({
+      index: tc.index ?? fallbackIndex,
+      id: tc.id || tc.call_id || '',
+      type: tc.type || 'function',
+      function: {
+        name: tc.function?.name || tc.name || '',
+        arguments: String(tc.function?.arguments ?? tc.arguments ?? ''),
+      },
+    }));
+}
+
 function renderOpenAIResponsesContent(rc) {
   const answer = rc.output_text || extractResponsesOutputText(rc.output);
-  const toolCalls = rc.tool_calls || extractResponsesToolCalls(rc.output);
+  const toolCalls = normalizeToolCalls(rc.tool_calls).concat(extractResponsesToolCalls(rc.output));
   let html = `<div class="card"><div class="card-title">模型: <span class="kv kv-model">${esc(rc.model || 'unknown')}</span> | 状态: <span class="kv">${esc(rc.status || 'unknown')}</span> | 用量: ${formatUsage(rc.usage)}</div></div>`;
 
   if (rc.reasoning_text) {
@@ -542,7 +571,7 @@ function renderUserRequest(record) {
       }
       // OpenAI format: tool_calls array
       if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
+        for (const tc of normalizeToolCalls(msg.tool_calls)) {
           if (tc.id) {
             toolCalls[tc.id] = { name: tc.function?.name, input: tc.function?.arguments };
           }
@@ -878,7 +907,7 @@ function formatExport(record) {
     out += `## 响应\n\n`;
     if (isOpenAIResponsesContent(rc)) {
       const answer = rc.output_text || extractResponsesOutputText(rc.output);
-      const toolCalls = rc.tool_calls || extractResponsesToolCalls(rc.output);
+      const toolCalls = normalizeToolCalls(rc.tool_calls).concat(extractResponsesToolCalls(rc.output));
       if (rc.reasoning_text) {
         out += `### 推理过程\n\n\`\`\`\n${rc.reasoning_text}\n\`\`\`\n\n`;
       }
@@ -907,9 +936,10 @@ function formatExport(record) {
       if (msg.content) {
         out += `### 回答\n\n${msg.content}\n\n`;
       }
-      if (msg.tool_calls && msg.tool_calls.length > 0) {
+      const toolCalls = normalizeToolCalls(msg.tool_calls);
+      if (toolCalls.length > 0) {
         out += `### 工具调用\n\n`;
-        for (const tc of msg.tool_calls) {
+        for (const tc of toolCalls) {
           const toolName = tc.function?.name || `tool_${tc.index}`;
           let argsStr = tc.function.arguments || '';
           try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch { /* keep raw */ }

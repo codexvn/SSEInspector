@@ -29,6 +29,7 @@ app.get('/api/requests', (_req, res) => {
 app.get('/api/requests/:id', (req, res) => {
   const record = getById(req.params.id);
   if (!record) {
+    console.warn(`[api] request not found: ${req.params.id}`);
     res.status(404).json({ error: 'Request not found' });
     return;
   }
