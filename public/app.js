@@ -1060,6 +1060,11 @@ function renderTokenBreakdown(tb) {
     html += '</div>';
   }
 
+  // tokenizer 来源
+  if (tb.tokenizerSource) {
+    html += `<div class="token-source">tokenizer: ${esc(tb.tokenizerSource)}</div>`;
+  }
+
   html += '</div>';
   return html;
 }

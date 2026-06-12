@@ -96,7 +96,8 @@ export interface TokenBreakdown {
   systemPrompt: number;       // 系统提示
   cacheRead: number;          // 缓存命中（来自 usage.cache_read_input_tokens）
   totalInput: number;         // messages + tools + systemPrompt（我们算的）
-  apiReportedInput: number;   // API 报告输入（Chat: prompt_tokens, Responses: input_tokens + cache_read, Anthropic: input_tokens）
+  apiReportedInput: number;   // API 报告输入（Chat: prompt_tokens, Responses: input_tokens + cache_read, Anthropic: input_tokens + cache_read）
+  tokenizerSource?: string;   // 使用的 tokenizer（如 "gpt-tokenizer"、"@anthropic-ai/tokenizer"、"hf-download"）
 }
 
 // ---- Shared ----

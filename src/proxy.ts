@@ -166,7 +166,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.responseHeaders = responseHeaders;
       record.responseBody = JSON.stringify(json);
       record.state = 'done';
-      record.tokenBreakdown = computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
       upsertRecord(record);
     } else {
       // --- Streaming ---
@@ -205,7 +205,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.chunks = chunks;
       record.responseBody = fullText;
       record.state = 'done';
-      record.tokenBreakdown = computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
       delete record.streamText;
       upsertRecord(record);
     }

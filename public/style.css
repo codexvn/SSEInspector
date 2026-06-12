@@ -975,6 +975,14 @@ details.reasoning > summary > .copy-btn {
   font-weight: 600;
 }
 
+.token-source {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+}
+
 /* ---- Responsive ---- */
 
 @media (max-width: 768px) {

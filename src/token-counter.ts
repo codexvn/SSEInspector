@@ -1,7 +1,9 @@
-import { encodeChat, encode } from 'gpt-tokenizer';
 import { ApiType, TokenBreakdown, OpenAIResponsesUsage, MergedContent } from './types';
+import { resolveTokenizer, ResolvedTokenizer } from './token-registry';
 
-const DEFAULT_MODEL = 'gpt-4';
+function sourceLabel(t: ResolvedTokenizer | null): string | undefined {
+  return t?.source;
+}
 
 // ---- 公共 helper ----
 
@@ -11,13 +13,25 @@ function extractTools(body: Record<string, unknown>): unknown[] {
   return [];
 }
 
-function countTokens(text: string): number {
-  try {
-    return encode(text).length;
-  } catch {
-    // 极端情况：文本无法编码时回退到字符估算
-    return Math.ceil(text.length / 3.5);
+let gptFallback: ((text: string) => number) | null = null;
+function getGptFallback(): (text: string) => number {
+  if (!gptFallback) {
+    const { encode } = require('gpt-tokenizer');
+    gptFallback = (text: string) => encode(text).length;
   }
+  return gptFallback;
+}
+
+// ---- 提取模型名 ----
+
+function extractModel(responseContent: MergedContent | null, body: Record<string, unknown>): string {
+  if (responseContent && typeof responseContent === 'object' && 'model' in responseContent) {
+    const m = (responseContent as unknown as Record<string, unknown>).model;
+    if (typeof m === 'string' && m) return m;
+  }
+  const bm = body.model;
+  if (typeof bm === 'string' && bm) return bm;
+  return 'unknown';
 }
 
 // ---- OpenAI Chat ----
@@ -26,10 +40,12 @@ function isOpenAIChatBody(body: Record<string, unknown>): boolean {
   return Array.isArray(body.messages);
 }
 
-function breakDownOpenAIChat(
+async function breakDownOpenAIChat(
   body: Record<string, unknown>,
   usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null,
-): TokenBreakdown | null {
+  tokenizer: ResolvedTokenizer | null,
+): Promise<TokenBreakdown | null> {
+  const encode = tokenizer?.encoder ?? getGptFallback();
   const allMessages = body.messages as { role: string; content: string }[];
 
   // 剥离 system 消息
@@ -37,92 +53,91 @@ function breakDownOpenAIChat(
   const chatMessages = allMessages.filter(m => m.role === 'user' || m.role === 'assistant');
   const toolMessages = allMessages.filter(m => m.role === 'tool');
 
-  // systemPrompt token
+  // systemPrompt
   let systemPrompt = 0;
-  if (systemMessages.length > 0) {
-    for (const msg of systemMessages) {
-      systemPrompt += countTokens(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
-    }
+  for (const msg of systemMessages) {
+    systemPrompt += encode(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
   }
 
-  // messages token（使用 encodeChat 含 role 开销，只处理 user/assistant）
+  // messages（使用 encodeChat 含 role 开销，只处理 user/assistant）
   let messages = 0;
   if (chatMessages.length > 0) {
     try {
+      const { encodeChat } = require('gpt-tokenizer');
       messages = encodeChat(
-        chatMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) })),
-        DEFAULT_MODEL,
+        chatMessages.map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        })),
+        'gpt-4',
       ).length;
     } catch {
       for (const msg of chatMessages) {
-        messages += countTokens(JSON.stringify(msg));
+        messages += encode(JSON.stringify(msg));
       }
     }
   }
 
-  // tool 消息（工具调用结果）单独计算
+  // tool 消息
   for (const msg of toolMessages) {
-    messages += countTokens(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
+    messages += encode(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
   }
 
-  // tools token
-  const tools = countTokens(JSON.stringify(extractTools(body)));
+  // tools
+  const tools = encode(JSON.stringify(extractTools(body)));
 
   const cacheRead = 0;
   const totalInput = messages + tools + systemPrompt;
   const apiReportedInput = usage?.prompt_tokens ?? 0;
 
-  return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput };
+  return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput, tokenizerSource: sourceLabel(tokenizer) };
 }
 
-// ---- OpenAI Responses API ----
+// ---- OpenAI Responses ----
 
 function isOpenAIResponsesBody(body: Record<string, unknown>): boolean {
   return body.input !== undefined;
 }
 
-function breakDownOpenAIResponses(
+async function breakDownOpenAIResponses(
   body: Record<string, unknown>,
   usage: OpenAIResponsesUsage | null,
-): TokenBreakdown | null {
+  tokenizer: ResolvedTokenizer | null,
+): Promise<TokenBreakdown | null> {
+  const encode = tokenizer?.encoder ?? getGptFallback();
   let messages = 0;
 
-  // body.input 是用户输入文本
   const input = body.input;
   if (typeof input === 'string') {
-    messages = encode(input).length;
+    messages = encode(input);
   } else if (typeof input === 'object' && input !== null) {
-    messages = encode(JSON.stringify(input)).length;
+    messages = encode(JSON.stringify(input));
   }
 
-  // body.instructions 是系统指令
   let systemPrompt = 0;
   const instructions = body.instructions;
   if (typeof instructions === 'string') {
-    systemPrompt = encode(instructions).length;
+    systemPrompt = encode(instructions);
   } else if (typeof instructions === 'object' && instructions !== null) {
-    systemPrompt = encode(JSON.stringify(instructions)).length;
+    systemPrompt = encode(JSON.stringify(instructions));
   }
 
-  // body.text 包含文本格式配置（如 text.format）
   let textFormatTokens = 0;
   const textConfig = body.text as Record<string, unknown> | undefined;
   if (textConfig && typeof textConfig === 'object') {
-    textFormatTokens = encode(JSON.stringify(textConfig)).length;
+    textFormatTokens = encode(JSON.stringify(textConfig));
   }
 
-  const tools = countTokens(JSON.stringify(extractTools(body)));
+  const tools = encode(JSON.stringify(extractTools(body)));
   const cacheRead = usage?.cache_read_input_tokens ?? 0;
   const totalInput = messages + tools + systemPrompt + textFormatTokens;
   const apiReportedInput = (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
 
   return {
-    messages,
-    tools,
+    messages, tools,
     systemPrompt: systemPrompt + textFormatTokens,
-    cacheRead,
-    totalInput,
-    apiReportedInput,
+    cacheRead, totalInput, apiReportedInput,
+    tokenizerSource: sourceLabel(tokenizer),
   };
 }
 
@@ -142,6 +157,7 @@ function stringifyAnthropicContent(content: unknown): string {
         if (b.type === 'text' && typeof b.text === 'string') return b.text;
         if (b.type === 'tool_result' || b.type === 'tool_use') return JSON.stringify(b);
         if (b.type === 'image') return '[image]';
+        if (b.type === 'thinking' && typeof b.thinking === 'string') return b.thinking;
       }
       return JSON.stringify(block);
     }).join('\n');
@@ -149,66 +165,67 @@ function stringifyAnthropicContent(content: unknown): string {
   return JSON.stringify(content);
 }
 
-function breakDownAnthropic(
+async function breakDownAnthropic(
   body: Record<string, unknown>,
   usage: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } | null,
-): TokenBreakdown | null {
+  tokenizer: ResolvedTokenizer | null,
+): Promise<TokenBreakdown | null> {
+  const encode = tokenizer?.encoder ?? getGptFallback();
   let messages = 0;
 
   const rawMessages = body.messages as { role: string; content: unknown }[] | undefined;
   if (rawMessages) {
     for (const msg of rawMessages) {
       const text = stringifyAnthropicContent(msg.content);
-      messages += countTokens(text);
+      messages += encode(text);
     }
   }
 
-  // system prompt
   let systemPrompt = 0;
   const system = body.system;
   if (typeof system === 'string') {
-    systemPrompt = encode(system).length;
+    systemPrompt = encode(system);
   } else if (Array.isArray(system)) {
-    systemPrompt = encode(JSON.stringify(system)).length;
+    systemPrompt = encode(JSON.stringify(system));
   } else if (typeof system === 'object' && system !== null) {
-    systemPrompt = encode(JSON.stringify(system)).length;
+    systemPrompt = encode(JSON.stringify(system));
   }
 
-  // tools
-  const tools = countTokens(JSON.stringify(extractTools(body)));
+  const tools = encode(JSON.stringify(extractTools(body)));
 
   const cacheRead = usage?.cache_read_input_tokens ?? 0;
   const totalInput = messages + tools + systemPrompt;
   const apiReportedInput = (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
 
-  return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput };
+  return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput, tokenizerSource: sourceLabel(tokenizer) };
 }
 
 // ---- 统一入口 ----
 
-export function computeTokenBreakdown(
+export async function computeTokenBreakdown(
   body: unknown,
   responseContent: MergedContent | null,
   apiType: ApiType,
-): TokenBreakdown | null {
+): Promise<TokenBreakdown | null> {
   if (!body || typeof body !== 'object') return null;
 
   const bodyObj = body as Record<string, unknown>;
+  const model = extractModel(responseContent, bodyObj);
+  const tokenizer = await resolveTokenizer(model);
 
   try {
     if (apiType === 'openai') {
-      // 区分 Chat Completions 和 Responses API
       if (isOpenAIResponsesBody(bodyObj)) {
         const usage = responseContent && 'usage' in responseContent
           ? (responseContent as { usage?: OpenAIResponsesUsage }).usage ?? null
           : null;
-        return breakDownOpenAIResponses(bodyObj, usage);
+        return await breakDownOpenAIResponses(bodyObj, usage, tokenizer);
       }
       if (isOpenAIChatBody(bodyObj)) {
         const usage = responseContent && 'usage' in responseContent
           ? (responseContent as { usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }).usage ?? null
           : null;
-        return breakDownOpenAIChat(bodyObj, usage);
+        return await breakDownOpenAIChat(bodyObj, usage, tokenizer);
       }
       return null;
     }
@@ -217,7 +234,7 @@ export function computeTokenBreakdown(
       const usage = responseContent && 'usage' in responseContent
         ? (responseContent as { usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } }).usage ?? null
         : null;
-      return breakDownAnthropic(bodyObj, usage);
+      return await breakDownAnthropic(bodyObj, usage, tokenizer);
     }
 
     return null;

@@ -7,6 +7,8 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@anthropic-ai/tokenizer": "^0.0.4",
+    "@lenml/tokenizers": "^3.7.2",
     "express": "^4.21.0",
     "gpt-tokenizer": "^2.9.0"
   },
