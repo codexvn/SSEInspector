@@ -49,7 +49,7 @@ export interface OpenAIResponsesMergedResponse {
   reasoning_text?: string;
   output?: unknown[];
   tool_calls?: MergedToolCall[];
-  usage?: Record<string, unknown>;
+  usage?: OpenAIResponsesUsage;
 }
 
 // ---- Anthropic types ----
@@ -74,7 +74,29 @@ export interface AnthropicMergedResponse {
   usage?: {
     input_tokens: number;
     output_tokens: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    service_tier?: string;
   };
+}
+
+// ---- Token breakdown ----
+
+export interface OpenAIResponsesUsage {
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  service_tier?: string;
+}
+
+export interface TokenBreakdown {
+  messages: number;           // 消息内容（不含 system）
+  tools: number;              // 工具定义
+  systemPrompt: number;       // 系统提示
+  cacheRead: number;          // 缓存命中（来自 usage.cache_read_input_tokens）
+  totalInput: number;         // messages + tools + systemPrompt（我们算的）
+  apiReportedInput: number;   // API 报告输入（Chat: prompt_tokens, Responses: input_tokens + cache_read, Anthropic: input_tokens）
 }
 
 // ---- Shared ----
@@ -107,6 +129,7 @@ export interface RecordedRequest {
   chunks: SSEChunk[];
   streamText?: string;
   responseBody?: string;
+  tokenBreakdown?: TokenBreakdown;
 }
 
 export interface RecordSummary {

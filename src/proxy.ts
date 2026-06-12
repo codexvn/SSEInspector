@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { upsertRecord } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
+import { computeTokenBreakdown } from './token-counter';
 import { RecordedRequest, ApiType, SSEChunk, MergedContent } from './types';
 
 const HOP_HEADERS = [
@@ -165,6 +166,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.responseHeaders = responseHeaders;
       record.responseBody = JSON.stringify(json);
       record.state = 'done';
+      record.tokenBreakdown = computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
       upsertRecord(record);
     } else {
       // --- Streaming ---
@@ -203,6 +205,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.chunks = chunks;
       record.responseBody = fullText;
       record.state = 'done';
+      record.tokenBreakdown = computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
       delete record.streamText;
       upsertRecord(record);
     }

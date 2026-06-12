@@ -240,6 +240,8 @@ function renderDetail(record) {
     ${record.state === 'streaming' ? '<span style="color:var(--accent);font-weight:600">● 传输中…</span>' : ''}
   `;
 
+  document.getElementById('detail-token-breakdown').innerHTML = renderTokenBreakdown(record.tokenBreakdown);
+
   document.getElementById('detail-request-url').innerHTML = renderRequestUrl(record);
   document.getElementById('detail-request-headers').innerHTML = renderHeaders(record.requestHeaders, '请求头');
   document.getElementById('detail-request').innerHTML = renderRequestBody(record.requestBody);
@@ -255,6 +257,7 @@ function renderDetail(record) {
     }
     document.getElementById('detail-response-body').innerHTML = '';
     document.getElementById('detail-response-headers').innerHTML = '';
+    document.getElementById('detail-token-breakdown').innerHTML = '';
     return;
   }
 
@@ -1000,6 +1003,65 @@ function formatUsage(usage) {
   if (!usage) return 'N/A';
   if (usage.input_tokens !== undefined) return `输入 ${usage.input_tokens} + 输出 ${usage.output_tokens}`;
   return `提示 ${usage.prompt_tokens || 0} + 生成 ${usage.completion_tokens || 0} = 总计 ${usage.total_tokens || 0}`;
+}
+
+function renderTokenBreakdown(tb) {
+  if (!tb || (tb.messages === 0 && tb.tools === 0 && tb.systemPrompt === 0)) return '';
+
+  const total = tb.totalInput;
+  const parts = [
+    { label: 'Messages', value: tb.messages, css: 'token-bar-msg' },
+    { label: 'Tools', value: tb.tools, css: 'token-bar-tool' },
+    { label: 'System', value: tb.systemPrompt, css: 'token-bar-sys' },
+  ].filter(p => p.value > 0);
+
+  let html = '<div class="token-card">';
+  html += '<div class="token-card-title">Token 用量 · 输入分解</div>';
+
+  // 堆叠条形图
+  html += '<div class="token-bar-wrap">';
+  for (const p of parts) {
+    const pct = total > 0 ? Math.round(p.value / total * 100) : 0;
+    html += `<div class="token-bar ${p.css}" style="width:${Math.max(pct, 1)}%" title="${p.label}: ${p.value.toLocaleString()} tokens (${pct}%)"></div>`;
+  }
+  html += '</div>';
+
+  // 图例 + 数值
+  html += '<div class="token-legend">';
+  for (const p of parts) {
+    const pct = total > 0 ? Math.round(p.value / total * 100) : 0;
+    html += `<div class="token-legend-item">`;
+    html += `<span class="token-dot ${p.css}"></span>`;
+    html += `<span class="token-label">${esc(p.label)}</span>`;
+    html += `<span class="token-value">${p.value.toLocaleString()} (${pct}%)</span>`;
+    html += `</div>`;
+  }
+  html += '</div>';
+
+  // 合计行
+  html += '<div class="token-total-row">';
+  html += `<span>输入合计（我们计算）</span><span>${total.toLocaleString()}</span>`;
+  html += '</div>';
+
+  // API 报告行
+  const reportedInput = tb.apiReportedInput;
+  if (reportedInput > 0) {
+    const diff = total > 0 ? Math.round(Math.abs(reportedInput - total) / Math.max(reportedInput, total) * 100) : 0;
+    const diffNote = diff > 5 ? ` <span class="token-diff">(偏差 ${diff}%)</span>` : '';
+    html += '<div class="token-total-row token-api-row">';
+    html += `<span>API 报告输入${diffNote}</span><span>${reportedInput.toLocaleString()}</span>`;
+    html += '</div>';
+  }
+
+  // 缓存命中行
+  if (tb.cacheRead > 0) {
+    html += '<div class="token-total-row token-cache-row">';
+    html += `<span>缓存命中 cache_read</span><span>${tb.cacheRead.toLocaleString()}</span>`;
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
 }
 
 function esc(s) {

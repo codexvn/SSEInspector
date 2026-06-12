@@ -1,6 +1,6 @@
 import {
   MergedResponse, MergedToolCall,
-  OpenAIResponsesMergedResponse,
+  OpenAIResponsesMergedResponse, OpenAIResponsesUsage,
   AnthropicMergedResponse, AnthropicContentBlock,
   ApiType, SSEChunk,
 } from './types';
@@ -175,7 +175,7 @@ function mergeOpenAIResponsesEvents(events: OpenAIResponsesEvent[]): OpenAIRespo
       if (ev.response.created_at !== undefined) merged.created_at = ev.response.created_at;
       if (ev.response.model) merged.model = ev.response.model;
       if (ev.response.status) merged.status = ev.response.status;
-      if (ev.response.usage) merged.usage = ev.response.usage;
+      if (ev.response.usage) merged.usage = ev.response.usage as unknown as OpenAIResponsesUsage;
       if (ev.response.output) {
         merged.output = ev.response.output;
         const outputText = extractResponseOutputText(ev.response.output);
