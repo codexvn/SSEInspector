@@ -136,13 +136,13 @@ async function loadFromHF(repo: string): Promise<{ encode: (text: string) => num
   return null;
 }
 
-async function getHFTokenizer(modelLower: string): Promise<Encoder | null> {
+async function getHFTokenizer(modelLower: string): Promise<{ encoder: Encoder; repo: string } | null> {
   for (const [key, repo] of Object.entries(MODEL_REPOS)) {
     if (!modelLower.includes(key)) continue;
 
     if (hfTokenizers.has(repo)) {
       const t = hfTokenizers.get(repo)!;
-      return (text: string) => t.encode(text).length;
+      return { encoder: (text: string) => t.encode(text).length, repo };
     }
 
     if (!hfLoading.has(repo)) {
@@ -153,7 +153,7 @@ async function getHFTokenizer(modelLower: string): Promise<Encoder | null> {
       }));
     }
     const t = await hfLoading.get(repo)!;
-    if (t) return (text: string) => t.encode(text).length;
+    if (t) return { encoder: (text: string) => t.encode(text).length, repo };
     return null;
   }
   return null;
@@ -174,7 +174,7 @@ function anthropicEncoder(): Encoder {
 
 export interface ResolvedTokenizer {
   encoder: Encoder;
-  source: 'gpt-tokenizer' | '@anthropic-ai/tokenizer' | 'hf-download';
+  source: string;   // "gpt-tokenizer" | "@anthropic-ai/tokenizer" | "hf: repo/name"
   modelLabel: string;
 }
 
@@ -205,9 +205,9 @@ export async function resolveTokenizer(model: string): Promise<ResolvedTokenizer
       result = { encoder: anthropicEncoder(), source: '@anthropic-ai/tokenizer', modelLabel: model };
       break;
     case 'hf': {
-      const enc = await getHFTokenizer(modelLower);
-      if (enc) {
-        result = { encoder: enc, source: 'hf-download', modelLabel: model };
+      const r = await getHFTokenizer(modelLower);
+      if (r) {
+        result = { encoder: r.encoder, source: `hf: ${r.repo}` as const, modelLabel: model };
       }
       break;
     }
