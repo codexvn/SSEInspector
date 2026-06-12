@@ -90,4 +90,5 @@ app.use((req, res, next) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
   console.log(`Proxying to ${UPSTREAM_URL}`);
+  if (process.env.HF_MIRROR) console.log(`HF mirror: ${process.env.HF_MIRROR}`);
 });
