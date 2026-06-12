@@ -1055,8 +1055,11 @@ function renderTokenBreakdown(tb) {
 
   // 缓存命中行
   if (tb.cacheRead > 0) {
+    const hitRate = tb.apiReportedInput > 0
+      ? Math.round(tb.cacheRead / tb.apiReportedInput * 100)
+      : 0;
     html += '<div class="token-total-row token-cache-row">';
-    html += `<span>缓存命中 cache_read</span><span>${tb.cacheRead.toLocaleString()}</span>`;
+    html += `<span>缓存命中 cache_read</span><span>${tb.cacheRead.toLocaleString()} (命中率 ${hitRate}%)</span>`;
     html += '</div>';
   }
 
