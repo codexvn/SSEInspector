@@ -10,9 +10,9 @@ type Encoder = (text: string) => number;
 // ---- 镜像 ----
 
 const HF_MIRRORS = [
-  process.env.HF_MIRROR,
+  process.env.HF_MIRROR || 'https://hf-mirror.com/',
   'https://huggingface.co/',
-].filter(Boolean) as string[];
+] as string[];
 
 // ---- 模型名→HuggingFace repo ----
 //
