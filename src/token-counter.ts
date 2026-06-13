@@ -42,7 +42,12 @@ function isOpenAIChatBody(body: Record<string, unknown>): boolean {
 
 async function breakDownOpenAIChat(
   body: Record<string, unknown>,
-  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null,
+  usage: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number; cache_miss_tokens?: number };
+  } | null,
   tokenizer: ResolvedTokenizer | null,
 ): Promise<TokenBreakdown | null> {
   const encode = tokenizer?.encoder ?? getGptFallback();
@@ -86,8 +91,9 @@ async function breakDownOpenAIChat(
   // tools
   const tools = encode(JSON.stringify(extractTools(body)));
 
-  const cacheRead = 0;
+  const cacheRead = usage?.prompt_tokens_details?.cached_tokens ?? 0;
   const totalInput = messages + tools + systemPrompt;
+  // OpenAI Chat 的 prompt_tokens 已包含缓存的 token，无需额外加上
   const apiReportedInput = usage?.prompt_tokens ?? 0;
 
   return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput, tokenizerSource: sourceLabel(tokenizer) };
@@ -223,7 +229,14 @@ export async function computeTokenBreakdown(
       }
       if (isOpenAIChatBody(bodyObj)) {
         const usage = responseContent && 'usage' in responseContent
-          ? (responseContent as { usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }).usage ?? null
+          ? (responseContent as {
+            usage?: {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+              prompt_tokens_details?: { cached_tokens?: number; cache_miss_tokens?: number };
+            }
+          }).usage ?? null
           : null;
         return await breakDownOpenAIChat(bodyObj, usage, tokenizer);
       }

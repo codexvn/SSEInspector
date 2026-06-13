@@ -27,7 +27,12 @@ interface OpenAIDelta {
     };
     finish_reason?: string | null;
   }[];
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number; cache_miss_tokens?: number };
+  };
 }
 
 interface OpenAIResponsesEvent {
