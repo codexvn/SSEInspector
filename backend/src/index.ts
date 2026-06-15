@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import express from 'express';
+import compression from 'compression';
 import path from 'path';
 import ViteExpress from 'vite-express';
 import { handleProxy, handlePassthrough } from './proxy';
@@ -29,6 +30,8 @@ function route(fn: (req: express.Request, res: express.Response) => Promise<void
 async function start() {
   await initDb();
   const app = express();
+
+  app.use(compression());
 
   app.use(express.json({ limit: '10mb' }));
 

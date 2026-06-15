@@ -250,7 +250,6 @@ async function doExport() {
       </div>
 
       <HeadersViewer title="请求头" :headers="record.requestHeaders" />
-      <HeadersViewer title="响应头" :headers="record.responseHeaders ?? {}" />
 
       <!-- 请求体 -->
       <details class="details-card" v-if="record.requestBody">
@@ -373,6 +372,9 @@ async function doExport() {
           </div>
         </template>
       </div>
+
+      <!-- 响应头 -->
+      <HeadersViewer title="响应头" :headers="record.responseHeaders ?? {}" />
 
       <!-- 响应体（原始 / 合并双 tab） -->
       <details class="details-card" v-if="record.responseBody">
