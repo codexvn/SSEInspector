@@ -47,10 +47,10 @@ function fmtTime(iso: string) {
     <div class="top-bar">
       <div class="stats">
         <span>总计 {{ store.total }}</span>
-        <span>OpenAI {{ openaiCount }}</span>
-        <span>Anthropic {{ anthropicCount }}</span>
-        <span class="stat-streaming">进行中 {{ streamingCount }}</span>
-        <span>错误 {{ errorCount }}</span>
+        <span>OpenAI {{ openaiCount }} <span class="stat-hint">(本页)</span></span>
+        <span>Anthropic {{ anthropicCount }} <span class="stat-hint">(本页)</span></span>
+        <span class="stat-streaming">进行中 {{ streamingCount }} <span class="stat-hint">(本页)</span></span>
+        <span>错误 {{ errorCount }} <span class="stat-hint">(本页)</span></span>
       </div>
       <div class="top-actions">
         <input v-model="searchQuery" placeholder="搜索路径、模型、请求、响应…" class="search-input" />
@@ -117,6 +117,7 @@ function fmtTime(iso: string) {
 .stats { display: flex; gap: 20px; font-size: 0.82rem; color: var(--text-secondary); font-weight: 500; }
 .stats span { white-space: nowrap; }
 .stat-streaming { color: var(--accent); }
+.stat-hint { color: var(--text-muted); font-size: 0.7rem; }
 .top-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .search-input {
   padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
