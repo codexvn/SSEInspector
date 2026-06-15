@@ -9,7 +9,6 @@ import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
 import StreamLive from '../components/StreamLive.vue'
-import Pagination from '../components/Pagination.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -206,9 +205,9 @@ async function doExport() {
       <button class="btn-back" @click="router.push({ name: 'list' })">&larr; 返回列表</button>
       <button v-if="record" class="btn-export" @click="doExport">导出</button>
       <div class="detail-nav">
-        <button class="btn-nav" :disabled="!store.items.length" @click="navigate(1)">&uarr; 上一条</button>
-        <span class="detail-nav-pos">{{ store.items.findIndex(r => r.id === id) + 1 }} / {{ store.items.length }}</span>
-        <button class="btn-nav" :disabled="!store.items.length" @click="navigate(-1)">&darr; 下一条</button>
+        <button class="btn-nav" :disabled="!store.total" @click="navigate(1)">&uarr; 上一条</button>
+        <span class="detail-nav-pos">{{ store.items.findIndex(r => r.id === id) + 1 }} / {{ store.total }}</span>
+        <button class="btn-nav" :disabled="!store.total" @click="navigate(-1)">&darr; 下一条</button>
       </div>
     </div>
 
@@ -374,7 +373,6 @@ async function doExport() {
         <JsonViewer :value="record.responseBody" :lang="record.responseBody.startsWith('{') ? 'json' : 'plaintext'" />
       </details>
 
-      <Pagination />
     </template>
   </div>
 </template>
