@@ -78,6 +78,12 @@ body {
 .kv-finish-tool_calls { background: #fef3c7; color: #92400e; border-color: #fde68a; }
 .kv-finish-content_filter { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
 
+.kv-stop { background: #f3f4f6; color: #4b5563; border: 1px solid #d1d5db; }
+.kv-stop-end_turn, .kv-stop-completed, .kv-stop-stop { background: #d1fae5; color: #065f46; border-color: #a7f3d0; }
+.kv-stop-tool_use { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+.kv-stop-max_tokens { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+.kv-stop-stop_sequence { background: #e5e7eb; color: #4b5563; border-color: #d1d5db; }
+
 /* ---- Section Labels ---- */
 
 .section-label {

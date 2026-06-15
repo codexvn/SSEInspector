@@ -59,26 +59,31 @@ const total = computed(() => tb.value?.totalInput ?? 0)
 }
 .title {
   font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-secondary); font-weight: 600; margin-bottom: 8px;
+  color: var(--text-secondary); font-weight: 600; margin-bottom: 12px;
 }
-.bar-wrap { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin-bottom: 10px; }
-.bar { height: 100%; }
+.bar-wrap { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #f1f3f5; margin-bottom: 14px; }
+.bar { height: 100%; min-width: 3px; transition: width .3s ease; }
 .bar.msg { background: #6366f1; }
 .bar.tool { background: #f59e0b; }
-.bar.sys { background: #22c55e; }
-.legend { display: flex; gap: 20px; margin-bottom: 8px; flex-wrap: wrap; }
-.legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; }
-.dot { width: 10px; height: 10px; border-radius: 2px; }
+.bar.sys { background: #10b981; }
+.legend { display: flex; gap: 20px; margin-bottom: 14px; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-primary); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .dot.msg { background: #6366f1; }
 .dot.tool { background: #f59e0b; }
-.dot.sys { background: #22c55e; }
-.legend-label { color: var(--text-secondary); }
-.legend-val { color: var(--text-secondary); margin-left: 4px; }
+.dot.sys { background: #10b981; }
+.legend-label { font-weight: 500; }
+.legend-val { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-secondary); }
 .total-row {
-  display: flex; justify-content: space-between; font-size: 0.8rem;
-  padding: 3px 0; border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 0.82rem; color: var(--text-primary);
+  border-top: 1px solid var(--border); font-family: var(--font-mono);
 }
-.api-row { color: var(--text-secondary); border-top: none; }
-.cache-row { color: var(--text-muted); border-top: none; }
-.source { font-size: 0.75rem; color: var(--text-secondary); margin-top: 4px; }
+.api-row { color: var(--text-secondary); font-size: 0.78rem; }
+.cache-row { color: var(--text-muted); font-size: 0.78rem; }
+.token-diff { color: var(--warning); font-weight: 600; }
+.source {
+  font-size: 0.68rem; color: var(--text-muted); text-align: right;
+  margin-top: 6px; font-family: var(--font-mono);
+}
 </style>

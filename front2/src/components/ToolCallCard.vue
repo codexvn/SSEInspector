@@ -88,6 +88,7 @@ function fmtArgs(args?: string): string {
 .tool-tip-name {
   display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
   font-weight: 700; color: #4338ca; background: #eef2ff; padding: 4px 10px;
-  border-radius: 5px; border: 1px solid #c7d2fe; margin-bottom: 6px;
+  border-radius: 5px; border: 1px solid #c7d2fe; margin-bottom: 8px;
 }
+.tool-tip-none { font-size: 0.75rem; color: var(--text-muted); font-style: italic; }
 </style>

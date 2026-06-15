@@ -17,8 +17,13 @@ function fmt(v: Record<string, string>): string {
 
 <style scoped>
 .headers-box {
-  background: var(--bg-card); border-radius: 8px; padding: 10px 14px;
-  margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 12px;
+  padding: 0;
 }
-summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; padding: 4px 0; }
+.headers-box summary {
+  cursor: pointer; padding: 12px 18px; font-size: 0.82rem;
+  font-weight: 600; color: var(--text-secondary); user-select: none;
+  position: relative;
+}
 </style>
