@@ -44,7 +44,12 @@ export function useMonaco() {
     return editor
   }
 
-  onUnmounted(() => { editor?.dispose(); editor = null })
+  onUnmounted(() => {
+    if (editor) {
+      editor.dispose()
+      editor = null
+    }
+  })
 
   return { create }
 }

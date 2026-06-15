@@ -1,20 +1,20 @@
 import { EventEmitter } from 'events';
-import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown } from './types';
+import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown, RecordState } from './types';
 import { AppDataSource } from './db';
 import { RequestEntity } from './entity/RequestEntity';
 import { ToolCall } from './entity/ToolCall';
-import { Not, IsNull } from 'typeorm';
+import { Not, IsNull, Repository } from 'typeorm';
 
 const emitter = new EventEmitter();
-emitter.setMaxListeners(100);
+emitter.setMaxListeners(500);
 
 // ---- 流式文本缓冲（内存 Map，临时存放流式进行中的 raw text） ----
 const streamBuf = new Map<string, string>();
 
 // ---- repository 懒加载 ----
 
-let _reqRepo: ReturnType<typeof AppDataSource.getRepository<RequestEntity>> | null = null;
-let _toolRepo: ReturnType<typeof AppDataSource.getRepository<ToolCall>> | null = null;
+let _reqRepo: Repository<RequestEntity> | null = null;
+let _toolRepo: Repository<ToolCall> | null = null;
 function reqRepo() { return _reqRepo ?? (_reqRepo = AppDataSource.getRepository(RequestEntity)); }
 function toolRepo() { return _toolRepo ?? (_toolRepo = AppDataSource.getRepository(ToolCall)); }
 
@@ -67,15 +67,15 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     responseHeaders: safeJsonParse(row.response_headers ?? null) as Record<string, string> | undefined,
     responseContent: safeJsonParse(row.response_content ?? null) as MergedContent | null,
     responseBody: row.response_body ?? undefined,
-    chunks: [],
     streaming: row.streaming === 1,
-    state: row.finished !== 'pending' ? 'done' : row.error ? 'error' : 'streaming',
+    state: deriveState(row.finished, row.error ?? null),
     streamText: streamBuf.get(row.id),
     responseStatus: row.status,
     durationMs: row.duration_ms,
     error: row.error ?? undefined,
     finished: row.finished,
     tokenBreakdown: (safeJsonParse(row.computed_tokens ?? null) as TokenBreakdown) ?? undefined,
+    apiUsage: row.api_usage ?? undefined,
   };
 }
 
@@ -88,7 +88,7 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     preview: row.preview ?? '',
     streaming: row.streaming === 1,
     durationMs: row.duration_ms,
-    state: row.finished !== 'pending' ? 'done' : row.error ? 'error' : 'streaming',
+    state: deriveState(row.finished, row.error ?? null),
     apiType: row.api_type as ApiType,
     streamText: streamBuf.get(row.id),
   };
@@ -97,6 +97,12 @@ function entityToSummary(row: RequestEntity): RecordSummary {
 function safeJsonParse(s: string | null): unknown {
   if (!s) return null;
   try { return JSON.parse(s); } catch { return null; }
+}
+
+function deriveState(finished: string, error: string | null): RecordState {
+  if (finished !== 'pending') return 'done';
+  if (error) return 'error';
+  return 'streaming';
 }
 
 // 列表查询的 select 列（跳过 blob，保证分页性能）
@@ -151,16 +157,11 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
       response_body: r.responseBody ?? undefined,
       computed_tokens: r.tokenBreakdown ? JSON.stringify(r.tokenBreakdown) : undefined,
-      api_usage: undefined,
+      api_usage: r.apiUsage ?? null,
     });
   }
 
   emitter.emit('update', summary);
-}
-
-/** 更新 api_usage 列（proxy 完成后调用） */
-export async function updateApiUsage(id: string, usage: unknown): Promise<void> {
-  await reqRepo().update({ id }, { api_usage: usage ? JSON.stringify(usage) : undefined });
 }
 
 /** 分页列表 */
@@ -208,17 +209,14 @@ export interface ToolCallEntry {
 export async function writeToolCalls(requestId: string, entries: ToolCallEntry[]): Promise<void> {
   if (entries.length === 0) return;
   const now = new Date().toISOString();
-  const repo = toolRepo();
-  for (const e of entries) {
-    await repo.save({
-      request_id: requestId,
-      tool_call_id: e.tool_call_id,
-      tool_name: e.tool_name,
-      arguments: e.arguments ?? undefined,
-      result: e.result ?? undefined,
-      created_at: now,
-    });
-  }
+  await toolRepo().save(entries.map(e => ({
+    request_id: requestId,
+    tool_call_id: e.tool_call_id,
+    tool_name: e.tool_name,
+    arguments: e.arguments ?? undefined,
+    result: e.result ?? undefined,
+    created_at: now,
+  })));
 }
 
 /** 回填 tool_calls 的 result 列（工具返回结果在下一轮请求的 requestBody 中携带） */

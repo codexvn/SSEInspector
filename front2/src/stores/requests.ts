@@ -15,7 +15,8 @@ export const useRequestsStore = defineStore('requests', () => {
 
   // ---- SSE ----
   let sseCleanup: (() => void) | null = null
-  /** 外部注册的 streaming→done 回调，供 DetailView 绑定刷新 */
+  /** 外部注册的 streaming→done 回调，供 DetailView 绑定刷新。
+   *  使用 ref 以便 Pinia 正确代理 store 上的赋值。 */
   const onStreamDone = ref<((id: string) => void) | null>(null)
 
   function startSSE() {

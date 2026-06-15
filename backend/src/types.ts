@@ -113,7 +113,7 @@ export interface TokenBreakdown {
 
 export type ApiType = 'openai' | 'anthropic';
 export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
-type RecordState = 'streaming' | 'done' | 'error';
+export type RecordState = 'streaming' | 'done' | 'error';
 
 export interface SSEChunk {
   event?: string;
@@ -136,11 +136,14 @@ export interface RecordedRequest {
   apiType: ApiType;
   error?: string;
   state: RecordState;
-  finished?: string;           // 'pending'|'ok'|'client_close'|'startup_fallback'，store 写入
-  chunks: SSEChunk[];
+  /** 'pending'|'ok'|'client_close'|'startup_fallback'，store 写入 */
+  finished?: string;
   streamText?: string;
   responseBody?: string;
+  /** Tokenizer 计算的输入分解（JSON TEXT 列 computed_tokens） */
   tokenBreakdown?: TokenBreakdown;
+  /** 接口原始 usage 对象（JSON TEXT 列 api_usage），字段因供应商而异 */
+  apiUsage?: string;
 }
 
 export interface RecordSummary {
@@ -149,7 +152,6 @@ export interface RecordSummary {
   model: string;
   status: number;
   preview: string;
-  searchText?: string;
   streaming: boolean;
   durationMs: number;
   state: RecordState;

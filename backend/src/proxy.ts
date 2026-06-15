@@ -1,13 +1,8 @@
 import { Request, Response } from 'express';
-import { upsertRecord, writeToolCalls, updateApiUsage, updateToolCallResults, ToolCallEntry } from './store';
+import { upsertRecord, writeToolCalls, updateToolCallResults, ToolCallEntry } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
-import { RecordedRequest, ApiType, SSEChunk, MergedContent } from './types';
-
-/** 从响应 JSON 中提取 usage 对象（字段因供应商而异） */
-function getUsage(json: unknown): unknown {
-  return (json as any)?.usage;
-}
+import { RecordedRequest, ApiType, MergedContent } from './types';
 
 const HOP_HEADERS = [
   'connection', 'keep-alive', 'transfer-encoding', 'te',
@@ -45,7 +40,6 @@ function baseRecord(
     apiType,
     error,
     state: error ? 'error' : streaming ? 'streaming' : 'done',
-    chunks: [],
   };
 }
 
@@ -55,30 +49,34 @@ function baseRecord(
  *  因此必须在 proxy 开始时检查，不能在请求完成时。 */
 async function backfillToolResults(requestBody: unknown, apiType: ApiType): Promise<void> {
   const updates: { tool_call_id: string; result: string }[] = [];
-  const msgList = (requestBody as Record<string, unknown>)?.messages as Record<string, unknown>[] | undefined;
-  if (!msgList) return;
+  const body = requestBody as Record<string, unknown> | undefined;
+  if (!body) return;
 
-  for (const msg of msgList) {
-    if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
-      const c = msg.content;
-      updates.push({
-        tool_call_id: String(msg.tool_call_id),
-        result: typeof c === 'string' ? c : JSON.stringify(c),
-      });
-    }
-    if (apiType === 'anthropic' && Array.isArray(msg.content)) {
-      for (const block of msg.content as Record<string, unknown>[]) {
-        if (block.type === 'tool_result' && block.tool_use_id) {
-          const c = block.content;
-          updates.push({
-            tool_call_id: String(block.tool_use_id),
-            result: typeof c === 'string' ? c : JSON.stringify(c),
-          });
+  // messages[] 格式（OpenAI Chat / Anthropic）
+  const msgList = body.messages as Record<string, unknown>[] | undefined;
+  const extractMsgs = (msgs: Record<string, unknown>[]) => {
+    for (const msg of msgs) {
+      if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
+        const c = msg.content;
+        updates.push({ tool_call_id: String(msg.tool_call_id), result: typeof c === 'string' ? c : JSON.stringify(c) });
+      }
+      if (apiType === 'anthropic' && Array.isArray(msg.content)) {
+        for (const block of msg.content as Record<string, unknown>[]) {
+          if (block.type === 'tool_result' && block.tool_use_id) {
+            const c = block.content;
+            updates.push({ tool_call_id: String(block.tool_use_id), result: typeof c === 'string' ? c : JSON.stringify(c) });
+          }
         }
       }
     }
-  }
-  await updateToolCallResults(updates);
+  };
+  if (msgList) extractMsgs(msgList);
+
+  // input[] 格式（Anthropic 新格式 / OpenAI Responses）
+  const input = body.input as Record<string, unknown>[] | undefined;
+  if (input) extractMsgs(input);
+
+  if (updates.length > 0) await updateToolCallResults(updates);
 }
 
 /** 从 responseContent 提取 tool_use（本轮模型发出的工具调用请求），
@@ -240,8 +238,8 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.state = 'done';
       record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
+      record.apiUsage = JSON.stringify((json as any)?.usage);
       await upsertRecord(record);
-      await updateApiUsage(id, getUsage(json));
       await writeToolCalls(id, extractToolCalls(json as MergedContent, apiType));
     } else {
       // --- Streaming ---
@@ -283,18 +281,16 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
 
       // Parse SSE, merge, record
       const fullText = Buffer.concat(rawChunks).toString('utf-8');
-      const chunks: SSEChunk[] = parseSSE(fullText, apiType);
-      const merged = mergeChunks(chunks, apiType);
+      const merged = mergeChunks(parseSSE(fullText, apiType), apiType);
 
       record.responseContent = merged;
-      record.chunks = chunks;
       record.responseBody = fullText;
       record.state = 'done';
       record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
+      record.apiUsage = JSON.stringify((merged as any)?.usage);
       delete record.streamText;
       await upsertRecord(record);
-      await updateApiUsage(id, getUsage(merged));
       await writeToolCalls(id, extractToolCalls(merged, apiType));
     }
   } catch (err) {
