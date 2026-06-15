@@ -16,5 +16,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.monaco-box { min-height: 40px; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+.monaco-box { min-height: 60px; border-radius: var(--radius-sm); }
 </style>

@@ -25,7 +25,6 @@ const isStreaming = computed(() => record.value?.state === 'streaming')
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
 
-// 监听 store SSE 更新当前记录的 streamText
 const streamText = computed(() => {
   const summary = store.items.find(r => r.id === id.value)
   return summary?.streamText
@@ -38,7 +37,6 @@ async function load() {
     const r = await store.loadDetail(id.value)
     if (!r) { error.value = '请求未找到'; return }
     record.value = r
-    // 加载工具调用
     try {
       const tc = await fetchToolCalls(r.id)
       toolCalls.value = tc.toolCalls ?? []
@@ -53,7 +51,6 @@ async function load() {
 onMounted(load)
 watch(id, load)
 
-// 键盘导航
 function onKeydown(e: KeyboardEvent) {
   if (e.target !== document.body) return
   if (e.key === 'ArrowLeft') navigate(1)
@@ -69,7 +66,6 @@ function navigate(delta: number) {
   if (next) router.push({ name: 'detail', params: { id: next.id } })
 }
 
-// ---- 内容渲染 helpers ----
 function fmtJson(val: unknown): string {
   if (typeof val === 'string') {
     try { return JSON.stringify(JSON.parse(val), null, 2) }
@@ -78,7 +74,6 @@ function fmtJson(val: unknown): string {
   return JSON.stringify(val, null, 2)
 }
 
-// 从 requestBody 提取用户输入
 function userInput(): string {
   const body = record.value?.requestBody as Record<string, unknown> | undefined
   const msgs = body?.messages as Record<string, unknown>[] | undefined
@@ -92,20 +87,21 @@ function userInput(): string {
   return ''
 }
 
-// 提取 tool results（来自 requestBody 的 tool 消息）
-function extractToolResults(): { tool_call_id: string; content: string }[] {
+function extractToolResults(): { tool_call_id: string; content: string; tool_name?: string }[] {
   const body = record.value?.requestBody as Record<string, unknown> | undefined
   const msgs = body?.messages as Record<string, unknown>[] | undefined
   if (!msgs) return []
-  const results: { tool_call_id: string; content: string }[] = []
+  const results: { tool_call_id: string; content: string; tool_name?: string }[] = []
   for (const msg of msgs) {
     if (isOpenAI.value && msg.role === 'tool' && msg.tool_call_id) {
-      results.push({ tool_call_id: String(msg.tool_call_id), content: fmtJson(msg.content) })
+      const tc = toolCalls.value.find(t => t.tool_call_id === String(msg.tool_call_id))
+      results.push({ tool_call_id: String(msg.tool_call_id), content: fmtJson(msg.content), tool_name: tc?.tool_name })
     }
     if (isAnthropic.value && Array.isArray(msg.content)) {
       for (const block of msg.content as Record<string, unknown>[]) {
         if (block.type === 'tool_result' && block.tool_use_id) {
-          results.push({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content) })
+          const tc = toolCalls.value.find(t => t.tool_call_id === String(block.tool_use_id))
+          results.push({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content), tool_name: tc?.tool_name })
         }
       }
     }
@@ -113,7 +109,6 @@ function extractToolResults(): { tool_call_id: string; content: string }[] {
   return results
 }
 
-// 获取 tool call 的 arguments/result 映射
 function getToolArgs(toolCallId: string): string | undefined {
   return toolCalls.value.find(t => t.tool_call_id === toolCallId)?.arguments
 }
@@ -121,7 +116,6 @@ function getToolResult(toolCallId: string): string | undefined {
   return toolCalls.value.find(t => t.tool_call_id === toolCallId)?.result
 }
 
-// cURL 生成
 function buildCurl(url: string): string {
   const r = record.value!
   const headers = r.requestHeaders ?? {}
@@ -162,37 +156,33 @@ async function doExport() {
 
 <template>
   <div class="detail-page">
-    <!-- 顶栏导航 -->
+    <!-- 导航栏 -->
     <div class="nav-bar">
-      <div class="nav-left">
-        <button @click="router.push({ name: 'list' })">&larr; 返回列表</button>
-        <button :disabled="!store.items.length" @click="navigate(1)">上一条</button>
-        <button :disabled="!store.items.length" @click="navigate(-1)">下一条</button>
-        <button v-if="record" @click="doExport">导出</button>
-      </div>
-      <div v-if="store.items.length" class="nav-pos">
-        {{ store.items.findIndex(r => r.id === id) + 1 }} / {{ store.items.length }}
+      <button class="btn-back" @click="router.push({ name: 'list' })">&larr; 返回列表</button>
+      <button v-if="record" class="btn-export" @click="doExport">导出</button>
+      <div class="detail-nav">
+        <button class="btn-nav" :disabled="!store.items.length" @click="navigate(1)">&uarr; 上一条</button>
+        <span class="detail-nav-pos">{{ store.items.findIndex(r => r.id === id) + 1 }} / {{ store.items.length }}</span>
+        <button class="btn-nav" :disabled="!store.items.length" @click="navigate(-1)">&darr; 下一条</button>
       </div>
     </div>
 
-    <!-- 加载 / 错误状态 -->
     <div v-if="loading && !record" class="status-msg">加载中…</div>
-    <div v-else-if="error" class="status-msg error">{{ error }}</div>
+    <div v-else-if="error" class="status-msg" style="color:var(--error)">{{ error }}</div>
 
     <template v-if="record">
-      <!-- Meta 栏 -->
-      <div class="meta-bar">
+      <!-- Meta -->
+      <div class="detail-meta">
         <span>ID: {{ record.id }}</span>
         <span>时间: {{ new Date(record.timestamp).toLocaleString('zh-CN') }}</span>
         <span>API: <span :class="`badge badge-${isOpenAI ? 'openai' : 'anthropic'}`">{{ isOpenAI ? 'OpenAI' : 'Anthropic' }}</span></span>
         <span>流式: {{ record.streaming ? '是' : '否' }}</span>
         <span>耗时: {{ isStreaming ? '…' : record.durationMs + 'ms' }}</span>
         <span>状态: <span :class="`badge ${record.responseStatus < 300 ? 'badge-ok' : record.responseStatus < 500 ? 'badge-warn' : 'badge-err'}`">{{ record.responseStatus }}</span></span>
-        <span v-if="record.error" class="meta-error">错误: {{ record.error }}</span>
-        <span v-if="isStreaming" class="meta-streaming">● 传输中…</span>
+        <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
+        <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
 
-      <!-- Token -->
       <TokenBreakdown :record="record" />
 
       <!-- 请求地址 -->
@@ -200,36 +190,41 @@ async function doExport() {
         <div class="card-title">请求地址</div>
         <div class="url-row">
           <code>{{ record.method }} {{ record.path }}</code>
-          <button class="mini-btn" @click="copyText(buildCurl(record.path))">curl</button>
+          <button class="curl-btn" @click="copyText(buildCurl(record.path))">curl</button>
         </div>
-        <div class="url-row" style="margin-top:6px">
+        <div class="url-row" style="margin-top:10px">
           <code>{{ record.method }} {{ record.upstreamUrl }}</code>
-          <button class="mini-btn" @click="copyText(buildCurl(record.upstreamUrl))">curl</button>
+          <button class="curl-btn" @click="copyText(buildCurl(record.upstreamUrl))">curl</button>
         </div>
       </div>
 
-      <!-- 请求头 / 响应头 -->
       <HeadersViewer :headers="record.requestHeaders" title="请求头" />
       <HeadersViewer :headers="record.responseHeaders ?? {}" title="响应头" />
 
       <!-- 请求体 -->
-      <details v-if="record.requestBody" class="details-box">
+      <details class="card details-card" v-if="record.requestBody">
         <summary>请求体</summary>
         <JsonViewer :value="fmtJson(record.requestBody)" />
       </details>
 
       <!-- 用户请求 -->
-      <div v-if="userInput()" class="card user-card">
-        <div class="card-title">用户请求</div>
-        <div class="user-text">{{ userInput() }}</div>
+      <div v-if="userInput() || extractToolResults().length" class="user-card">
+        <span class="section-label" style="background:#f3e5f5;color:#7b1fa2;">用户请求</span>
+        <div v-if="userInput()" class="user-text">{{ userInput() }}</div>
 
-        <!-- Tool result -->
-        <div v-for="tr in extractToolResults()" :key="tr.tool_call_id" class="tool-result">
-          <div class="tool-result-id">
-            <span class="tool-result-id-text">{{ tr.tool_call_id }}</span>
-            <span v-if="getToolArgs(tr.tool_call_id)" class="badge badge-anthropic" style="font-size:0.7rem">{{ toolCalls.find(t => t.tool_call_id === tr.tool_call_id)?.tool_name }}</span>
+        <div v-if="extractToolResults().length" class="tool-results-section">
+          <div class="tool-results-label">工具调用结果 ({{ extractToolResults().length }})</div>
+          <div v-for="tr in extractToolResults()" :key="tr.tool_call_id" class="tool-result-item">
+            <div class="tool-result-id">
+              <span>{{ tr.tool_call_id }}</span>
+              <span v-if="tr.tool_name" class="tool-tip-badge">{{ tr.tool_name }}</span>
+              <div v-if="getToolArgs(tr.tool_call_id)" class="tool-tip-popup">
+                <div class="tool-tip-name">{{ tr.tool_name || 'tool' }}</div>
+                <JsonViewer :value="getToolArgs(tr.tool_call_id)!" />
+              </div>
+            </div>
+            <JsonViewer :value="tr.content" />
           </div>
-          <JsonViewer :value="tr.content" />
         </div>
       </div>
 
@@ -238,19 +233,23 @@ async function doExport() {
         <StreamLive :text="streamText" />
       </div>
 
-      <div v-else-if="record.responseContent && !isStreaming" class="card">
-        <div class="card-title">
-          模型: <span class="kv-model">{{ (record.responseContent as any)?.model ?? 'unknown' }}</span>
-        </div>
-
+      <div v-else-if="record.responseContent && !isStreaming">
         <!-- OpenAI Chat -->
         <template v-if="isOpenAI && (record.responseContent as any)?.choices">
+          <div class="card" v-if="(record.responseContent as any).model">
+            <div class="card-title">模型: <span class="kv kv-model">{{ (record.responseContent as any).model }}</span></div>
+          </div>
           <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
-            <details v-if="choice.message?.reasoning_content" class="details-box" open>
-              <summary>推理过程</summary>
-              <div class="reasoning-text">{{ choice.message.reasoning_content }}</div>
+            <details v-if="choice.message?.reasoning_content" class="details-card reasoning-card" open>
+              <summary>
+                <span class="section-label" style="background:#e3f2fd;color:#1565c0;">推理过程</span>
+              </summary>
+              <div class="reasoning-content"><JsonViewer :value="choice.message.reasoning_content" lang="plaintext" /></div>
             </details>
-            <div v-if="choice.message?.content" class="content-text">{{ choice.message.content }}</div>
+            <div v-if="choice.message?.content" class="card">
+              <span class="section-label" style="background:#e8f5e9;color:#2e7d32;">回答</span>
+              <div class="content-text">{{ choice.message.content }}</div>
+            </div>
             <ToolCallCard
               v-for="tc in (choice.message?.tool_calls ?? [])"
               :key="tc.index"
@@ -262,45 +261,54 @@ async function doExport() {
               side="request"
             />
             <div v-if="choice.finish_reason" class="finish-reason">
-              结束原因: <span :class="`kv kv-finish-${choice.finish_reason}`">{{ choice.finish_reason }}</span>
+              结束原因: <span :class="`kv kv-finish kv-finish-${choice.finish_reason}`">{{ choice.finish_reason }}</span>
             </div>
           </template>
         </template>
 
         <!-- OpenAI Responses -->
         <template v-else-if="(record.responseContent as any)?.object === 'response'">
-          <details v-if="(record.responseContent as any).reasoning_text" class="details-box" open>
-            <summary>推理过程</summary>
-            <div class="reasoning-text">{{ (record.responseContent as any).reasoning_text }}</div>
+          <details v-if="(record.responseContent as any).reasoning_text" class="details-card reasoning-card" open>
+            <summary><span class="section-label" style="background:#e3f2fd;color:#1565c0;">推理过程</span></summary>
+            <div class="reasoning-content"><JsonViewer :value="(record.responseContent as any).reasoning_text" lang="plaintext" /></div>
           </details>
-          <div v-if="(record.responseContent as any).output_text" class="content-text">
-            {{ (record.responseContent as any).output_text }}
+          <div v-if="(record.responseContent as any).output_text" class="card">
+            <span class="section-label" style="background:#e8f5e9;color:#2e7d32;">回答</span>
+            <div class="content-text">{{ (record.responseContent as any).output_text }}</div>
           </div>
         </template>
 
         <!-- Anthropic -->
         <template v-else-if="isAnthropic">
-          <template v-for="block in (record.responseContent as any).content" :key="block.index">
-            <div v-if="block.type === 'text'" class="content-text">{{ block.text }}</div>
-            <details v-else-if="block.type === 'thinking'" class="details-box" open>
-              <summary>思考块 #{{ block.index }}</summary>
-              <div class="reasoning-text">{{ block.thinking }}</div>
-            </details>
-            <ToolCallCard
-              v-else-if="block.type === 'tool_use'"
-              :tool-call-id="block.id"
-              :tool-name="block.name"
-              :arguments="getToolArgs(block.id) ?? fmtJson(block.input)"
-              :result="getToolResult(block.id)"
-              :request-id="record.id"
-              side="request"
-            />
-          </template>
+          <div class="card" v-if="(record.responseContent as any).model">
+            <div class="card-title">模型: <span class="kv kv-model">{{ (record.responseContent as any).model }}</span></div>
+          </div>
+          <div class="content-blocks">
+            <template v-for="block in (record.responseContent as any).content" :key="block.index">
+              <div v-if="block.type === 'text'" class="anthropic-block text">
+                <div class="block-header">文本块 #{{ block.index }}</div>
+                <div class="block-body"><div class="content-text">{{ block.text }}</div></div>
+              </div>
+              <div v-else-if="block.type === 'thinking'" class="anthropic-block thinking">
+                <div class="block-header">思考块 #{{ block.index }}</div>
+                <div class="block-body"><JsonViewer :value="block.thinking" lang="plaintext" /></div>
+              </div>
+              <ToolCallCard
+                v-else-if="block.type === 'tool_use'"
+                :tool-call-id="block.id"
+                :tool-name="block.name"
+                :arguments="getToolArgs(block.id) ?? fmtJson(block.input)"
+                :result="getToolResult(block.id)"
+                :request-id="record.id"
+                side="request"
+              />
+            </template>
+          </div>
         </template>
       </div>
 
       <!-- 响应体 -->
-      <details v-if="record.responseBody" class="details-box">
+      <details class="card details-card" v-if="record.responseBody">
         <summary>响应体</summary>
         <JsonViewer :value="record.responseBody" :lang="record.responseBody.startsWith('{') ? 'json' : 'plaintext'" />
       </details>
@@ -311,74 +319,149 @@ async function doExport() {
 </template>
 
 <style scoped>
-.detail-page { max-width: 1000px; margin: 0 auto; padding: 16px; }
+.detail-page { max-width: 1280px; margin: 0 auto; padding: 28px 24px; }
 
-.nav-bar {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 12px; gap: 8px; flex-wrap: wrap;
-}
-.nav-left { display: flex; gap: 6px; }
-.nav-left button {
-  background: var(--bg-card); border: 1px solid #d0d5dd; color: var(--text);
-}
-.nav-left button:hover:not(:disabled) { background: #e8ecf1; }
-.nav-pos { font-size: 0.85rem; color: var(--text-secondary); }
+/* Nav */
+.nav-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
 
-.meta-bar {
-  display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.8rem;
-  color: var(--text-secondary); padding: 8px 0; margin-bottom: 8px;
+.btn-back {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-card); color: var(--accent); border: 1px solid var(--border);
+  padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.84rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
 }
-.meta-error { color: var(--error); font-weight: 600; }
-.meta-streaming { color: var(--accent); font-weight: 600; }
+.btn-back:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+.btn-export {
+  background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border);
+  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.82rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
+}
+.btn-export:hover { background: var(--success); color: #fff; border-color: var(--success); }
+
+.detail-nav { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; }
+
+.btn-nav {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border);
+  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.82rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
+}
+.btn-nav:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-nav:disabled { opacity: .35; cursor: default; }
+
+.detail-nav-pos { font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); padding: 0 4px; min-width: 60px; text-align: center; }
+
+/* Meta */
+.detail-meta {
+  display: flex; align-items: center; gap: 14px; flex-wrap: nowrap;
+  font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 16px;
+  padding: 14px 18px; background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow-x: auto;
+}
+.detail-meta span { font-family: var(--font-mono); font-size: 0.78rem; }
+
+/* Cards */
 .card {
-  background: var(--bg-card); border-radius: 8px; padding: 14px;
-  margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  background: var(--bg-card); border-radius: var(--radius); padding: 18px 20px;
+  margin-bottom: 12px; box-shadow: var(--shadow-sm);
 }
-.card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; }
+.card + .card { margin-top: -8px; }
+.card-title {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary); font-weight: 600; margin-bottom: 8px;
+}
+.card-title .kv { text-transform: none; }
 
 .url-row { display: flex; align-items: center; gap: 8px; }
 .url-row code { font-size: 0.8rem; word-break: break-all; color: var(--text-secondary); }
-.mini-btn {
-  background: #e0e7ff; color: var(--accent); font-size: 0.75rem;
-  padding: 2px 8px; flex-shrink: 0;
+.curl-btn {
+  background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent);
+  padding: 4px 10px; border-radius: var(--radius-sm); font-size: 0.72rem;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.curl-btn:hover { background: var(--accent); color: #fff; }
+
+.details-card {
+  background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 12px;
+  padding: 0;
+}
+.details-card summary {
+  cursor: pointer; padding: 12px 18px; font-size: 0.82rem;
+  font-weight: 600; color: var(--text-secondary); user-select: none;
 }
 
-.details-box {
-  background: var(--bg-card); border-radius: 8px; padding: 10px 14px;
-  margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-}
-.details-box summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; padding: 4px 0; }
+/* Reasoning */
+.reasoning-card { margin-bottom: 12px; }
+.reasoning-card + .reasoning-card { margin-top: -8px; }
+.reasoning-content { border-top: 1px solid var(--border); }
 
-.user-card { }
+/* Content */
+.content-text { min-height: 40px; }
+
+/* Anthropic blocks */
+.content-blocks { display: flex; flex-direction: column; gap: 8px; }
+.anthropic-block {
+  background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden;
+}
+.anthropic-block .block-header {
+  padding: 10px 16px; font-size: 0.75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
+}
+.anthropic-block .block-body { padding: 16px; font-size: 0.88rem; line-height: 1.65; }
+.anthropic-block.text .block-header { background: #e8f5e9; color: #2e7d32; }
+.anthropic-block.thinking .block-header { background: #e3f2fd; color: #1565c0; }
+.anthropic-block.tool_use .block-header { background: #eef2ff; color: #4338ca; }
+
+/* User card */
+.user-card {
+  background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  overflow: hidden; margin-bottom: 12px; border-left: 4px solid #ab47bc; padding: 18px 20px;
+}
 .user-text {
   white-space: pre-wrap; word-break: break-word;
-  background: #f9fafb; padding: 10px; border-radius: 6px;
-  margin-bottom: 10px; font-size: 0.9rem;
+  min-height: 40px; font-size: 0.9rem;
 }
-
-.tool-result { margin-top: 8px; }
+.tool-results-section { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+.tool-results-label {
+  font-size: 0.75rem; font-weight: 600; color: #7b1fa2;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;
+}
+.tool-result-item {
+  background: var(--bg-inset); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 8px;
+}
+.tool-result-item:last-child { margin-bottom: 0; }
 .tool-result-id {
-  display: flex; gap: 8px; align-items: center; margin-bottom: 4px;
+  padding: 6px 12px; font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-muted); background: #ede7f6; border-bottom: 1px solid #d1c4e9;
+  position: relative; display: flex; align-items: center; gap: 8px;
 }
-.tool-result-id-text { font-size: 0.75rem; color: var(--text-secondary); font-family: monospace; }
+.tool-result-id:hover .tool-tip-popup,
+.tool-tip-popup:hover { display: block; }
+.tool-tip-badge {
+  font-family: var(--font-sans); font-size: 0.65rem; font-weight: 600;
+  color: var(--accent); background: #eef2ff; padding: 1px 8px;
+  border-radius: 10px; border: 1px solid #c7d2fe;
+}
+.tool-tip-popup {
+  display: none; position: absolute; top: 100%; left: 0; z-index: 100;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  padding: 12px 16px; min-width: 320px; max-width: 480px;
+}
+.tool-tip-name {
+  display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+  font-weight: 700; color: #4338ca; background: #eef2ff; padding: 4px 10px;
+  border-radius: 5px; border: 1px solid #c7d2fe;
+}
 
-.content-text {
-  white-space: pre-wrap; word-break: break-word;
-  padding: 10px 0; font-size: 0.9rem; line-height: 1.6;
-}
-.reasoning-text {
-  white-space: pre-wrap; word-break: break-word;
-  background: #f3e8ff; padding: 10px; border-radius: 6px;
-  font-size: 0.85rem; color: #6b21a8; margin-top: 6px;
-}
-.finish-reason { font-size: 0.8rem; color: var(--text-secondary); margin-top: 8px; }
-
-.kv-model { background: #e0e7ff; padding: 1px 6px; border-radius: 4px; font-size: 0.85rem; }
-.kv { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.8rem; }
-.kv-finish-stop { background: #dcfce7; color: #16a34a; }
-.kv-finish-length, .kv-finish-tool_calls, .kv-finish-end_turn { background: #dbeafe; color: #2563eb; }
+/* Finish reason */
+.finish-reason { font-size: 0.8rem; color: var(--text-secondary); margin-top: 8px; padding-left: 12px; }
 
 .status-msg { text-align: center; padding: 40px 0; color: var(--text-secondary); }
-.status-msg.error { color: var(--error); }
+
+@media (max-width: 768px) {
+  .detail-meta { flex-wrap: wrap; }
+}
 </style>

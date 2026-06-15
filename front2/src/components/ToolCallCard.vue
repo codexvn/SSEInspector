@@ -9,7 +9,6 @@ const props = defineProps<{
   arguments?: string
   result?: string
   requestId: string
-  /** hover 方向：'request' 当前是结果行悬停看请求，'result' 当前是请求行悬停看结果 */
   side: 'request' | 'result'
 }>()
 
@@ -21,7 +20,7 @@ async function onEnter() {
   loading.value = true
   try {
     const pair = await fetchToolCallPair(props.toolName, props.toolCallId)
-    hoverData.value = (props.side === 'request' ? pair.nextRequest : pair.prevResult) ?? null
+    hoverData.value = (props.side === 'request' ? pair.prevResult : pair.nextRequest) ?? null
   } catch { /* ignore */ }
   finally { loading.value = false }
 }
@@ -38,50 +37,57 @@ function fmtArgs(args?: string): string {
 </script>
 
 <template>
-  <div class="tool-card" @mouseenter="onEnter" @mouseleave="onLeave">
+  <div class="tool-call" @mouseenter="onEnter" @mouseleave="onLeave">
     <div class="tool-header">
       <span class="tool-name">{{ toolName }}</span>
       <span class="tool-id">{{ toolCallId }}</span>
-      <span v-if="loading" class="tool-loading">加载中…</span>
-    </div>
-
-    <!-- 主内容 -->
-    <div class="tool-body">
-      <div v-if="result" class="tool-section">
-        <div class="section-label">结果</div>
-        <JsonViewer :value="result" />
-      </div>
-      <div v-if="arguments" class="tool-section">
-        <div class="section-label">参数</div>
-        <JsonViewer :value="fmtArgs(arguments)" />
+      <div v-if="hoverData" class="tool-tip-popup">
+        <div class="tool-tip-name">{{ toolName }}</div>
+        <JsonViewer :value="side === 'request' ? hoverData : fmtArgs(hoverData)" />
       </div>
     </div>
-
-    <!-- Hover 浮层 -->
-    <div v-if="hoverData" class="tool-hover">
-      <div class="section-label">{{ side === 'request' ? '对应请求' : '对应结果' }}</div>
-      <JsonViewer :value="side === 'request' ? fmtArgs(hoverData) : hoverData" />
-    </div>
+    <pre v-if="arguments" class="args-pre">{{ fmtArgs(arguments) }}</pre>
   </div>
 </template>
 
 <style scoped>
-.tool-card {
-  background: var(--bg-card); border: 1px solid #e5e7eb; border-radius: 8px;
-  padding: 10px 14px; margin-bottom: 8px; position: relative;
+.tool-call {
+  background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+  overflow: hidden; margin-bottom: 10px;
 }
+.tool-call + .tool-call { margin-top: -6px; }
+
 .tool-header {
-  display: flex; gap: 10px; align-items: center; margin-bottom: 8px;
+  padding: 10px 16px; background: #eef2ff; border-bottom: 1px solid var(--border);
+  font-weight: 600; color: #4338ca; font-family: var(--font-mono);
+  font-size: 0.83rem; position: relative; display: flex; align-items: center; gap: 8px;
 }
-.tool-name { font-weight: 700; color: var(--accent); }
-.tool-id { font-size: 0.75rem; color: var(--text-secondary); font-family: monospace; }
-.tool-loading { font-size: 0.75rem; color: var(--warn); }
-.tool-body { display: flex; flex-direction: column; gap: 6px; }
-.tool-section { }
-.section-label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; }
-.tool-hover {
-  position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
-  background: #fffbeb; border: 1px solid #fcd34d; border-radius: 6px;
-  padding: 8px 12px; margin-top: 2px; box-shadow: 0 4px 12px rgba(0,0,0,.1);
+.tool-header .tool-id {
+  color: var(--text-muted); font-size: 0.73rem; margin-left: 8px; font-weight: normal;
+}
+.tool-header:hover .tool-tip-popup,
+.tool-tip-popup:hover { display: block; }
+
+.tool-name {
+  background: #e0e7ff; color: #3730a3; padding: 3px 8px; border-radius: 5px;
+  font-weight: 700; font-size: 0.85rem; border: 1px solid #c7d2fe;
+}
+
+.args-pre {
+  padding: 14px 16px; font-family: var(--font-mono); font-size: 0.8rem;
+  line-height: 1.55; overflow-x: auto; max-height: 300px; overflow-y: auto;
+  color: var(--text-primary);
+}
+
+.tool-tip-popup {
+  display: none; position: absolute; top: 100%; left: 0; z-index: 100;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  padding: 12px 16px; min-width: 320px; max-width: 480px;
+}
+.tool-tip-name {
+  display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
+  font-weight: 700; color: #4338ca; background: #eef2ff; padding: 4px 10px;
+  border-radius: 5px; border: 1px solid #c7d2fe; margin-bottom: 6px;
 }
 </style>

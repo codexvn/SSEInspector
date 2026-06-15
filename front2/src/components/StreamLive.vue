@@ -21,20 +21,16 @@ function onScroll() {
 
 <template>
   <div class="stream-card">
-    <div class="stream-label">实时接收中…</div>
+    <span class="section-label" style="background:#e0e7ff;color:#3730a3;animation:pulse 1.5s ease-in-out infinite;">实时接收中…</span>
     <pre ref="preRef" @scroll="onScroll">{{ text }}</pre>
   </div>
 </template>
 
 <style scoped>
-.stream-card {
-  background: var(--bg-card); border-radius: 8px; padding: 14px;
-  box-shadow: 0 1px 3px rgba(0,0,0,.06);
-}
-.stream-label { color: var(--accent); font-weight: 600; margin-bottom: 6px; font-size: 0.85rem; }
-pre {
-  background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px;
-  overflow: auto; max-height: 500px; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all;
-  font-family: 'Cascadia Code', 'Fira Code', monospace;
+.stream-card { border-left: 4px solid var(--accent); }
+.stream-card pre {
+  font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; max-height: 500px;
+  overflow-y: auto; color: var(--text-primary);
 }
 </style>
