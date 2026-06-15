@@ -17,10 +17,10 @@ const filtered = computed(() => {
   })
 })
 
-const openaiCount = computed(() => store.items.filter(r => r.apiType === 'openai').length)
-const anthropicCount = computed(() => store.items.filter(r => r.apiType === 'anthropic').length)
-const streamingCount = computed(() => store.items.filter(r => r.state === 'streaming').length)
-const errorCount = computed(() => store.items.filter(r => r.state === 'error').length)
+const openaiCount = computed(() => store.counts.openai)
+const anthropicCount = computed(() => store.counts.anthropic)
+const streamingCount = computed(() => store.counts.streaming)
+const errorCount = computed(() => store.counts.error)
 
 onMounted(() => {
   store.loadPage(1)
@@ -47,10 +47,10 @@ function fmtTime(iso: string) {
     <div class="top-bar">
       <div class="stats">
         <span>总计 {{ store.total }}</span>
-        <span>OpenAI {{ openaiCount }} <span class="stat-hint">(本页)</span></span>
-        <span>Anthropic {{ anthropicCount }} <span class="stat-hint">(本页)</span></span>
-        <span class="stat-streaming">进行中 {{ streamingCount }} <span class="stat-hint">(本页)</span></span>
-        <span>错误 {{ errorCount }} <span class="stat-hint">(本页)</span></span>
+        <span>OpenAI {{ openaiCount }}</span>
+        <span>Anthropic {{ anthropicCount }}</span>
+        <span class="stat-streaming">进行中 {{ streamingCount }}</span>
+        <span>错误 {{ errorCount }}</span>
       </div>
       <div class="top-actions">
         <input v-model="searchQuery" placeholder="搜索路径、模型、请求、响应…" class="search-input" />

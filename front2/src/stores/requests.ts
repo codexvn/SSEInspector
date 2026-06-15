@@ -10,6 +10,7 @@ export const useRequestsStore = defineStore('requests', () => {
   const pageSize = 50
   const total = ref(0)
   const loading = ref(false)
+  const counts = ref({ openai: 0, anthropic: 0, streaming: 0, error: 0 })
 
   const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
@@ -29,6 +30,12 @@ export const useRequestsStore = defineStore('requests', () => {
           items.value.splice(idx, 1, summary)
         } else {
           total.value++
+          // SSE 增量更新全量统计
+          const c = { ...counts.value }
+          if (summary.apiType === 'openai') c.openai++; else c.anthropic++
+          if (summary.state === 'streaming') c.streaming++
+          else if (summary.state === 'error') c.error++
+          counts.value = c
           if (page.value === 1) {
             items.value.unshift(summary)
             if (items.value.length > pageSize) items.value.pop()
@@ -56,6 +63,7 @@ export const useRequestsStore = defineStore('requests', () => {
       items.value = data.items
       total.value = data.total
       page.value = data.page
+      if (data.counts) counts.value = data.counts
     } finally {
       loading.value = false
     }
@@ -97,7 +105,7 @@ export const useRequestsStore = defineStore('requests', () => {
   startSSE()
 
   return {
-    items, page, pageSize, total, loading, totalPages,
+    items, page, pageSize, total, loading, totalPages, counts,
     loadPage, doClear,
     detailCache, loadDetail, updateDetailInCache,
     onStreamDone,

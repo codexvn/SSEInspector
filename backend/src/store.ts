@@ -167,7 +167,7 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
 }
 
 /** 分页列表 */
-export async function getAll(page?: number, pageSize?: number): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number }> {
+export async function getAll(page?: number, pageSize?: number): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
   const repo = reqRepo();
   if (page && pageSize) {
     const [rows, total] = await repo.findAndCount({
@@ -176,7 +176,12 @@ export async function getAll(page?: number, pageSize?: number): Promise<RecordSu
       skip: (page - 1) * pageSize,
       take: pageSize,
     });
-    return { items: rows.map(entityToSummary), total, page, pageSize };
+    // 全量统计（不受分页影响）
+    const openaiCount = await repo.count({ where: { api_type: 'openai' } });
+    const anthropicCount = await repo.count({ where: { api_type: 'anthropic' } });
+    const streamingCount = await repo.count({ where: { finished: 'pending' } });
+    const errorCount = await repo.count({ where: { error: Not(IsNull()) } });
+    return { items: rows.map(entityToSummary), total, page, pageSize, counts: { openai: openaiCount, anthropic: anthropicCount, streaming: streamingCount, error: errorCount } };
   }
   const rows = await repo.find({
     select: SUMMARY_SELECT,

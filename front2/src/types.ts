@@ -56,6 +56,7 @@ export interface ListResult {
   total: number
   page: number
   pageSize: number
+  counts?: { openai: number; anthropic: number; streaming: number; error: number }
 }
 
 export interface SSEEvent {
