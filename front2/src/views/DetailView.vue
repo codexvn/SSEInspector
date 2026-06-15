@@ -119,46 +119,39 @@ function userInput(): string {
   return ''
 }
 
-/** 从 requestBody 提取 tool_result——支持 messages 和 input 两种格式 */
+/** 从 requestBody 提取 tool_result——仅最新一轮（和旧版 extractUserRequest 一致）。
+ *  找最后一条 user 消息，往前扫 tool 消息，遇到 assistant 就停（本轮边界）。 */
 function extractToolResults(): { tool_call_id: string; content: string; tool_name?: string }[] {
   const body = record.value?.requestBody as Record<string, unknown> | undefined
   if (!body) return []
-  const results: { tool_call_id: string; content: string; tool_name?: string }[] = []
   const findTc = (id: string) => toolCalls.value.find(t => t.tool_call_id === id)
-
-  // messages 格式
   const msgs = body.messages as Record<string, unknown>[] | undefined
-  if (msgs) {
-    for (const msg of msgs) {
-      if (isOpenAI.value && msg.role === 'tool' && msg.tool_call_id) {
-        const tc = findTc(String(msg.tool_call_id))
-        results.push({ tool_call_id: String(msg.tool_call_id), content: fmtJson(msg.content), tool_name: tc?.tool_name })
-      }
-      if (isAnthropic.value && Array.isArray(msg.content)) {
-        for (const block of msg.content as Record<string, unknown>[]) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            const tc = findTc(String(block.tool_use_id))
-            results.push({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content), tool_name: tc?.tool_name })
-          }
+  if (!msgs) return []
+
+  let lastUserIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') { lastUserIdx = i; break }
+  }
+  if (lastUserIdx === -1) return []
+
+  const toolResults: { tool_call_id: string; content: string; tool_name?: string }[] = []
+  for (let i = lastUserIdx - 1; i >= 0; i--) {
+    const msg = msgs[i]
+    if (msg.role === 'assistant') break
+    if (isOpenAI.value && msg.role === 'tool' && msg.tool_call_id) {
+      const tc = findTc(String(msg.tool_call_id))
+      toolResults.unshift({ tool_call_id: String(msg.tool_call_id), content: fmtJson(msg.content), tool_name: tc?.tool_name })
+    }
+    if (isAnthropic.value && Array.isArray(msg.content)) {
+      for (const block of msg.content as Record<string, unknown>[]) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          const tc = findTc(String(block.tool_use_id))
+          toolResults.unshift({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content), tool_name: tc?.tool_name })
         }
       }
     }
   }
-  // input 格式
-  const input = body.input as Record<string, unknown>[] | undefined
-  if (input && isAnthropic.value) {
-    for (const msg of input) {
-      if (Array.isArray(msg.content)) {
-        for (const block of msg.content as Record<string, unknown>[]) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            const tc = findTc(String(block.tool_use_id))
-            results.push({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content), tool_name: tc?.tool_name })
-          }
-        }
-      }
-    }
-  }
-  return results
+  return toolResults
 }
 
 function getToolArgs(toolCallId: string): string | undefined {
