@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { upsertRecord } from './store';
+import { upsertRecord, writeToolCalls, updateApiUsage, ToolCallEntry } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
 import { RecordedRequest, ApiType, SSEChunk, MergedContent } from './types';
@@ -42,6 +42,62 @@ function baseRecord(
     state: error ? 'error' : streaming ? 'streaming' : 'done',
     chunks: [],
   };
+}
+
+/** 从 requestBody + responseContent 提取工具调用配对 */
+function extractToolCalls(
+  requestBody: unknown,
+  responseContent: MergedContent | null,
+  apiType: ApiType,
+): ToolCallEntry[] {
+  // 第一步：从 requestBody 提取 tool_result（结果）
+  const results = new Map<string, string>(); // tool_call_id → result
+  const msgList = (requestBody as Record<string, unknown>)?.messages as Record<string, unknown>[] | undefined;
+  if (msgList) {
+    for (const msg of msgList) {
+      if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
+        const c = msg.content;
+        results.set(String(msg.tool_call_id), typeof c === 'string' ? c : JSON.stringify(c));
+      }
+      if (apiType === 'anthropic' && Array.isArray(msg.content)) {
+        for (const block of msg.content as Record<string, unknown>[]) {
+          if (block.type === 'tool_result' && block.tool_use_id) {
+            const c = block.content;
+            results.set(String(block.tool_use_id), typeof c === 'string' ? c : JSON.stringify(c));
+          }
+        }
+      }
+    }
+  }
+
+  // 第二步：从 responseContent 提取 tool_use（请求参数），配对 result
+  const entries: ToolCallEntry[] = [];
+  if (apiType === 'openai') {
+    const rc = responseContent as unknown as Record<string, unknown> | null;
+    const choices = rc?.choices as Record<string, unknown>[] | undefined;
+    const tcs = choices?.[0]?.message as Record<string, unknown> | undefined;
+    for (const tc of (tcs?.tool_calls as Record<string, unknown>[]) ?? []) {
+      entries.push({
+        tool_call_id: String(tc.id),
+        tool_name: (tc.function as Record<string, string>)?.name ?? '',
+        arguments: (tc.function as Record<string, string>)?.arguments,
+        result: results.get(String(tc.id)),
+      });
+    }
+  } else if (apiType === 'anthropic') {
+    const rc = responseContent as unknown as Record<string, unknown> | null;
+    for (const block of rc?.content as Record<string, unknown>[] ?? []) {
+      if (block.type !== 'tool_use' || !block.id) continue;
+      entries.push({
+        tool_call_id: String(block.id),
+        tool_name: String(block.name ?? ''),
+        arguments: typeof block.input === 'string' ? block.input as string : JSON.stringify(block.input),
+        result: results.get(String(block.id)),
+      });
+    }
+  }
+
+  return entries;
 }
 
 export async function handlePassthrough(req: Request, res: Response): Promise<void> {
@@ -166,13 +222,26 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.responseHeaders = responseHeaders;
       record.responseBody = JSON.stringify(json);
       record.state = 'done';
+      record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
       upsertRecord(record);
+      updateApiUsage(id, (json as unknown as Record<string, unknown>).usage);
+      writeToolCalls(id, extractToolCalls(req.body, json as MergedContent, apiType));
     } else {
       // --- Streaming ---
       const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
       record.responseHeaders = responseHeaders;
       upsertRecord(record);
+
+      // 客户端断开监听
+      req.on('close', () => {
+        if (record.state === 'streaming') {
+          record.finished = 'client_close';
+          record.error = '客户端断开连接';
+          record.state = 'error';
+          upsertRecord(record);
+        }
+      });
 
       const reader = upstreamRes.body.getReader();
       const rawChunks: Uint8Array[] = [];
@@ -205,9 +274,12 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.chunks = chunks;
       record.responseBody = fullText;
       record.state = 'done';
+      record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
       delete record.streamText;
       upsertRecord(record);
+      updateApiUsage(id, (merged as unknown as Record<string, unknown>).usage);
+      writeToolCalls(id, extractToolCalls(req.body, merged, apiType));
     }
   } catch (err) {
     const e = err as Error & { cause?: Error; code?: string };

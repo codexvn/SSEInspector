@@ -3,18 +3,22 @@
   "version": "1.0.0",
   "description": "vLLM/OpenAI-compatible API proxy with SSE recording and inspection",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "tsx backend/src/index.ts",
     "build": "tsc"
   },
   "dependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@lenml/tokenizers": "^3.7.2",
+    "better-sqlite3": "^11.10.0",
+    "drizzle-orm": "^0.36.4",
     "express": "^4.21.0",
     "gpt-tokenizer": "^2.9.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.28.1",
     "tsx": "^4.19.0",
     "typescript": "^5.5.3"
   },

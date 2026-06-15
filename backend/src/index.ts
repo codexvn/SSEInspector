@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { handleProxy, handlePassthrough } from './proxy';
-import { getAll, getById, clear, onUpdate, onClear } from './store';
+import { getAll, getById, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
 import { RecordSummary } from './types';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -18,12 +18,14 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 // Static frontend
-const publicDir = path.resolve(__dirname, '..', 'public');
+const publicDir = path.resolve(__dirname, '..', '..', 'frontend');
 app.use(express.static(publicDir));
 
-// API: recorded requests
-app.get('/api/requests', (_req, res) => {
-  res.json(getAll());
+// API: recorded requests（可选分页）
+app.get('/api/requests', (req, res) => {
+  const page = parseInt(req.query.page as string) || undefined;
+  const pageSize = parseInt(req.query.pageSize as string) || undefined;
+  res.json(getAll(page, pageSize));
 });
 
 app.get('/api/requests/:id', (req, res) => {
@@ -67,6 +69,20 @@ app.get('/api/events', (req, res) => {
     removeUpdate();
     removeClear();
   });
+});
+
+// API: 工具调用查询
+app.get('/api/tool-calls', (req, res) => {
+  const requestId = req.query.requestId as string;
+  const toolName = req.query.toolName as string;
+  const toolCallId = req.query.toolCallId as string;
+  if (requestId && toolName && toolCallId) {
+    res.json(getToolCallPair(requestId, toolName, toolCallId));
+  } else if (requestId) {
+    res.json({ toolCalls: getToolCalls(requestId) });
+  } else {
+    res.status(400).json({ error: 'Need requestId' });
+  }
 });
 
 // Proxy: OpenAI-compatible（任何以 /chat/completions 结尾的 POST 请求）

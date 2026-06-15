@@ -136,6 +136,7 @@ export interface RecordedRequest {
   apiType: ApiType;
   error?: string;
   state: RecordState;
+  finished?: string;           // 'pending'|'ok'|'client_close'|'startup_fallback'，store 写入
   chunks: SSEChunk[];
   streamText?: string;
   responseBody?: string;

@@ -990,3 +990,24 @@ details.reasoning > summary > .copy-btn {
   .cell-preview { max-width: 120px; }
   .cell-model { max-width: 80px; }
 }
+
+/* Pagination */
+#pagination {
+  padding: 6px 0;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: center;
+}
+.page-btn {
+  background: var(--bg-card);
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: var(--text);
+}
+.page-btn:hover:not(:disabled) { background: #e8ecf1; }
+.page-btn:disabled { opacity: 0.4; cursor: default; }
+

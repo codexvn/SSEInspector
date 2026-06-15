@@ -5,6 +5,10 @@ const state = {
   searchQuery: '',
   currentRecord: null,
   renderTimer: null,
+  page: 1,
+  pageSize: 50,
+  total: 0,
+  totalPages: 0,
 };
 
 // ---- Routing ----
@@ -57,7 +61,16 @@ function upsertLocal(summary) {
       }
     }
   } else {
-    state.requests.unshift(summary);
+    // 新记录：只在首页插入，不切换页码
+    if (state.page === 1) {
+      state.requests.unshift(summary);
+      if (state.requests.length > state.pageSize) {
+        state.requests.pop();
+      }
+    }
+    state.total++;
+    state.totalPages = Math.ceil(state.total / state.pageSize);
+    renderPagination();
   }
 
   state.requests.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
@@ -74,25 +87,46 @@ function upsertLocal(summary) {
   updateStats();
 }
 
-async function fetchInitial() {
+async function fetchList(page) {
   try {
-    const res = await fetch('/api/requests');
-    state.requests = await res.json();
-    if (!state.selectedId) renderList();
+    const res = await fetch(`/api/requests?page=${page}&pageSize=${state.pageSize}`);
+    const data = await res.json();
+    state.requests = data.items;
+    state.total = data.total;
+    state.totalPages = Math.ceil(data.total / state.pageSize);
+    state.page = data.page;
+    if (!state.selectedId) {
+      renderList();
+      renderPagination();
+    }
     updateStats();
   } catch {
-    setTimeout(fetchInitial, 1000);
+    setTimeout(() => fetchList(state.page), 1000);
   }
 }
 
 // ---- Stats ----
 
 function updateStats() {
-  document.getElementById('stat-total').textContent = `总计 ${state.requests.length}`;
+  document.getElementById('stat-total').textContent = `总计 ${state.total || state.requests.length}`;
   document.getElementById('stat-openai').textContent = `OpenAI ${state.requests.filter(r => r.apiType === 'openai').length}`;
   document.getElementById('stat-anthropic').textContent = `Anthropic ${state.requests.filter(r => r.apiType === 'anthropic').length}`;
   document.getElementById('stat-streaming').textContent = `进行中 ${state.requests.filter(r => r.state === 'streaming').length}`;
   document.getElementById('stat-errors').textContent = `错误 ${state.requests.filter(r => r.state === 'error').length}`;
+}
+
+function renderPagination() {
+  const el = document.getElementById('pagination');
+  if (!el) return;
+  if (state.totalPages <= 1) {
+    el.innerHTML = '';
+    return;
+  }
+  let html = `<span style="color:var(--text-secondary);font-size:0.85rem">共 ${state.total} 条</span>`;
+  html += `<button class="page-btn" ${state.page <= 1 ? 'disabled' : ''} onclick="fetchList(${state.page - 1})">上一页</button>`;
+  html += `<span style="color:var(--text-secondary);font-size:0.85rem">${state.page} / ${state.totalPages}</span>`;
+  html += `<button class="page-btn" ${state.page >= state.totalPages ? 'disabled' : ''} onclick="fetchList(${state.page + 1})">下一页</button>`;
+  el.innerHTML = html;
 }
 
 // ---- List View ----
@@ -1086,7 +1120,7 @@ function escAttr(s) {
 
 document.addEventListener('DOMContentLoaded', () => {
   handleRoute();
-  fetchInitial();
+  fetchList(1);
   connectSSE();
 
   document.getElementById('btn-back').addEventListener('click', () => {
@@ -1114,7 +1148,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!confirm('确认清空全部记录？')) return;
     await fetch('/api/requests', { method: 'DELETE' });
     state.requests = [];
+    state.total = 0;
+    state.totalPages = 0;
+    state.page = 1;
     renderList();
+    renderPagination();
     updateStats();
   });
 
