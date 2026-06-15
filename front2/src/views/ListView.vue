@@ -23,7 +23,7 @@ const streamingCount = computed(() => store.items.filter(r => r.state === 'strea
 const errorCount = computed(() => store.items.filter(r => r.state === 'error').length)
 
 onMounted(() => {
-  if (store.items.length === 0) store.loadPage(1)
+  store.loadPage(1)
 })
 
 function openDetail(id: string) {
