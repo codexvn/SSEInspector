@@ -10,6 +10,8 @@ export interface RecordSummary {
   state: 'streaming' | 'done' | 'error'
   apiType: 'openai' | 'anthropic'
   streamText?: string
+  cacheRead?: number
+  apiReportedInput?: number
 }
 
 export interface RecordedRequest {

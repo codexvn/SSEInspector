@@ -82,6 +82,19 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
 }
 
 function entityToSummary(row: RequestEntity): RecordSummary {
+  // 从 computed_tokens JSON 字段提取缓存命中数和 API 报告的输入 token
+  let cacheRead: number | undefined
+  let apiReportedInput: number | undefined
+  if (row.computed_tokens) {
+    try {
+      const tb = JSON.parse(row.computed_tokens) as TokenBreakdown
+      cacheRead = tb.cacheRead
+      apiReportedInput = tb.apiReportedInput
+    } catch (err) {
+      console.warn(`[store] 解析 computed_tokens JSON 失败: ${(err as Error).message}`);
+    }
+  }
+
   return {
     id: row.id,
     timestamp: row.timestamp,
@@ -93,6 +106,8 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     state: deriveState(row.finished, row.error ?? null),
     apiType: row.api_type as ApiType,
     streamText: streamBuf.get(row.id),
+    cacheRead,
+    apiReportedInput,
   };
 }
 
@@ -111,6 +126,7 @@ function deriveState(finished: string, error: string | null): RecordState {
 const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
+  computed_tokens: true,
 };
 
 // ---- 公开 API ----

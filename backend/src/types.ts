@@ -157,4 +157,8 @@ export interface RecordSummary {
   state: RecordState;
   apiType: ApiType;
   streamText?: string;
+  /** 缓存命中 token 数（来自 apiUsage 解析） */
+  cacheRead?: number;
+  /** API 报告输入 token 数（来自 apiUsage 解析） */
+  apiReportedInput?: number;
 }

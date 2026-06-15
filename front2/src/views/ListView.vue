@@ -39,6 +39,10 @@ function fmtTime(iso: string) {
   const d = new Date(iso)
   return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0')
 }
+function formatCacheHit(cache: number, total: number): string {
+  if (!total) return '0%'
+  return (cache / total * 100).toFixed(2) + '%'
+}
 </script>
 
 <template>
@@ -69,6 +73,7 @@ function fmtTime(iso: string) {
             <th>状态</th>
             <th>预览</th>
             <th>耗时</th>
+            <th>缓存命中</th>
           </tr>
         </thead>
         <tbody>
@@ -92,6 +97,13 @@ function fmtTime(iso: string) {
             <td class="cell-duration">
               <template v-if="r.state === 'streaming'">…</template>
               <template v-else>{{ r.durationMs }}ms</template>
+            </td>
+            <td class="cell-cache">
+              <template v-if="r.state !== 'streaming' && r.apiReportedInput">
+                <span v-if="r.cacheRead" class="cache-hit">{{ formatCacheHit(r.cacheRead, r.apiReportedInput) }}</span>
+                <span v-else class="cache-miss">未命中</span>
+              </template>
+              <template v-else>-</template>
             </td>
           </tr>
         </tbody>
@@ -155,6 +167,9 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-api { white-space: nowrap; font-size: 0.75rem; }
 .cell-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
+.cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
+.cache-hit { color: var(--success); font-weight: 600; }
+.cache-miss { color: var(--text-muted); }
 
 .empty-state { text-align: center; padding: 64px 20px; color: var(--text-muted); font-size: 0.95rem; }
 
