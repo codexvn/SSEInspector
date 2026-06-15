@@ -1,8 +1,13 @@
 import { Request, Response } from 'express';
-import { upsertRecord, writeToolCalls, updateApiUsage, ToolCallEntry } from './store';
+import { upsertRecord, writeToolCalls, updateApiUsage, updateToolCallResults, ToolCallEntry } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
 import { RecordedRequest, ApiType, SSEChunk, MergedContent } from './types';
+
+/** 从响应 JSON 中提取 usage 对象（字段因供应商而异） */
+function getUsage(json: unknown): unknown {
+  return (json as any)?.usage;
+}
 
 const HOP_HEADERS = [
   'connection', 'keep-alive', 'transfer-encoding', 'te',
@@ -44,33 +49,44 @@ function baseRecord(
   };
 }
 
-/** 从 requestBody + responseContent 提取工具调用配对 */
-function extractToolCalls(
-  requestBody: unknown,
-  responseContent: MergedContent | null,
-  apiType: ApiType,
-): ToolCallEntry[] {
-  // 第一步：从 requestBody 提取 tool_result（结果）
-  const results = new Map<string, string>(); // tool_call_id → result
+/** 从 requestBody 提取 tool_result（上一轮工具调用的返回结果），
+ *  更新之前已写入的 tool_calls 行的 result 列。
+ *  工具调用的 result 在下一次请求的 requestBody 中携带，
+ *  因此必须在 proxy 开始时检查，不能在请求完成时。 */
+async function backfillToolResults(requestBody: unknown, apiType: ApiType): Promise<void> {
+  const updates: { tool_call_id: string; result: string }[] = [];
   const msgList = (requestBody as Record<string, unknown>)?.messages as Record<string, unknown>[] | undefined;
-  if (msgList) {
-    for (const msg of msgList) {
-      if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
-        const c = msg.content;
-        results.set(String(msg.tool_call_id), typeof c === 'string' ? c : JSON.stringify(c));
-      }
-      if (apiType === 'anthropic' && Array.isArray(msg.content)) {
-        for (const block of msg.content as Record<string, unknown>[]) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            const c = block.content;
-            results.set(String(block.tool_use_id), typeof c === 'string' ? c : JSON.stringify(c));
-          }
+  if (!msgList) return;
+
+  for (const msg of msgList) {
+    if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
+      const c = msg.content;
+      updates.push({
+        tool_call_id: String(msg.tool_call_id),
+        result: typeof c === 'string' ? c : JSON.stringify(c),
+      });
+    }
+    if (apiType === 'anthropic' && Array.isArray(msg.content)) {
+      for (const block of msg.content as Record<string, unknown>[]) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          const c = block.content;
+          updates.push({
+            tool_call_id: String(block.tool_use_id),
+            result: typeof c === 'string' ? c : JSON.stringify(c),
+          });
         }
       }
     }
   }
+  await updateToolCallResults(updates);
+}
 
-  // 第二步：从 responseContent 提取 tool_use（请求参数），配对 result
+/** 从 responseContent 提取 tool_use（本轮模型发出的工具调用请求），
+ *  不配对 result——result 在下一次请求中才会出现。 */
+function extractToolCalls(
+  responseContent: MergedContent | null,
+  apiType: ApiType,
+): ToolCallEntry[] {
   const entries: ToolCallEntry[] = [];
   if (apiType === 'openai') {
     const rc = responseContent as unknown as Record<string, unknown> | null;
@@ -81,7 +97,6 @@ function extractToolCalls(
         tool_call_id: String(tc.id),
         tool_name: (tc.function as Record<string, string>)?.name ?? '',
         arguments: (tc.function as Record<string, string>)?.arguments,
-        result: results.get(String(tc.id)),
       });
     }
   } else if (apiType === 'anthropic') {
@@ -92,11 +107,9 @@ function extractToolCalls(
         tool_call_id: String(block.id),
         tool_name: String(block.name ?? ''),
         arguments: typeof block.input === 'string' ? block.input as string : JSON.stringify(block.input),
-        result: results.get(String(block.id)),
       });
     }
   }
-
   return entries;
 }
 
@@ -191,6 +204,9 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
     fetchInit.body = JSON.stringify(req.body);
   }
 
+  // 回填上一轮工具调用的返回结果（result 在下一次请求的 requestBody 中）
+  await backfillToolResults(req.body, apiType);
+
   try {
     const upstreamRes = await fetch(targetUrl, fetchInit);
     const responseStatus = upstreamRes.status;
@@ -211,7 +227,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       } catch (parseErr) {
         console.error(`[proxy] JSON parse failed:`, (parseErr as Error).message);
         res.status(responseStatus).send(rawText);
-        upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime,
+        await upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime,
           `JSON parse error: ${(parseErr as Error).message}, raw=${rawText}`));
         return;
       }
@@ -224,22 +240,22 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.state = 'done';
       record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
-      upsertRecord(record);
-      updateApiUsage(id, (json as unknown as Record<string, unknown>).usage);
-      writeToolCalls(id, extractToolCalls(req.body, json as MergedContent, apiType));
+      await upsertRecord(record);
+      await updateApiUsage(id, getUsage(json));
+      await writeToolCalls(id, extractToolCalls(json as MergedContent, apiType));
     } else {
       // --- Streaming ---
       const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
       record.responseHeaders = responseHeaders;
-      upsertRecord(record);
+      await upsertRecord(record);
 
       // 客户端断开监听
-      req.on('close', () => {
+      req.on('close', async () => {
         if (record.state === 'streaming') {
           record.finished = 'client_close';
           record.error = '客户端断开连接';
           record.state = 'error';
-          upsertRecord(record);
+          await upsertRecord(record);
         }
       });
 
@@ -256,7 +272,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
           const now = Date.now();
           if (now - lastPush > 200) {
             record.streamText = Buffer.concat(rawChunks).toString('utf-8');
-            upsertRecord(record);
+            await upsertRecord(record);
             lastPush = now;
           }
         }
@@ -277,9 +293,9 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.finished = 'ok';
       record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
       delete record.streamText;
-      upsertRecord(record);
-      updateApiUsage(id, (merged as unknown as Record<string, unknown>).usage);
-      writeToolCalls(id, extractToolCalls(req.body, merged, apiType));
+      await upsertRecord(record);
+      await updateApiUsage(id, getUsage(merged));
+      await writeToolCalls(id, extractToolCalls(merged, apiType));
     }
   } catch (err) {
     const e = err as Error & { cause?: Error; code?: string };
@@ -287,6 +303,6 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
     if (!res.headersSent) {
       res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
     }
-    upsertRecord(baseRecord(id, req, res.headersSent ? 200 : 502, isStreaming, apiType, startTime, String(err)));
+    await upsertRecord(baseRecord(id, req, res.headersSent ? 200 : 502, isStreaming, apiType, startTime, String(err)));
   }
 }

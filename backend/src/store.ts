@@ -1,14 +1,22 @@
 import { EventEmitter } from 'events';
-import { eq, desc, sql } from 'drizzle-orm';
 import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown } from './types';
-import { db } from './db';
-import { requests, toolCalls } from './db/schema';
+import { AppDataSource } from './db';
+import { RequestEntity } from './entity/RequestEntity';
+import { ToolCall } from './entity/ToolCall';
+import { Not, IsNull } from 'typeorm';
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(100);
 
 // ---- 流式文本缓冲（内存 Map，临时存放流式进行中的 raw text） ----
 const streamBuf = new Map<string, string>();
+
+// ---- repository 懒加载 ----
+
+let _reqRepo: ReturnType<typeof AppDataSource.getRepository<RequestEntity>> | null = null;
+let _toolRepo: ReturnType<typeof AppDataSource.getRepository<ToolCall>> | null = null;
+function reqRepo() { return _reqRepo ?? (_reqRepo = AppDataSource.getRepository(RequestEntity)); }
+function toolRepo() { return _toolRepo ?? (_toolRepo = AppDataSource.getRepository(ToolCall)); }
 
 // ---- 内部 helper ----
 
@@ -17,7 +25,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     ?? ((r.requestBody as unknown as Record<string, unknown>)?.model as string)
     ?? 'unknown';
 
-  // 从 requestBody.messages 取最新用户输入作为 preview
+  // 从 requestBody 取最新用户输入作为列表 preview
   let preview = '';
   const body = r.requestBody as Record<string, unknown> | undefined;
   const msgs = (body?.messages ?? body?.input) as { role: string; content: unknown }[] | undefined;
@@ -46,11 +54,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
   };
 }
 
-// ---- 从 SQLite 行重建 RecordedRequest ----
-
-type RequestRow = typeof requests.$inferSelect;
-
-function fromRow(row: RequestRow): RecordedRequest {
+function entityToRecord(row: RequestEntity): RecordedRequest {
   return {
     id: row.id,
     timestamp: row.timestamp,
@@ -58,10 +62,10 @@ function fromRow(row: RequestRow): RecordedRequest {
     path: row.path,
     upstreamUrl: row.upstream_url,
     apiType: row.api_type as ApiType,
-    requestHeaders: (safeJsonParse(row.request_headers) as Record<string, string>) ?? {},
-    requestBody: safeJsonParse(row.request_body),
-    responseHeaders: safeJsonParse(row.response_headers) as Record<string, string> | undefined,
-    responseContent: safeJsonParse(row.response_content) as MergedContent | null,
+    requestHeaders: (safeJsonParse(row.request_headers ?? null) as Record<string, string>) ?? {},
+    requestBody: safeJsonParse(row.request_body ?? null),
+    responseHeaders: safeJsonParse(row.response_headers ?? null) as Record<string, string> | undefined,
+    responseContent: safeJsonParse(row.response_content ?? null) as MergedContent | null,
     responseBody: row.response_body ?? undefined,
     chunks: [],
     streaming: row.streaming === 1,
@@ -71,15 +75,11 @@ function fromRow(row: RequestRow): RecordedRequest {
     durationMs: row.duration_ms,
     error: row.error ?? undefined,
     finished: row.finished,
-    tokenBreakdown: (safeJsonParse(row.computed_tokens) as TokenBreakdown) ?? undefined,
+    tokenBreakdown: (safeJsonParse(row.computed_tokens ?? null) as TokenBreakdown) ?? undefined,
   };
 }
 
-// ---- 从 SQLite 行构建 RecordSummary ----
-
-type SummaryRow = Pick<RequestRow, 'id' | 'timestamp' | 'model' | 'status' | 'preview' | 'streaming' | 'duration_ms' | 'finished' | 'error' | 'api_type'>;
-
-function rowToSummary(row: SummaryRow): RecordSummary {
+function entityToSummary(row: RequestEntity): RecordSummary {
   return {
     id: row.id,
     timestamp: row.timestamp,
@@ -99,10 +99,16 @@ function safeJsonParse(s: string | null): unknown {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+// 列表查询的 select 列（跳过 blob，保证分页性能）
+const SUMMARY_SELECT = {
+  id: true, timestamp: true, model: true, status: true, preview: true,
+  streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
+};
+
 // ---- 公开 API ----
 
 /** 新增或更新请求记录 */
-export function upsertRecord(r: RecordedRequest): void {
+export async function upsertRecord(r: RecordedRequest): Promise<void> {
   // 流式文本缓冲
   if (r.state === 'streaming' && r.streamText != null) {
     streamBuf.set(r.id, r.streamText);
@@ -111,104 +117,83 @@ export function upsertRecord(r: RecordedRequest): void {
   }
 
   const summary = toSummary(r);
+  const repo = reqRepo();
 
-  const existing = db.select({ id: requests.id }).from(requests).where(eq(requests.id, r.id)).get();
-
-  const row = {
-    id: r.id,
-    timestamp: r.timestamp,
-    model: summary.model,
-    method: r.method,
-    path: r.path,
-    upstream_url: r.upstreamUrl,
-    api_type: r.apiType,
-    status: r.responseStatus,
-    streaming: r.streaming ? 1 : 0,
-    finished: r.finished ?? (r.state === 'done' || r.state === 'error' ? 'ok' : 'pending'),
-    error: r.error ?? null,
-    duration_ms: r.durationMs,
-    preview: summary.preview || null,
-    request_headers: r.requestHeaders ? JSON.stringify(r.requestHeaders) : null,
-    request_body: r.requestBody ? JSON.stringify(r.requestBody) : null,
-    response_headers: r.responseHeaders ? JSON.stringify(r.responseHeaders) : null,
-    response_content: r.responseContent ? JSON.stringify(r.responseContent) : null,
-    response_body: r.responseBody ?? null,
-    computed_tokens: r.tokenBreakdown ? JSON.stringify(r.tokenBreakdown) : null,
-    api_usage: null,
-  };
-
-  if (existing) {
-    db.update(requests).set(row).where(eq(requests.id, r.id)).run();
+  // 流式中间更新 vs 全量写入
+  const existing = await repo.findOneBy({ id: r.id });
+  if (existing && r.state === 'streaming') {
+    // 流式进行中：仅更新轻量列，不重写 blob（避免每 200ms 重写 MB 级 JSON）
+    await repo.update({ id: r.id }, {
+      duration_ms: r.durationMs,
+      status: r.responseStatus,
+      model: summary.model,
+      preview: summary.preview || null,
+    });
   } else {
-    db.insert(requests).values(row).run();
+    // 全量写入（流式开始 / 流式完成 / 非流式 / 错误）
+    await repo.save({
+      id: r.id,
+      timestamp: r.timestamp,
+      model: summary.model,
+      method: r.method,
+      path: r.path,
+      upstream_url: r.upstreamUrl,
+      api_type: r.apiType,
+      status: r.responseStatus,
+      streaming: r.streaming ? 1 : 0,
+      finished: r.finished ?? (r.state === 'done' || r.state === 'error' ? 'ok' : 'pending'),
+      error: r.error ?? undefined,
+      duration_ms: r.durationMs,
+      preview: summary.preview || null,
+      request_headers: r.requestHeaders ? JSON.stringify(r.requestHeaders) : undefined,
+      request_body: r.requestBody ? JSON.stringify(r.requestBody) : undefined,
+      response_headers: r.responseHeaders ? JSON.stringify(r.responseHeaders) : undefined,
+      response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
+      response_body: r.responseBody ?? undefined,
+      computed_tokens: r.tokenBreakdown ? JSON.stringify(r.tokenBreakdown) : undefined,
+      api_usage: undefined,
+    });
   }
 
   emitter.emit('update', summary);
 }
 
 /** 更新 api_usage 列（proxy 完成后调用） */
-export function updateApiUsage(id: string, usage: unknown): void {
-  db.update(requests)
-    .set({ api_usage: usage ? JSON.stringify(usage) : null })
-    .where(eq(requests.id, id))
-    .run();
+export async function updateApiUsage(id: string, usage: unknown): Promise<void> {
+  await reqRepo().update({ id }, { api_usage: usage ? JSON.stringify(usage) : undefined });
 }
 
 /** 分页列表 */
-export function getAll(page?: number, pageSize?: number): RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number } {
+export async function getAll(page?: number, pageSize?: number): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number }> {
+  const repo = reqRepo();
   if (page && pageSize) {
-    const total = (db.select({ cnt: sql<number>`count(*)` }).from(requests).get())!.cnt;
-    const rows = db.select({
-      id: requests.id,
-      timestamp: requests.timestamp,
-      model: requests.model,
-      status: requests.status,
-      preview: requests.preview,
-      streaming: requests.streaming,
-      duration_ms: requests.duration_ms,
-      finished: requests.finished,
-      error: requests.error,
-      api_type: requests.api_type,
-    })
-      .from(requests)
-      .orderBy(desc(requests.timestamp))
-      .limit(pageSize)
-      .offset((page - 1) * pageSize)
-      .all();
-    return { items: rows.map(rowToSummary), total, page, pageSize };
+    const [rows, total] = await repo.findAndCount({
+      select: SUMMARY_SELECT,
+      order: { timestamp: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    });
+    return { items: rows.map(entityToSummary), total, page, pageSize };
   }
-
-  // 全量返回（向后兼容）
-  const rows = db.select({
-    id: requests.id,
-    timestamp: requests.timestamp,
-    model: requests.model,
-    status: requests.status,
-    preview: requests.preview,
-    streaming: requests.streaming,
-    duration_ms: requests.duration_ms,
-    finished: requests.finished,
-    error: requests.error,
-    api_type: requests.api_type,
-  })
-    .from(requests)
-    .orderBy(desc(requests.timestamp))
-    .all();
-  return rows.map(rowToSummary);
+  const rows = await repo.find({
+    select: SUMMARY_SELECT,
+    order: { timestamp: 'DESC' },
+  });
+  return rows.map(entityToSummary);
 }
 
 /** 详情查询 */
-export function getById(id: string): RecordedRequest | undefined {
-  const row = db.select().from(requests).where(eq(requests.id, id)).get();
+export async function getById(id: string): Promise<RecordedRequest | undefined> {
+  const row = await reqRepo().findOneBy({ id });
   if (!row) return undefined;
-  return fromRow(row);
+  return entityToRecord(row);
 }
 
 /** 清空全部记录 */
-export function clear(): void {
+export async function clear(): Promise<void> {
   streamBuf.clear();
-  db.delete(toolCalls).run();
-  db.delete(requests).run();
+  await toolRepo().delete({});
+  await reqRepo().delete({});
   emitter.emit('clear');
 }
 
@@ -220,54 +205,59 @@ export interface ToolCallEntry {
   result?: string;
 }
 
-export function writeToolCalls(requestId: string, entries: ToolCallEntry[]): void {
+export async function writeToolCalls(requestId: string, entries: ToolCallEntry[]): Promise<void> {
   if (entries.length === 0) return;
   const now = new Date().toISOString();
+  const repo = toolRepo();
   for (const e of entries) {
-    db.insert(toolCalls).values({
+    await repo.save({
       request_id: requestId,
       tool_call_id: e.tool_call_id,
       tool_name: e.tool_name,
-      arguments: e.arguments ?? null,
-      result: e.result ?? null,
+      arguments: e.arguments ?? undefined,
+      result: e.result ?? undefined,
       created_at: now,
-    }).run();
+    });
+  }
+}
+
+/** 回填 tool_calls 的 result 列（工具返回结果在下一轮请求的 requestBody 中携带） */
+export async function updateToolCallResults(updates: { tool_call_id: string; result: string }[]): Promise<void> {
+  if (updates.length === 0) return;
+  const repo = toolRepo();
+  for (const u of updates) {
+    await repo.update(
+      { tool_call_id: u.tool_call_id, result: IsNull() },
+      { result: u.result },
+    );
   }
 }
 
 /** 查询某次请求的全部工具调用 */
-export function getToolCalls(requestId: string): ToolCallEntry[] {
-  return db.select({
-    tool_call_id: toolCalls.tool_call_id,
-    tool_name: toolCalls.tool_name,
-    arguments: toolCalls.arguments,
-    result: toolCalls.result,
-  })
-    .from(toolCalls)
-    .where(eq(toolCalls.request_id, requestId))
-    .all()
-    .map(r => ({ ...r, arguments: r.arguments ?? undefined, result: r.result ?? undefined }));
+export async function getToolCalls(requestId: string): Promise<ToolCallEntry[]> {
+  const rows = await toolRepo().find({ where: { request_id: requestId } });
+  return rows.map(r => ({
+    tool_call_id: r.tool_call_id,
+    tool_name: r.tool_name,
+    arguments: r.arguments ?? undefined,
+    result: r.result ?? undefined,
+  }));
 }
 
 /** 工具调用配对查询 */
-export function getToolCallPair(
-  _requestId: string, toolName: string, toolCallId: string
-): { prevResult?: string; nextRequest?: string } {
-  const callRow = db.select({ arguments: toolCalls.arguments })
-    .from(toolCalls)
-    .where(
-      sql`${toolCalls.tool_name} = ${toolName} AND ${toolCalls.tool_call_id} = ${toolCallId} AND ${toolCalls.arguments} IS NOT NULL`
-    )
-    .limit(1)
-    .get();
-
-  const resultRow = db.select({ result: toolCalls.result })
-    .from(toolCalls)
-    .where(
-      sql`${toolCalls.tool_name} = ${toolName} AND ${toolCalls.tool_call_id} = ${toolCallId} AND ${toolCalls.result} IS NOT NULL`
-    )
-    .limit(1)
-    .get();
+export async function getToolCallPair(
+  toolName: string, toolCallId: string,
+): Promise<{ prevResult?: string; nextRequest?: string }> {
+  const callRow = await toolRepo().findOne({
+    where: { tool_name: toolName, tool_call_id: toolCallId, arguments: Not(IsNull()) },
+    select: { arguments: true },
+    order: { id: 'ASC' },
+  });
+  const resultRow = await toolRepo().findOne({
+    where: { tool_name: toolName, tool_call_id: toolCallId, result: Not(IsNull()) },
+    select: { result: true },
+    order: { id: 'ASC' },
+  });
 
   return {
     nextRequest: callRow?.arguments ?? undefined,

@@ -1,7 +1,9 @@
+import 'reflect-metadata';
 import express from 'express';
 import path from 'path';
 import { handleProxy, handlePassthrough } from './proxy';
 import { getAll, getById, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
+import { initDb } from './db';
 import { RecordSummary } from './types';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -13,6 +15,16 @@ if (!UPSTREAM_URL) {
   process.exit(1);
 }
 
+/** 包装 async handler：任意 reject 自动 → 500 + 打印日志 */
+function route(fn: (req: express.Request, res: express.Response) => Promise<void>) {
+  return (req: express.Request, res: express.Response) => {
+    fn(req, res).catch((err) => {
+      console.error(`[api] ${req.method} ${req.path} 失败: ${(err as Error).message}`);
+      if (!res.headersSent) res.status(500).json({ error: '服务器内部错误' });
+    });
+  };
+}
+
 const app = express();
 
 app.use(express.json({ limit: '10mb' }));
@@ -22,26 +34,26 @@ const publicDir = path.resolve(__dirname, '..', '..', 'frontend');
 app.use(express.static(publicDir));
 
 // API: recorded requests（可选分页）
-app.get('/api/requests', (req, res) => {
+app.get('/api/requests', route(async (req, res) => {
   const page = parseInt(req.query.page as string) || undefined;
   const pageSize = parseInt(req.query.pageSize as string) || undefined;
-  res.json(getAll(page, pageSize));
-});
+  res.json(await getAll(page, pageSize));
+}));
 
-app.get('/api/requests/:id', (req, res) => {
-  const record = getById(req.params.id);
+app.get('/api/requests/:id', route(async (req, res) => {
+  const record = await getById(req.params.id);
   if (!record) {
     console.warn(`[api] request not found: ${req.params.id}`);
     res.status(404).json({ error: 'Request not found' });
     return;
   }
   res.json(record);
-});
+}));
 
-app.delete('/api/requests', (_req, res) => {
-  clear();
+app.delete('/api/requests', route(async (_req, res) => {
+  await clear();
   res.status(204).send();
-});
+}));
 
 // SSE events stream
 app.get('/api/events', (req, res) => {
@@ -72,18 +84,18 @@ app.get('/api/events', (req, res) => {
 });
 
 // API: 工具调用查询
-app.get('/api/tool-calls', (req, res) => {
+app.get('/api/tool-calls', route(async (req, res) => {
   const requestId = req.query.requestId as string;
   const toolName = req.query.toolName as string;
   const toolCallId = req.query.toolCallId as string;
   if (requestId && toolName && toolCallId) {
-    res.json(getToolCallPair(requestId, toolName, toolCallId));
+    res.json(await getToolCallPair(toolName, toolCallId));
   } else if (requestId) {
-    res.json({ toolCalls: getToolCalls(requestId) });
+    res.json({ toolCalls: await getToolCalls(requestId) });
   } else {
     res.status(400).json({ error: 'Need requestId' });
   }
-});
+}));
 
 // Proxy: OpenAI-compatible（任何以 /chat/completions 结尾的 POST 请求）
 app.post(/\/chat\/completions$/, (req, res) => handleProxy(req, res, 'openai'));
@@ -103,7 +115,12 @@ app.use((req, res, next) => {
   handlePassthrough(req, res);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
-  console.log(`Proxying to ${UPSTREAM_URL}`);
+initDb().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
+    console.log(`Proxying to ${UPSTREAM_URL}`);
+  });
+}).catch((err) => {
+  console.error('[db] 数据库初始化失败:', err);
+  process.exit(1);
 });
