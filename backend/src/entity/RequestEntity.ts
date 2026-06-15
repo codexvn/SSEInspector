@@ -79,4 +79,13 @@ export class RequestEntity {
   /** JSON 接口原始 usage 对象，字段因供应商而异 */
   @Column('text', { nullable: true })
   api_usage?: string | null;
+
+  /** 会话标识（从已知请求头提取），加索引以支持按会话聚合查询 */
+  @Column('text', { nullable: true })
+  @Index('idx_requests_session_id')
+  session_id?: string | null;
+
+  /** 会话标识来源头名称（如 x-claude-code-session-id） */
+  @Column('text', { nullable: true })
+  session_id_key?: string | null;
 }

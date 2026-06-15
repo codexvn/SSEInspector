@@ -12,6 +12,8 @@ export interface RecordSummary {
   streamText?: string
   cacheRead?: number
   apiReportedInput?: number
+  sessionId?: string
+  sessionIdKey?: string
 }
 
 export interface RecordedRequest {

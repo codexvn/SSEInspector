@@ -144,6 +144,10 @@ export interface RecordedRequest {
   tokenBreakdown?: TokenBreakdown;
   /** 接口原始 usage 对象（JSON TEXT 列 api_usage），字段因供应商而异 */
   apiUsage?: string;
+  /** 会话标识（从已知请求头提取） */
+  sessionId?: string;
+  /** 会话标识来源头名称 */
+  sessionIdKey?: string;
 }
 
 export interface RecordSummary {
@@ -161,4 +165,8 @@ export interface RecordSummary {
   cacheRead?: number;
   /** API 报告输入 token 数（来自 apiUsage 解析） */
   apiReportedInput?: number;
+  /** 会话标识（从已知请求头提取） */
+  sessionId?: string;
+  /** 会话标识来源头名称 */
+  sessionIdKey?: string;
 }

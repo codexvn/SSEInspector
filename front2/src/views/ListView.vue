@@ -12,7 +12,7 @@ const filtered = computed(() => {
   const q = searchQuery.value.toLowerCase().trim()
   if (!q) return store.items
   return store.items.filter(r => {
-    const hay = [r.id, r.model, r.preview, r.apiType, String(r.status), r.state].join('\n').toLowerCase()
+    const hay = [r.id, r.model, r.preview, r.apiType, String(r.status), r.state, r.sessionId, r.sessionIdKey].join('\n').toLowerCase()
     return hay.includes(q)
   })
 })
@@ -43,6 +43,20 @@ function formatCacheHit(cache: number, total: number): string {
   if (!total) return '0%'
   return (cache / total * 100).toFixed(2) + '%'
 }
+
+const SESSION_KEY_ABBREV: Record<string, string> = {
+  'x-claude-code-session-id': 'CC',
+  'session_id': 'Codex',
+  'x-amp-thread-id': 'AMP',
+  'x-grok-conv-id': 'Grok',
+  'x-session-affinity': 'Affinity',
+}
+
+function sessionLabel(sid?: string, key?: string): string {
+  if (!sid || !key) return '-'
+  const abbrev = SESSION_KEY_ABBREV[key] ?? key.slice(0, 6)
+  return abbrev + ' ' + sid.slice(0, 8)
+}
 </script>
 
 <template>
@@ -72,6 +86,7 @@ function formatCacheHit(cache: number, total: number): string {
             <th>模型</th>
             <th>状态</th>
             <th>预览</th>
+            <th>会话</th>
             <th>耗时</th>
             <th>缓存命中</th>
           </tr>
@@ -93,6 +108,9 @@ function formatCacheHit(cache: number, total: number): string {
             <td class="cell-preview">
               <em v-if="r.state === 'streaming'" style="color:var(--accent);margin-right:4px;">流式传输中…</em>
               <span v-else>{{ r.preview }}</span>
+            </td>
+            <td class="cell-session" :title="r.sessionId || undefined">
+              {{ sessionLabel(r.sessionId, r.sessionIdKey) }}
             </td>
             <td class="cell-duration">
               <template v-if="r.state === 'streaming'">…</template>
@@ -166,6 +184,7 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-model { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .cell-api { white-space: nowrap; font-size: 0.75rem; }
 .cell-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); }
 .cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
 .cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
 .cache-hit { color: var(--success); font-weight: 600; }

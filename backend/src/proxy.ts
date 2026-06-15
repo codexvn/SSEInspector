@@ -9,6 +9,28 @@ const HOP_HEADERS = [
   'trailer', 'proxy-authenticate', 'proxy-authorization', 'upgrade',
 ];
 
+/** 已知的 session ID 请求头（小写），按优先级排序 */
+const KNOWN_SESSION_HEADERS = [
+  'x-claude-code-session-id',
+  'session_id',
+  'x-amp-thread-id',
+  'x-grok-conv-id',
+  'x-session-affinity',
+];
+
+/** 从请求头中按已知列表提取 session ID，返回 { value, key } 或 null */
+function extractSessionId(req: Request): { value: string; key: string } | null {
+  const headers = req.headers as Record<string, string | string[] | undefined>;
+  for (const name of KNOWN_SESSION_HEADERS) {
+    const v = headers[name];
+    if (v) {
+      const value = Array.isArray(v) ? v[0] : v;
+      if (value) return { value, key: name };
+    }
+  }
+  return null;
+}
+
 function filterHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -25,6 +47,7 @@ function baseRecord(
   startTime: number, error?: string,
 ): RecordedRequest {
   const targetUrl = (process.env.UPSTREAM_URL ?? '').replace(/\/$/, '') + req.path;
+  const sid = extractSessionId(req);
   return {
     id,
     timestamp: new Date().toISOString(),
@@ -40,6 +63,8 @@ function baseRecord(
     apiType,
     error,
     state: error ? 'error' : streaming ? 'streaming' : 'done',
+    sessionId: sid?.value,
+    sessionIdKey: sid?.key,
   };
 }
 

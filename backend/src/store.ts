@@ -51,6 +51,8 @@ function toSummary(r: RecordedRequest): RecordSummary {
     state: r.state,
     apiType: r.apiType,
     streamText: r.streamText,
+    sessionId: r.sessionId,
+    sessionIdKey: r.sessionIdKey,
   };
 }
 
@@ -78,6 +80,8 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     finished: row.finished,
     tokenBreakdown: (safeJsonParse(row.computed_tokens ?? null) as TokenBreakdown) ?? undefined,
     apiUsage: row.api_usage ?? undefined,
+    sessionId: row.session_id ?? undefined,
+    sessionIdKey: row.session_id_key ?? undefined,
   };
 }
 
@@ -108,6 +112,8 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     streamText: streamBuf.get(row.id),
     cacheRead,
     apiReportedInput,
+    sessionId: row.session_id ?? undefined,
+    sessionIdKey: row.session_id_key ?? undefined,
   };
 }
 
@@ -126,7 +132,7 @@ function deriveState(finished: string, error: string | null): RecordState {
 const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
-  computed_tokens: true,
+  computed_tokens: true, session_id: true, session_id_key: true,
 };
 
 // ---- 公开 API ----
@@ -176,6 +182,8 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       response_body: r.responseBody ?? undefined,
       computed_tokens: r.tokenBreakdown ? JSON.stringify(r.tokenBreakdown) : undefined,
       api_usage: r.apiUsage ?? null,
+      session_id: r.sessionId ?? null,
+      session_id_key: r.sessionIdKey ?? null,
     });
   }
 
