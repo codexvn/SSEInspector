@@ -63,9 +63,11 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     upstreamUrl: row.upstream_url,
     apiType: row.api_type as ApiType,
     requestHeaders: (safeJsonParse(row.request_headers ?? null) as Record<string, string>) ?? {},
-    requestBody: safeJsonParse(row.request_body ?? null),
+    // requestBody 可达 MB 级 ——透传 raw string，前端按需 parse
+    requestBody: row.request_body ?? null,
     responseHeaders: safeJsonParse(row.response_headers ?? null) as Record<string, string> | undefined,
     responseContent: safeJsonParse(row.response_content ?? null) as MergedContent | null,
+    // responseBody 可达 MB 级 ——透传 raw string，前端直接显示
     responseBody: row.response_body ?? undefined,
     streaming: row.streaming === 1,
     state: deriveState(row.finished, row.error ?? null),
