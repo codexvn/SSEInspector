@@ -24,6 +24,13 @@ const isStreaming = computed(() => record.value?.state === 'streaming')
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
 
+/** 响应体 tab：'raw' | 'merged' */
+const respBodyTab = ref<'raw' | 'merged'>('raw')
+/** 合并后的响应内容 JSON（用于"合并"tab） */
+const mergedContentText = computed(() =>
+  record.value?.responseContent ? JSON.stringify(record.value.responseContent, null, 2) : ''
+)
+
 /** 流式文本：优先从 store.items（SSE 推送）取，fallback 到完整 record */
 const streamText = computed(() => {
   const summary = store.items.find(r => r.id === id.value)
@@ -367,10 +374,19 @@ async function doExport() {
         </template>
       </div>
 
-      <!-- 响应体 -->
+      <!-- 响应体（原始 / 合并双 tab） -->
       <details class="details-card" v-if="record.responseBody">
         <summary>响应体</summary>
-        <JsonViewer :value="record.responseBody" :lang="record.responseBody.startsWith('{') ? 'json' : 'plaintext'" />
+        <div class="rb-tabs">
+          <button class="rb-tab" :class="{ active: respBodyTab === 'raw' }" @click="respBodyTab = 'raw'">原始</button>
+          <button class="rb-tab" :class="{ active: respBodyTab === 'merged' }" @click="respBodyTab = 'merged'">合并</button>
+        </div>
+        <div class="rb-pane" v-show="respBodyTab === 'raw'">
+          <JsonViewer :value="record.responseBody" :lang="record.responseBody.startsWith('{') ? 'json' : 'plaintext'" />
+        </div>
+        <div class="rb-pane" v-show="respBodyTab === 'merged'">
+          <JsonViewer :value="mergedContentText" lang="json" />
+        </div>
       </details>
 
     </template>
@@ -533,13 +549,26 @@ async function doExport() {
 
 /* Streaming */
 .streaming-card .stream-card { border-left: none; }
-.streaming-card .stream-card .section-label { display: none; }
 
 /* Finish reason */
 .finish-reason { font-size: 0.8rem; color: var(--text-secondary); margin-top: 8px; }
 
 .status-msg { text-align: center; padding: 40px 0; color: var(--text-secondary); }
 .error-msg { color: var(--error); }
+
+/* Response body tabs */
+.rb-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0 18px;
+}
+.rb-tab {
+  padding: 8px 16px; border: none; background: none; cursor: pointer;
+  font-size: 0.78rem; font-weight: 500; color: var(--text-muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all .15s;
+}
+.rb-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.rb-tab:hover:not(.active) { color: var(--text-secondary); }
+.rb-pane { position: relative; }
+.rb-pane .copy-btn { top: 4px; right: 4px; }
 
 @media (max-width: 768px) {
   .detail-meta { flex-wrap: wrap; }

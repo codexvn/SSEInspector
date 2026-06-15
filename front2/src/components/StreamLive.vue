@@ -21,7 +21,6 @@ function onScroll() {
 
 <template>
   <div class="stream-card">
-    <span class="section-label" style="background:#e0e7ff;color:#3730a3;animation:pulse 1.5s ease-in-out infinite;">实时接收中…</span>
     <pre ref="preRef" @scroll="onScroll">{{ text }}</pre>
   </div>
 </template>

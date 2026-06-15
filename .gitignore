@@ -10,7 +10,7 @@ yarn-error.log*
 
 .vscode/*
 .idea/
-.DS_Store/.codegraph
+.DS_Store
 /.codegraph
 
 /.db/
