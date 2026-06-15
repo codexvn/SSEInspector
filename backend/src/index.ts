@@ -87,12 +87,12 @@ async function start() {
     const requestId = req.query.requestId as string;
     const toolName = req.query.toolName as string;
     const toolCallId = req.query.toolCallId as string;
-    if (requestId && toolName && toolCallId) {
+    if (toolName && toolCallId) {
       res.json(await getToolCallPair(toolName, toolCallId));
     } else if (requestId) {
       res.json({ toolCalls: await getToolCalls(requestId) });
     } else {
-      res.status(400).json({ error: 'Need requestId' });
+      res.status(400).json({ error: 'Need requestId or toolName+toolCallId' });
     }
   }));
 

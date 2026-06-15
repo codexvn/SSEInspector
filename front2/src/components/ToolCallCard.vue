@@ -6,7 +6,7 @@ import JsonViewer from './JsonViewer.vue'
 const props = defineProps<{
   toolCallId: string
   toolName: string
-  arguments?: string
+  toolArgs?: string
   result?: string
   requestId: string
   side: 'request' | 'result'
@@ -46,7 +46,7 @@ function fmtArgs(args?: string): string {
         <JsonViewer :value="side === 'request' ? hoverData : fmtArgs(hoverData)" />
       </div>
     </div>
-    <pre v-if="arguments" class="args-pre">{{ fmtArgs(arguments) }}</pre>
+    <pre v-if="toolArgs" class="args-pre">{{ fmtArgs(toolArgs) }}</pre>
   </div>
 </template>
 
