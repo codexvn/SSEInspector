@@ -23,6 +23,15 @@ const id = computed(() => route.params.id as string)
 const isStreaming = computed(() => record.value?.state === 'streaming')
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
+/** requestBody 在服务器端透传 raw string（不 JSON.parse），前端惰性解析后缓存 */
+const parsedBody = computed(() => {
+  const body = record.value?.requestBody
+  if (!body) return undefined
+  if (typeof body === 'string') {
+    try { return JSON.parse(body) as Record<string, unknown> } catch { return undefined }
+  }
+  return body as Record<string, unknown>
+})
 
 /** 响应体 tab：'raw' | 'merged' */
 const respBodyTab = ref<'raw' | 'merged'>('raw')
@@ -93,7 +102,7 @@ function fmtJson(val: unknown): string {
 
 /** 从 requestBody 取最新用户输入——支持 messages 数组和 input 数组两种格式 */
 function userInput(): string {
-  const body = record.value?.requestBody as Record<string, unknown> | undefined
+  const body = parsedBody.value
   if (!body) return ''
   // messages 格式（OpenAI Chat）
   const msgs = body.messages as Record<string, unknown>[] | undefined
@@ -128,7 +137,7 @@ function userInput(): string {
 /** 从 requestBody 提取 tool_result——仅最新一轮（和旧版 extractUserRequest 一致）。
  *  找最后一条 user 消息，往前扫 tool 消息，遇到 assistant 就停（本轮边界）。 */
 function extractToolResults(): { tool_call_id: string; content: string; tool_name?: string }[] {
-  const body = record.value?.requestBody as Record<string, unknown> | undefined
+  const body = parsedBody.value
   if (!body) return []
   const findTc = (id: string) => toolCalls.value.find(t => t.tool_call_id === id)
   const msgs = body.messages as Record<string, unknown>[] | undefined
