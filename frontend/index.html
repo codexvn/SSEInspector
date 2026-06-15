@@ -1,77 +1,13 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SSEInspector</title>
-  <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs/editor/editor.main.css">
-</head>
-<body>
-  <div id="app">
-    <header id="summary-bar">
-      <h1>SSEInspector</h1>
-      <div id="summary-stats">
-        <span id="stat-total">总计 0</span>
-        <span id="stat-openai">OpenAI 0</span>
-        <span id="stat-anthropic">Anthropic 0</span>
-        <span id="stat-streaming">进行中 0</span>
-        <span id="stat-errors">错误 0</span>
-      </div>
-      <input type="text" id="search-input" placeholder="搜索路径、模型、请求、响应…" autocomplete="off">
-      <button id="btn-clear">清空全部</button>
-    </header>
-
-    <section id="view-list">
-      <table id="requests-table">
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>API</th>
-            <th>模型</th>
-            <th>状态</th>
-            <th>预览</th>
-            <th>耗时</th>
-          </tr>
-        </thead>
-        <tbody id="requests-tbody"></tbody>
-      </table>
-      <div id="pagination"></div>
-      <div id="empty-state">暂无记录，发送请求到代理即可看到</div>
-    </section>
-
-    <section id="view-detail" style="display:none">
-      <button id="btn-back">&larr; 返回列表</button>
-      <button id="btn-export" title="导出到剪贴板">导出</button>
-      <div id="detail-nav">
-        <button id="btn-prev" title="上一条 (←)">&uarr; 上一条</button>
-        <span id="detail-nav-pos"></span>
-        <button id="btn-next" title="下一条 (→)">&darr; 下一条</button>
-      </div>
-      <div id="detail-meta"></div>
-      <div id="detail-token-breakdown"></div>
-      <div id="detail-request-url"></div>
-      <div id="detail-request-headers"></div>
-      <div id="detail-request"></div>
-      <div id="detail-user-request"></div>
-
-      <div id="detail-content"></div>
-
-      <div id="detail-response-body"></div>
-      <div id="detail-response-headers"></div>
-    </section>
-  </div>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs/loader.js"></script>
-  <script>
-    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs' } });
-    require(['vs/editor/editor.main'], function () {
-      window._monacoReady = true;
-      if (typeof initMonacoEditors === 'function') initMonacoEditors();
-    });
-  </script>
-  <script src="/app.js"></script>
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SSEInspector</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>

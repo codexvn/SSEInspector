@@ -107,7 +107,7 @@ async function start() {
 
   // ---- 前端静态资源（vite-express：dev HMR / prod static）----
 
-  const frontRoot = path.resolve(__dirname, '..', '..', 'front2');
+  const frontRoot = path.resolve(__dirname, '..', '..', 'frontend');
   ViteExpress.config({ inlineViteConfig: { root: frontRoot } });
   app.use(ViteExpress.static());
 
