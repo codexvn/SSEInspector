@@ -23,10 +23,15 @@ interface MergedChoice {
   finish_reason: string | null;
 }
 
+/**
+ * /chat/completions 响应中的 usage 字段（OpenAI 标准格式）。
+ * 字段均为可选：非标供应商（如 DeepSeek）使用不同字段名（input_tokens 等），
+ * 运行时通过模型名检测分支处理，此处不混入非标字段。
+ */
 interface MergedUsage {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
   prompt_tokens_details?: {
     cached_tokens?: number;
     cache_miss_tokens?: number;

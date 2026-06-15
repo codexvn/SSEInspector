@@ -34,6 +34,49 @@ function extractModel(responseContent: MergedContent | null, body: Record<string
   return 'unknown';
 }
 
+// ---- DeepSeek（/chat/completions 非标 usage 格式） ----
+//
+// DeepSeek 在 /chat/completions 响应中使用非标字段名：
+//   input_tokens           ← OpenAI 标准: prompt_tokens
+//   output_tokens          ← OpenAI 标准: completion_tokens
+//   input_tokens_details.cached_tokens  ← OpenAI 标准: prompt_tokens_details.cached_tokens
+//
+// 以下 helper 按模型名分支提取，不混入标准 OpenAI 类型定义。
+
+interface DeepSeekChatUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+  };
+}
+
+function isDeepSeekModel(model: string): boolean {
+  return /deepseek/i.test(model);
+}
+
+function extractChatCacheRead(usage: Record<string, unknown> | null, model: string): number {
+  if (!usage) return 0;
+  // DeepSeek 非标字段
+  if (isDeepSeekModel(model)) {
+    return (usage as unknown as DeepSeekChatUsage).input_tokens_details?.cached_tokens ?? 0;
+  }
+  // OpenAI 标准字段
+  const details = usage.prompt_tokens_details as { cached_tokens?: number } | undefined;
+  return details?.cached_tokens ?? 0;
+}
+
+function extractChatApiReportedInput(usage: Record<string, unknown> | null, model: string): number {
+  if (!usage) return 0;
+  // DeepSeek 非标字段
+  if (isDeepSeekModel(model)) {
+    return (usage as unknown as DeepSeekChatUsage).input_tokens ?? 0;
+  }
+  // OpenAI 标准字段
+  return (usage as { prompt_tokens?: number }).prompt_tokens ?? 0;
+}
+
 // ---- OpenAI Chat ----
 
 function isOpenAIChatBody(body: Record<string, unknown>): boolean {
@@ -42,12 +85,8 @@ function isOpenAIChatBody(body: Record<string, unknown>): boolean {
 
 async function breakDownOpenAIChat(
   body: Record<string, unknown>,
-  usage: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number; cache_miss_tokens?: number };
-  } | null,
+  usage: Record<string, unknown> | null,
+  model: string,
   tokenizer: ResolvedTokenizer | null,
 ): Promise<TokenBreakdown | null> {
   const encode = tokenizer?.encoder ?? getGptFallback();
@@ -91,10 +130,10 @@ async function breakDownOpenAIChat(
   // tools
   const tools = encode(JSON.stringify(extractTools(body)));
 
-  const cacheRead = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  // 按模型名分支提取缓存命中与 API 报告输入（DeepSeek 与 OpenAI 字段命名不同）
+  const cacheRead = extractChatCacheRead(usage, model);
   const totalInput = messages + tools + systemPrompt;
-  // OpenAI Chat 的 prompt_tokens 已包含缓存的 token，无需额外加上
-  const apiReportedInput = usage?.prompt_tokens ?? 0;
+  const apiReportedInput = extractChatApiReportedInput(usage, model);
 
   return { messages, tools, systemPrompt, cacheRead, totalInput, apiReportedInput, tokenizerSource: sourceLabel(tokenizer) };
 }
@@ -229,16 +268,9 @@ export async function computeTokenBreakdown(
       }
       if (isOpenAIChatBody(bodyObj)) {
         const usage = responseContent && 'usage' in responseContent
-          ? (responseContent as {
-            usage?: {
-              prompt_tokens: number;
-              completion_tokens: number;
-              total_tokens: number;
-              prompt_tokens_details?: { cached_tokens?: number; cache_miss_tokens?: number };
-            }
-          }).usage ?? null
+          ? (responseContent as { usage?: Record<string, unknown> }).usage ?? null
           : null;
-        return await breakDownOpenAIChat(bodyObj, usage, tokenizer);
+        return await breakDownOpenAIChat(bodyObj, usage, model, tokenizer);
       }
       return null;
     }
