@@ -132,7 +132,6 @@ function parseMessage(msg: Record<string, unknown>, role: string, seq: number): 
         text: block.text as string, id: block.id as string, name: block.name as string,
         input: block.input, tool_use_id: block.tool_use_id as string, content: block.content }
     })
-    const kind = role === 'user' ? 'user' : 'assistant'
     items.push({ kind: 'block', role, seq, label: `#${seq}`, blocks, blockCount: blocks.length })
   } else if (content && typeof content === 'object') {
     const kind = role === 'user' ? 'user' : 'assistant'

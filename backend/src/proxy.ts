@@ -18,14 +18,26 @@ const KNOWN_SESSION_HEADERS = [
   'x-session-affinity',
 ];
 
-/** 从请求头中按已知列表提取 session ID，返回 { value, key } 或 null */
+/** 从请求头中按已知列表提取 session ID，返回 { value, key } 或 null。
+ *  优先匹配已知列表，兜底匹配任意以 -session-id 结尾的头（忽略大小写）。 */
 function extractSessionId(req: Request): { value: string; key: string } | null {
   const headers = req.headers as Record<string, string | string[] | undefined>;
+  // 第一轮：已知列表精确匹配
   for (const name of KNOWN_SESSION_HEADERS) {
     const v = headers[name];
     if (v) {
       const value = Array.isArray(v) ? v[0] : v;
       if (value) return { value, key: name };
+    }
+  }
+  // 第二轮：兜底匹配，忽略大小写，后缀为 -session-id 即命中
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase().endsWith('session-id')) {
+      const v = headers[key];
+      if (v) {
+        const value = Array.isArray(v) ? v[0] : v;
+        if (value) return { value, key: key.toLowerCase() };
+      }
     }
   }
   return null;

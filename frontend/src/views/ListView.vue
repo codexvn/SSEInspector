@@ -54,7 +54,7 @@ const SESSION_KEY_ABBREV: Record<string, string> = {
 
 function sessionLabel(sid?: string, key?: string): string {
   if (!sid || !key) return '-'
-  const abbrev = SESSION_KEY_ABBREV[key] ?? key.slice(0, 6)
+  const abbrev = SESSION_KEY_ABBREV[key] ?? (key.endsWith('session-id') ? key.replace(/[-_]?session-id$/i, '').slice(0, 8) : key.slice(0, 6))
   return abbrev + ' ' + sid.slice(0, 8)
 }
 </script>

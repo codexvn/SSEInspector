@@ -36,6 +36,8 @@ export interface RecordedRequest {
   streamText?: string
   responseBody?: string
   tokenBreakdown?: TokenBreakdown
+  sessionId?: string
+  sessionIdKey?: string
 }
 
 export interface TokenBreakdown {
