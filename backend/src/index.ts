@@ -4,7 +4,7 @@ import compression from 'compression';
 import path from 'path';
 import ViteExpress from 'vite-express';
 import { handleProxy, handlePassthrough } from './proxy';
-import { getAll, getById, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
+import { getAll, getById, getPrevInSession, getNextInSession, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
 import { initDb } from './db';
 import { RecordSummary } from './types';
 
@@ -51,6 +51,21 @@ async function start() {
       return;
     }
     res.json(record);
+  }));
+
+  // 同一会话中指定请求的上一条 / 下一条
+  app.get('/api/requests/:id/prev', route(async (req, res) => {
+    const cur = await getById(req.params.id);
+    if (!cur || !cur.sessionId) { res.json(null); return; }
+    const prev = await getPrevInSession(req.params.id, cur.sessionId);
+    res.json(prev ?? null);
+  }));
+
+  app.get('/api/requests/:id/next', route(async (req, res) => {
+    const cur = await getById(req.params.id);
+    if (!cur || !cur.sessionId) { res.json(null); return; }
+    const next = await getNextInSession(req.params.id, cur.sessionId);
+    res.json(next ?? null);
   }));
 
   app.delete('/api/requests', route(async (_req, res) => {

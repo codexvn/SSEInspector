@@ -221,6 +221,33 @@ export async function getById(id: string): Promise<RecordedRequest | undefined> 
   return entityToRecord(row);
 }
 
+/** 查询同一会话中指定请求的上一条已完成请求 */
+export async function getPrevInSession(id: string, sessionId: string): Promise<RecordedRequest | undefined> {
+  const repo = reqRepo();
+  const row = await repo
+    .createQueryBuilder('r')
+    .where('r.session_id = :sid', { sid: sessionId })
+    .andWhere('r.finished = :ok', { ok: 'ok' })
+    .andWhere('r.timestamp < (SELECT timestamp FROM requests WHERE id = :id)', { id })
+    .orderBy('r.timestamp', 'DESC')
+    .limit(1)
+    .getOne();
+  return row ? entityToRecord(row) : undefined;
+}
+
+/** 查询同一会话中指定请求的下一条请求 */
+export async function getNextInSession(id: string, sessionId: string): Promise<RecordedRequest | undefined> {
+  const repo = reqRepo();
+  const row = await repo
+    .createQueryBuilder('r')
+    .where('r.session_id = :sid', { sid: sessionId })
+    .andWhere('r.timestamp > (SELECT timestamp FROM requests WHERE id = :id)', { id })
+    .orderBy('r.timestamp', 'ASC')
+    .limit(1)
+    .getOne();
+  return row ? entityToRecord(row) : undefined;
+}
+
 /** 清空全部记录 */
 export async function clear(): Promise<void> {
   streamBuf.clear();

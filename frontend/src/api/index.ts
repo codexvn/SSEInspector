@@ -14,6 +14,20 @@ export async function fetchDetail(id: string): Promise<RecordedRequest> {
   return res.json()
 }
 
+/** 查询同一会话中指定请求的上一条已完成请求 */
+export async function fetchPrev(id: string): Promise<RecordedRequest | null> {
+  const res = await fetch(`${BASE}/requests/${id}/prev`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+/** 查询同一会话中指定请求的下一条请求 */
+export async function fetchNext(id: string): Promise<RecordedRequest | null> {
+  const res = await fetch(`${BASE}/requests/${id}/next`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
 export async function clearAll(): Promise<void> {
   await fetch(`${BASE}/requests`, { method: 'DELETE' })
 }

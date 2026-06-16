@@ -3,12 +3,13 @@ import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
 import type { RecordedRequest, ToolCallEntry } from '../types'
-import { fetchToolCalls } from '../api'
+import { fetchToolCalls, fetchPrev, fetchNext } from '../api'
 import TokenBreakdown from '../components/TokenBreakdown.vue'
 import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
 import StreamLive from '../components/StreamLive.vue'
+import DiffViewer from '../components/DiffViewer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +41,99 @@ const mergedContentText = computed(() =>
   record.value?.responseContent ? JSON.stringify(record.value.responseContent, null, 2) : ''
 )
 
+// ---- 会话导航 & diff ----
+const prevRecord = ref<RecordedRequest | null>(null)
+const nextRecord = ref<RecordedRequest | null>(null)
+const diffOpen = ref(false)
+const diffDirection = ref<'prev' | 'next'>('prev')
+const diffTab = ref<'reqHead' | 'reqBody' | 'resHead' | 'resBody'>('reqBody')
+const diffMode = ref<'unified' | 'split'>('split')
+const diffCollapsed = ref(true)
+const diffLoading = ref(false)
+
+const hasSession = computed(() => !!record.value?.sessionId)
+const hasPrev = computed(() => !!prevRecord.value)
+const hasNext = computed(() => !!nextRecord.value)
+
+/** diff 对比的目标记录 */
+const diffTarget = computed(() =>
+  diffDirection.value === 'prev' ? prevRecord.value : nextRecord.value
+)
+
+/**
+ * diff 的 old/new：prev 模式 old=prev new=cur；next 模式 old=cur new=next
+ * 保证旧到新的方向正确
+ */
+function diffPair(field: (r: RecordedRequest) => unknown) {
+  const t = diffTarget.value
+  if (!t) return { old: '', new: '', oldLabel: '', newLabel: '' }
+  const oldR = diffDirection.value === 'prev' ? t : record.value!
+  const newR = diffDirection.value === 'prev' ? record.value! : t
+  const short = (r: RecordedRequest) => r.id.slice(0, 8) + ' ' + new Date(r.timestamp).toLocaleTimeString('zh-CN')
+  return {
+    old: formatDiffJSON(field(oldR)),
+    new: formatDiffJSON(field(newR)),
+    oldLabel: short(oldR),
+    newLabel: short(newR),
+  }
+}
+
+/** diff 的四个维度 */
+const diffHeadReq = computed(() => diffPair(r => r.requestHeaders))
+const diffBodyReq = computed(() => diffPair(r => r.requestBody))
+const diffHeadRes = computed(() => diffPair(r => r.responseHeaders))
+const diffBodyRes = computed(() => diffPair(r => r.responseContent))
+
+const diffOld = computed(() => diffDirection.value === 'prev' ? diffTarget.value! : record.value!)
+const diffNew = computed(() => diffDirection.value === 'prev' ? record.value! : diffTarget.value!)
+
+function formatDiffJSON(val: unknown): string {
+  if (!val) return ''
+  if (typeof val === 'string') {
+    try { return JSON.stringify(JSON.parse(val), null, 2) }
+    catch { return val }
+  }
+  return JSON.stringify(val, null, 2)
+}
+
+async function checkNeighbors() {
+  if (!record.value?.sessionId) { prevRecord.value = null; nextRecord.value = null; return }
+  try {
+    const [prev, next] = await Promise.all([
+      fetchPrev(record.value.id),
+      fetchNext(record.value.id),
+    ])
+    prevRecord.value = prev
+    nextRecord.value = next
+  } catch (e) {
+    console.warn(`[DetailView] 查询相邻请求失败: ${(e as Error).message}`)
+    prevRecord.value = null
+    nextRecord.value = null
+  }
+}
+
+async function goToPrev() {
+  if (!prevRecord.value) return
+  router.push({ name: 'detail', params: { id: prevRecord.value.id } })
+}
+
+async function goToNext() {
+  if (!nextRecord.value) return
+  router.push({ name: 'detail', params: { id: nextRecord.value.id } })
+}
+
+async function openDiff(dir: 'prev' | 'next') {
+  if (diffOpen.value && diffDirection.value === dir) { diffOpen.value = false; return }
+  diffLoading.value = true
+  try {
+    await checkNeighbors()
+    const target = dir === 'prev' ? prevRecord.value : nextRecord.value
+    if (target) { diffDirection.value = dir; diffOpen.value = true }
+  } finally {
+    diffLoading.value = false
+  }
+}
+
 /** 流式文本：优先从 store.items（SSE 推送）取，fallback 到完整 record */
 const streamText = computed(() => {
   const summary = store.items.find(r => r.id === id.value)
@@ -49,6 +143,7 @@ const streamText = computed(() => {
 async function load(detailId: string) {
   loading.value = true
   error.value = ''
+  diffOpen.value = false
   try {
     const r = await store.loadDetail(detailId)
     if (!r) { error.value = '请求未找到'; return }
@@ -57,6 +152,7 @@ async function load(detailId: string) {
       const tc = await fetchToolCalls(r.id)
       toolCalls.value = tc.toolCalls ?? []
     } catch { toolCalls.value = [] }
+    checkNeighbors()
   } catch (e) {
     error.value = `加载失败: ${(e as Error).message}`
   } finally {
@@ -80,16 +176,9 @@ onUnmounted(() => {
 watch(() => route.params.id as string, load)
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.target !== document.body) return
-  if (e.key === 'ArrowLeft') navigate(1)
-  if (e.key === 'ArrowRight') navigate(-1)
-}
-
-function navigate(delta: number) {
-  const idx = store.items.findIndex(r => r.id === id.value)
-  if (idx < 0) return
-  const next = store.items[idx + delta]
-  if (next) router.push({ name: 'detail', params: { id: next.id } })
+  if (e.key === 'Escape' && diffOpen.value) {
+    diffOpen.value = false
+  }
 }
 
 function fmtJson(val: unknown): string {
@@ -99,6 +188,21 @@ function fmtJson(val: unknown): string {
   }
   return JSON.stringify(val, null, 2)
 }
+
+// ---- 全局导航 ----
+function globalPrev() {
+  const idx = store.items.findIndex(r => r.id === id.value)
+  if (idx < 0) return
+  const prev = store.items[idx + 1]
+  if (prev) router.push({ name: 'detail', params: { id: prev.id } })
+}
+function globalNext() {
+  const idx = store.items.findIndex(r => r.id === id.value)
+  if (idx < 0) return
+  const next = store.items[idx - 1]
+  if (next) router.push({ name: 'detail', params: { id: next.id } })
+}
+const globalIdx = computed(() => store.items.findIndex(r => r.id === id.value))
 
 /** 从 requestBody 取最新用户输入——支持 messages 数组和 input 数组两种格式 */
 function userInput(): string {
@@ -220,10 +324,35 @@ async function doExport() {
     <div class="nav-bar">
       <button class="btn-back" @click="router.push({ name: 'list' })">&larr; 返回列表</button>
       <button v-if="record" class="btn-export" @click="doExport">导出</button>
-      <div class="detail-nav">
-        <button class="btn-nav" :disabled="!store.total" @click="navigate(1)">&uarr; 上一条</button>
-        <span class="detail-nav-pos">{{ store.items.findIndex(r => r.id === id) + 1 }} / {{ store.total }}</span>
-        <button class="btn-nav" :disabled="!store.total" @click="navigate(-1)">&darr; 下一条</button>
+
+      <span class="nav-sep"></span>
+
+      <!-- 全局导航 -->
+      <div class="nav-group">
+        <span class="nav-group-label">全局</span>
+        <button class="btn-nav" :disabled="globalIdx <= 0" @click="globalPrev">&#9650;</button>
+        <span class="nav-pos">{{ globalIdx + 1 }} / {{ store.total }}</span>
+        <button class="btn-nav" :disabled="globalIdx < 0 || globalIdx >= store.total - 1" @click="globalNext">&#9660;</button>
+      </div>
+
+      <span class="nav-sep"></span>
+
+      <!-- 会话导航 -->
+      <div class="nav-group">
+        <span class="nav-group-label">会话</span>
+        <button class="btn-nav" :disabled="!hasPrev" @click="goToPrev">&#9664;</button>
+        <span class="nav-pos" v-if="hasSession">{{ prevRecord ? prevRecord.id.slice(0, 6) : '-' }} · {{ nextRecord ? nextRecord.id.slice(0, 6) : '-' }}</span>
+        <span class="nav-pos" v-else>无</span>
+        <button class="btn-nav" :disabled="!nextRecord" @click="goToNext">&#9654;</button>
+      </div>
+
+      <span class="nav-sep"></span>
+
+      <!-- Diff -->
+      <div class="nav-group">
+        <span class="nav-group-label">diff</span>
+        <button class="btn-nav btn-diff" :disabled="diffLoading || !hasPrev" @click="openDiff('prev')" title="上一个 diff">&#9664;</button>
+        <button class="btn-nav btn-diff" :disabled="diffLoading || !hasNext" @click="openDiff('next')" title="下一个 diff">&#9654;</button>
       </div>
     </div>
 
@@ -244,6 +373,60 @@ async function doExport() {
       </div>
 
       <TokenBreakdown :record="record" />
+
+      <!-- Diff 弹窗 -->
+      <Teleport to="body">
+        <div v-if="diffOpen && diffTarget" class="diff-overlay" @click.self="diffOpen = false">
+          <div class="diff-modal">
+            <div class="diff-modal-header">
+              <div class="diff-tabs-row">
+                <button class="diff-tab" :class="{ active: diffTab === 'reqHead' }" @click="diffTab = 'reqHead'">请求头</button>
+                <button class="diff-tab" :class="{ active: diffTab === 'reqBody' }" @click="diffTab = 'reqBody'">请求体</button>
+                <button class="diff-tab" :class="{ active: diffTab === 'resHead' }" @click="diffTab = 'resHead'">响应头</button>
+                <button class="diff-tab" :class="{ active: diffTab === 'resBody' }" @click="diffTab = 'resBody'">响应体</button>
+              </div>
+              <div class="diff-pair-info">
+                <span class="diff-pair-old" :title="diffOld.id">--- {{ diffOld.id.slice(0,8) }} {{ new Date(diffOld.timestamp).toLocaleTimeString('zh-CN') }}</span>
+                <span class="diff-pair-new" :title="diffNew.id">+++ {{ diffNew.id.slice(0,8) }} {{ new Date(diffNew.timestamp).toLocaleTimeString('zh-CN') }}</span>
+              </div>
+              <div class="diff-toolbar">
+                <button class="diff-tool-btn" :class="{ active: diffCollapsed }" @click="diffCollapsed = !diffCollapsed" :title="diffCollapsed ? '展开全部' : '折叠上下文'">
+                  {{ diffCollapsed ? '📋 折叠' : '📜 展开' }}
+                </button>
+                <button class="diff-tool-btn" :class="{ active: diffMode === 'unified' }" @click="diffMode = 'unified'" title="单栏模式">☰ 单栏</button>
+                <button class="diff-tool-btn" :class="{ active: diffMode === 'split' }" @click="diffMode = 'split'" title="双栏模式">◫ 双栏</button>
+                <button class="diff-tool-btn diff-close-btn" @click="diffOpen = false" title="关闭 (Esc)">✕</button>
+              </div>
+            </div>
+            <div class="diff-modal-body">
+              <DiffViewer
+                v-if="diffTab === 'reqHead'"
+                :old-string="diffHeadReq.old" :new-string="diffHeadReq.new"
+                :old-label="`请求头 (${diffHeadReq.oldLabel})`" :new-label="`请求头 (${diffHeadReq.newLabel})`"
+                :mode="diffMode" :collapsed="diffCollapsed" :context="3"
+              />
+              <DiffViewer
+                v-if="diffTab === 'reqBody'"
+                :old-string="diffBodyReq.old" :new-string="diffBodyReq.new"
+                :old-label="`请求体 (${diffBodyReq.oldLabel})`" :new-label="`请求体 (${diffBodyReq.newLabel})`"
+                :mode="diffMode" :collapsed="diffCollapsed" :context="5"
+              />
+              <DiffViewer
+                v-if="diffTab === 'resHead'"
+                :old-string="diffHeadRes.old" :new-string="diffHeadRes.new"
+                :old-label="`响应头 (${diffHeadRes.oldLabel})`" :new-label="`响应头 (${diffHeadRes.newLabel})`"
+                :mode="diffMode" :collapsed="diffCollapsed" :context="3"
+              />
+              <DiffViewer
+                v-if="diffTab === 'resBody'"
+                :old-string="diffBodyRes.old" :new-string="diffBodyRes.new"
+                :old-label="`响应体 (${diffBodyRes.oldLabel})`" :new-label="`响应体 (${diffBodyRes.newLabel})`"
+                :mode="diffMode" :collapsed="diffCollapsed" :context="5"
+              />
+            </div>
+          </div>
+        </div>
+      </Teleport>
 
       <!-- 请求地址 -->
       <div class="card request-url-card">
@@ -408,35 +591,58 @@ async function doExport() {
 .detail-page { max-width: 1280px; margin: 0 auto; padding: 28px 24px; }
 
 /* Nav */
-.nav-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.nav-bar {
+  display: flex; align-items: center; gap: 4px; margin-bottom: 16px; flex-wrap: wrap;
+  padding: 10px 14px; background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
 
 .btn-back {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--bg-card); color: var(--accent); border: 1px solid var(--border);
-  padding: 8px 16px; border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 0.84rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
+  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.82rem; font-weight: 500; transition: all .15s;
 }
 .btn-back:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 .btn-export {
   background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border);
-  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 0.82rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
+  padding: 8px 12px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.80rem; font-weight: 500; transition: all .15s;
 }
 .btn-export:hover { background: var(--success); color: #fff; border-color: var(--success); }
 
-.detail-nav { display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; }
+.nav-sep {
+  width: 1px; height: 26px; background: var(--border); flex-shrink: 0;
+}
+
+.nav-group {
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.nav-group-label {
+  font-size: 0.66rem; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-right: 2px;
+}
 
 .btn-nav {
-  display: inline-flex; align-items: center; gap: 4px;
-  background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border);
-  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 0.82rem; font-weight: 500; box-shadow: var(--shadow-sm); transition: all .15s;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-inset); color: var(--text-secondary); border: 1px solid var(--border);
+  width: 28px; height: 28px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 0.74rem; transition: all .15s;
 }
 .btn-nav:hover:not(:disabled) { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn-nav:disabled { opacity: .35; cursor: default; }
 
-.detail-nav-pos { font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); padding: 0 4px; min-width: 60px; text-align: center; }
+.nav-pos {
+  font-size: 0.68rem; color: var(--text-muted); font-family: var(--font-mono);
+  padding: 0 2px; min-width: 24px; text-align: center;
+}
+
+.btn-diff { width: auto; padding: 0 6px; }
+.btn-diff:hover:not(:disabled) {
+  background: #fef3c7; color: #92400e; border-color: #f59e0b;
+}
+
 
 /* Meta */
 .detail-meta {
@@ -584,4 +790,56 @@ async function doExport() {
 @media (max-width: 768px) {
   .detail-meta { flex-wrap: wrap; }
 }
+
+/* ---- Diff 弹窗 ---- */
+.diff-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,.45);
+  display: flex; align-items: stretch; justify-content: stretch;
+}
+.diff-modal {
+  margin: 2vh 2vw; flex: 1; background: var(--bg-card);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.diff-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  background: var(--bg-inset); gap: 12px; flex-wrap: wrap;
+}
+.diff-tabs-row { display: flex; gap: 2px; }
+.diff-tab {
+  padding: 7px 14px; border: none; background: none; cursor: pointer;
+  font-size: 0.78rem; font-weight: 500; color: var(--text-muted);
+  border-radius: var(--radius-sm); transition: all .15s;
+}
+.diff-tab.active { background: var(--accent); color: #fff; }
+.diff-tab:hover:not(.active) { color: var(--text-secondary); background: var(--bg-card); }
+
+.diff-pair-info {
+  display: flex; gap: 16px; font-family: var(--font-mono); font-size: 0.72rem; font-weight: 600;
+}
+.diff-pair-old { color: #c62828; }
+.diff-pair-new { color: #2e7d32; }
+
+.diff-toolbar { display: flex; gap: 6px; align-items: center; }
+.diff-tool-btn {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-card); cursor: pointer; font-size: 0.76rem; font-weight: 500;
+  color: var(--text-secondary); transition: all .15s;
+}
+.diff-tool-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.diff-tool-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
+.diff-close-btn {
+  font-size: 0.9rem; padding: 6px 10px; font-weight: 700;
+}
+.diff-close-btn:hover { background: var(--error); color: #fff; border-color: var(--error); }
+
+.diff-modal-body {
+  flex: 1; overflow: hidden; display: flex;
+}
+.diff-modal-body .diff-viewer {
+  flex: 1; border: none; border-radius: 0; display: flex; flex-direction: column;
+}
+.diff-modal-body .diff-lines { flex: 1; }
 </style>
