@@ -55,6 +55,8 @@ const hasSession = computed(() => !!record.value?.sessionId)
 const hasPrev = computed(() => !!prevRecord.value)
 const hasNext = computed(() => !!nextRecord.value)
 
+const diffViewerRef = ref<InstanceType<typeof DiffViewer> | null>(null)
+
 /** diff 对比的目标记录 */
 const diffTarget = computed(() =>
   diffDirection.value === 'prev' ? prevRecord.value : nextRecord.value
@@ -395,29 +397,36 @@ async function doExport() {
                 </button>
                 <button class="diff-tool-btn" :class="{ active: diffMode === 'unified' }" @click="diffMode = 'unified'" title="单栏模式">☰ 单栏</button>
                 <button class="diff-tool-btn" :class="{ active: diffMode === 'split' }" @click="diffMode = 'split'" title="双栏模式">◫ 双栏</button>
+                <span class="diff-tool-sep"></span>
+                <button class="diff-tool-btn" @click="diffViewerRef?.jumpToChange('prev')" title="上一处变更">&#9650;</button>
+                <button class="diff-tool-btn" @click="diffViewerRef?.jumpToChange('next')" title="下一处变更">&#9660;</button>
                 <button class="diff-tool-btn diff-close-btn" @click="diffOpen = false" title="关闭 (Esc)">✕</button>
               </div>
             </div>
             <div class="diff-modal-body">
               <DiffViewer
+                ref="diffViewerRef"
                 v-if="diffTab === 'reqHead'"
                 :old-string="diffHeadReq.old" :new-string="diffHeadReq.new"
                 :old-label="`请求头 (${diffHeadReq.oldLabel})`" :new-label="`请求头 (${diffHeadReq.newLabel})`"
                 :mode="diffMode" :collapsed="diffCollapsed" :context="3"
               />
               <DiffViewer
+                ref="diffViewerRef"
                 v-if="diffTab === 'reqBody'"
                 :old-string="diffBodyReq.old" :new-string="diffBodyReq.new"
                 :old-label="`请求体 (${diffBodyReq.oldLabel})`" :new-label="`请求体 (${diffBodyReq.newLabel})`"
                 :mode="diffMode" :collapsed="diffCollapsed" :context="5"
               />
               <DiffViewer
+                ref="diffViewerRef"
                 v-if="diffTab === 'resHead'"
                 :old-string="diffHeadRes.old" :new-string="diffHeadRes.new"
                 :old-label="`响应头 (${diffHeadRes.oldLabel})`" :new-label="`响应头 (${diffHeadRes.newLabel})`"
                 :mode="diffMode" :collapsed="diffCollapsed" :context="3"
               />
               <DiffViewer
+                ref="diffViewerRef"
                 v-if="diffTab === 'resBody'"
                 :old-string="diffBodyRes.old" :new-string="diffBodyRes.new"
                 :old-label="`响应体 (${diffBodyRes.oldLabel})`" :new-label="`响应体 (${diffBodyRes.newLabel})`"
@@ -830,6 +839,7 @@ async function doExport() {
 }
 .diff-tool-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .diff-tool-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
+.diff-tool-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .diff-close-btn {
   font-size: 0.9rem; padding: 6px 10px; font-weight: 700;
 }

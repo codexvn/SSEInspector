@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 
 const props = withDefaults(defineProps<{
   oldString: string
@@ -19,6 +19,10 @@ const props = withDefaults(defineProps<{
   context: 3,
   collapsed: true,
 })
+
+const linesContainer = ref<HTMLElement | null>(null)
+const currentChange = ref(-1)
+const changeCount = ref(0)
 
 // ---- types ----
 type RawType = 'unchanged' | 'added' | 'removed'
@@ -188,6 +192,41 @@ const splitPairs = computed<SplitPair[]>(() => {
   }
   return result
 })
+
+// ---- 变更导航 ----
+const totalChanges = computed(() => {
+  if (props.mode === 'unified') {
+    return unifiedLines.value.filter(l => l.type === 'added' || l.type === 'removed').length
+  }
+  return splitPairs.value.filter(p => p.type !== 'unchanged' && p.type !== 'ellipsis').length
+})
+
+function jumpToChange(dir: 'prev' | 'next') {
+  const el = linesContainer.value
+  if (!el) return
+  const sel = props.mode === 'unified'
+    ? '.diff-line.diff-added, .diff-line.diff-removed'
+    : '.diff-row:not(.diff-row-unchanged):not(.diff-row-ellipsis)'
+  const rows = el.querySelectorAll(sel)
+  if (!rows.length) return
+
+  const currentScroll = el.scrollTop
+  let target = dir === 'next' ? 0 : rows.length - 1
+
+  if (dir === 'next') {
+    for (let i = 0; i < rows.length; i++) {
+      if ((rows[i] as HTMLElement).offsetTop > currentScroll + 10) { target = i; break }
+    }
+  } else {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if ((rows[i] as HTMLElement).offsetTop < currentScroll - 10) { target = i; break }
+    }
+  }
+
+  ;(rows[target] as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+
+defineExpose({ jumpToChange, totalChanges })
 </script>
 
 <template>
@@ -198,7 +237,7 @@ const splitPairs = computed<SplitPair[]>(() => {
         <span class="diff-file old">--- {{ oldLabel }}</span>
         <span class="diff-file new">+++ {{ newLabel }}</span>
       </div>
-      <div class="diff-lines">
+      <div ref="linesContainer" class="diff-lines">
         <div
           v-for="(line, idx) in unifiedLines"
           :key="idx"
@@ -238,7 +277,7 @@ const splitPairs = computed<SplitPair[]>(() => {
         <span class="diff-file old">--- {{ oldLabel }}</span>
         <span class="diff-file new">+++ {{ newLabel }}</span>
       </div>
-      <div class="diff-lines split-lines">
+      <div ref="linesContainer" class="diff-lines split-lines">
         <div
           v-for="(pair, idx) in splitPairs"
           :key="idx"
@@ -355,13 +394,12 @@ const splitPairs = computed<SplitPair[]>(() => {
 .diff-pane {
   flex: 1; min-width: 0;
   display: flex; align-items: baseline;
-  white-space: pre; overflow: hidden;
+  white-space: pre;
 }
 .diff-pane.empty { background: #fafbfc; }
 
 .old-pane { border-right: none; }
 .diff-pane .ln { flex-shrink: 0; }
-.diff-pane .line-content { overflow: hidden; text-overflow: ellipsis; }
 
 .diff-row-removed .old-pane { background: #ffebe9; }
 .diff-row-added .new-pane { background: #e6ffec; }
