@@ -10,6 +10,7 @@ import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
 import StreamLive from '../components/StreamLive.vue'
 import DiffViewer from '../components/DiffViewer.vue'
+import MessageFlow from '../components/MessageFlow.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -50,12 +51,27 @@ const diffTab = ref<'reqHead' | 'reqBody' | 'resHead' | 'resBody'>('reqBody')
 const diffMode = ref<'unified' | 'split'>('split')
 const diffCollapsed = ref(true)
 const diffLoading = ref(false)
+const flowOpen = ref(false)
 
 const hasSession = computed(() => !!record.value?.sessionId)
 const hasPrev = computed(() => !!prevRecord.value)
 const hasNext = computed(() => !!nextRecord.value)
 
 const diffViewerRef = ref<InstanceType<typeof DiffViewer> | null>(null)
+
+/** 请求体摘要 */
+const flowSummary = computed(() => {
+  const body = parsedBody.value
+  if (!body) return '无'
+  const model = body.model
+  const msgs = (body.messages ?? body.input) as Record<string, unknown>[] | undefined
+  const tools = Array.isArray(body.tools) ? body.tools.length : 0
+  const parts: string[] = []
+  if (model) parts.push(String(model))
+  if (msgs) parts.push(`${msgs.length} 条消息`)
+  if (tools) parts.push(`${tools} 个工具`)
+  return parts.join('  ·  ')
+})
 
 /** diff 对比的目标记录 */
 const diffTarget = computed(() =>
@@ -146,6 +162,7 @@ async function load(detailId: string) {
   loading.value = true
   error.value = ''
   diffOpen.value = false
+  flowOpen.value = false
   try {
     const r = await store.loadDetail(detailId)
     if (!r) { error.value = '请求未找到'; return }
@@ -178,8 +195,9 @@ onUnmounted(() => {
 watch(() => route.params.id as string, load)
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && diffOpen.value) {
-    diffOpen.value = false
+  if (e.key === 'Escape') {
+    if (diffOpen.value) diffOpen.value = false
+    else if (flowOpen.value) flowOpen.value = false
   }
 }
 
@@ -453,10 +471,35 @@ async function doExport() {
       <HeadersViewer title="请求头" :headers="record.requestHeaders" />
 
       <!-- 请求体 -->
-      <details class="details-card" v-if="record.requestBody">
-        <summary>请求体</summary>
+      <details class="headers-box" v-if="record.requestBody">
+        <summary>
+          请求体
+          <span class="body-summary-meta">{{ flowSummary }}</span>
+          <span class="body-summary-actions">
+            <button class="curl-btn" @click.prevent.stop="flowOpen = true">消息流</button>
+          </span>
+        </summary>
         <JsonViewer :value="fmtJson(record.requestBody)" />
       </details>
+
+      <!-- 消息流弹窗 -->
+      <Teleport to="body">
+        <div v-if="flowOpen && parsedBody" class="diff-overlay" @click.self="flowOpen = false">
+          <div class="diff-modal">
+            <div class="diff-modal-header">
+              <div class="diff-tabs-row">
+                <span class="diff-title">消息流</span>
+              </div>
+              <div class="diff-toolbar">
+                <button class="diff-tool-btn diff-close-btn" @click="flowOpen = false" title="关闭 (Esc)">✕</button>
+              </div>
+            </div>
+            <div class="diff-modal-body flow-body">
+              <MessageFlow :body="parsedBody" :api-type="record.apiType" />
+            </div>
+          </div>
+        </div>
+      </Teleport>
 
       <!-- 用户请求 -->
       <div v-if="userInput() || extractToolResults().length" class="user-request-card">
@@ -848,8 +891,33 @@ async function doExport() {
 .diff-modal-body {
   flex: 1; overflow: hidden; display: flex;
 }
+.diff-modal-body.flow-body {
+  overflow: auto;
+}
 .diff-modal-body .diff-viewer {
   flex: 1; border: none; border-radius: 0; display: flex; flex-direction: column;
 }
 .diff-modal-body .diff-lines { flex: 1; }
+
+.diff-title {
+  font-size: 0.84rem; font-weight: 700; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+.headers-box {
+  background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 12px; padding: 0;
+}
+.headers-box summary {
+  cursor: pointer; padding: 12px 18px; font-size: 0.82rem;
+  font-weight: 600; color: var(--text-secondary); user-select: none;
+  position: relative;
+}
+.body-summary-actions {
+  position: absolute; top: 50%; right: 14px; transform: translateY(-50%);
+  line-height: 1;
+}
+.body-summary-meta {
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin: 0 12px;
+}
 </style>
