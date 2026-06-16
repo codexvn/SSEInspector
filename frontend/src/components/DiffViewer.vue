@@ -1,16 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, nextTick } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = withDefaults(defineProps<{
   oldString: string
   newString: string
   oldLabel?: string
   newLabel?: string
-  /** 'unified'=单栏, 'split'=双栏 */
   mode?: 'unified' | 'split'
-  /** 未变更行前后各保留多少行上下文。0 = 展开全部 */
   context?: number
-  /** 是否折叠（收起）长未变更块，false 时 context 被忽略 */
   collapsed?: boolean
 }>(), {
   oldLabel: '旧',
@@ -21,8 +18,23 @@ const props = withDefaults(defineProps<{
 })
 
 const linesContainer = ref<HTMLElement | null>(null)
-const currentChange = ref(-1)
-const changeCount = ref(0)
+const splitLeftPane = ref<HTMLElement | null>(null)
+const splitRightPane = ref<HTMLElement | null>(null)
+
+// ---- 左右同步横向滚动 ----
+function onSplitScroll(e: Event) {
+  const src = (e.target as HTMLElement).closest('.split-scroll') as HTMLElement
+  const left = splitLeftPane.value
+  const right = splitRightPane.value
+  if (!left || !right) return
+  if (src === left) {
+    right.scrollTop = left.scrollTop
+    right.scrollLeft = left.scrollLeft
+  } else if (src === right) {
+    left.scrollTop = right.scrollTop
+    left.scrollLeft = right.scrollLeft
+  }
+}
 
 // ---- types ----
 type RawType = 'unchanged' | 'added' | 'removed'
@@ -59,7 +71,7 @@ const rawLines = computed<RawLine[]>(() => {
   return raw
 })
 
-// ---- unified 模式（带折叠） ----
+// ---- unified 模式 ----
 interface UnifiedLine {
   type: 'unchanged' | 'added' | 'removed' | 'ellipsis'
   oldLineNum?: number
@@ -99,12 +111,12 @@ const unifiedLines = computed<UnifiedLine[]>(() => {
   return result
 })
 
-// ---- split 模式（左右配对） ----
+// ---- split 模式 ----
 interface SplitPair {
   type: 'unchanged' | 'changed' | 'added' | 'removed' | 'ellipsis'
   oldLine?: { num: number; text: string }
   newLine?: { num: number; text: string }
-  text?: string // for ellipsis
+  text?: string
 }
 
 const splitPairs = computed<SplitPair[]>(() => {
@@ -112,7 +124,6 @@ const splitPairs = computed<SplitPair[]>(() => {
   const raw = rawLines.value
   const ctx = props.collapsed ? props.context : 0
 
-  // Group into unchanged / change_group blocks
   const grouped: { type: 'unchanged' | 'change_group'; lines: RawLine[] }[] = []
   let idx = 0
   while (idx < raw.length) {
@@ -134,58 +145,31 @@ const splitPairs = computed<SplitPair[]>(() => {
       if (ctx > 0 && count > ctx * 2 + 2) {
         for (let k = 0; k < ctx; k++) {
           const l = g.lines[k]
-          result.push({
-            type: 'unchanged',
-            oldLine: { num: l.oldLineNum!, text: l.text },
-            newLine: { num: l.newLineNum!, text: l.text },
-          })
+          result.push({ type: 'unchanged', oldLine: { num: l.oldLineNum!, text: l.text }, newLine: { num: l.newLineNum!, text: l.text } })
         }
         result.push({ type: 'ellipsis', text: `... 省略 ${count - ctx * 2} 行 ...` })
         for (let k = count - ctx; k < count; k++) {
           const l = g.lines[k]
-          result.push({
-            type: 'unchanged',
-            oldLine: { num: l.oldLineNum!, text: l.text },
-            newLine: { num: l.newLineNum!, text: l.text },
-          })
+          result.push({ type: 'unchanged', oldLine: { num: l.oldLineNum!, text: l.text }, newLine: { num: l.newLineNum!, text: l.text } })
         }
       } else {
         for (const l of g.lines) {
-          result.push({
-            type: 'unchanged',
-            oldLine: { num: l.oldLineNum!, text: l.text },
-            newLine: { num: l.newLineNum!, text: l.text },
-          })
+          result.push({ type: 'unchanged', oldLine: { num: l.oldLineNum!, text: l.text }, newLine: { num: l.newLineNum!, text: l.text } })
         }
       }
     } else {
-      // change_group: pair removed + added 1:1
       const removed: RawLine[] = []
       const added: RawLine[] = []
-      for (const l of g.lines) {
-        if (l.type === 'removed') removed.push(l)
-        else added.push(l)
-      }
+      for (const l of g.lines) { if (l.type === 'removed') removed.push(l); else added.push(l) }
       const maxLen = Math.max(removed.length, added.length)
       for (let k = 0; k < maxLen; k++) {
-        const r = removed[k]
-        const a = added[k]
+        const r = removed[k], a = added[k]
         if (r && a) {
-          result.push({
-            type: 'changed',
-            oldLine: { num: r.oldLineNum!, text: r.text },
-            newLine: { num: a.newLineNum!, text: a.text },
-          })
+          result.push({ type: 'changed', oldLine: { num: r.oldLineNum!, text: r.text }, newLine: { num: a.newLineNum!, text: a.text } })
         } else if (r) {
-          result.push({
-            type: 'removed',
-            oldLine: { num: r.oldLineNum!, text: r.text },
-          })
+          result.push({ type: 'removed', oldLine: { num: r.oldLineNum!, text: r.text } })
         } else if (a) {
-          result.push({
-            type: 'added',
-            newLine: { num: a.newLineNum!, text: a.text },
-          })
+          result.push({ type: 'added', newLine: { num: a.newLineNum!, text: a.text } })
         }
       }
     }
@@ -194,23 +178,18 @@ const splitPairs = computed<SplitPair[]>(() => {
 })
 
 // ---- 变更导航 ----
-const totalChanges = computed(() => {
-  if (props.mode === 'unified') {
-    return unifiedLines.value.filter(l => l.type === 'added' || l.type === 'removed').length
-  }
-  return splitPairs.value.filter(p => p.type !== 'unchanged' && p.type !== 'ellipsis').length
-})
-
 function jumpToChange(dir: 'prev' | 'next') {
-  const el = linesContainer.value
+  const el = linesContainer.value || splitLeftPane.value
   if (!el) return
+  const container = el.closest('.diff-lines, .split-scroll') as HTMLElement
+  if (!container) return
   const sel = props.mode === 'unified'
     ? '.diff-line.diff-added, .diff-line.diff-removed'
     : '.diff-row:not(.diff-row-unchanged):not(.diff-row-ellipsis)'
   const rows = el.querySelectorAll(sel)
   if (!rows.length) return
 
-  const currentScroll = el.scrollTop
+  const currentScroll = container.scrollTop
   let target = dir === 'next' ? 0 : rows.length - 1
 
   if (dir === 'next') {
@@ -226,7 +205,7 @@ function jumpToChange(dir: 'prev' | 'next') {
   ;(rows[target] as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' })
 }
 
-defineExpose({ jumpToChange, totalChanges })
+defineExpose({ jumpToChange })
 </script>
 
 <template>
@@ -237,37 +216,39 @@ defineExpose({ jumpToChange, totalChanges })
         <span class="diff-file old">--- {{ oldLabel }}</span>
         <span class="diff-file new">+++ {{ newLabel }}</span>
       </div>
-      <div ref="linesContainer" class="diff-lines">
-        <div
-          v-for="(line, idx) in unifiedLines"
-          :key="idx"
-          class="diff-line"
-          :class="`diff-${line.type}`"
-        >
-          <template v-if="line.type === 'unchanged'">
-            <span class="ln ln-old">{{ line.oldLineNum }}</span>
-            <span class="ln ln-new">{{ line.newLineNum }}</span>
-            <span class="line-content">{{ line.text }}</span>
-          </template>
-          <template v-else-if="line.type === 'added'">
-            <span class="ln ln-old"></span>
-            <span class="ln ln-new">{{ line.newLineNum }}</span>
-            <span class="line-sign">+</span>
-            <span class="line-content">{{ line.text }}</span>
-          </template>
-          <template v-else-if="line.type === 'removed'">
-            <span class="ln ln-old">{{ line.oldLineNum }}</span>
-            <span class="ln ln-new"></span>
-            <span class="line-sign">-</span>
-            <span class="line-content">{{ line.text }}</span>
-          </template>
-          <template v-else-if="line.type === 'ellipsis'">
-            <span class="ln ln-old"></span>
-            <span class="ln ln-new"></span>
-            <span class="line-content ellipsis-text">{{ line.text }}</span>
-          </template>
+      <div class="diff-lines">
+        <div ref="linesContainer" class="diff-lines-inner">
+          <div
+            v-for="(line, idx) in unifiedLines"
+            :key="idx"
+            class="diff-line"
+            :class="`diff-${line.type}`"
+          >
+            <template v-if="line.type === 'unchanged'">
+              <span class="ln ln-old">{{ line.oldLineNum }}</span>
+              <span class="ln ln-new">{{ line.newLineNum }}</span>
+              <span class="line-content">{{ line.text }}</span>
+            </template>
+            <template v-else-if="line.type === 'added'">
+              <span class="ln ln-old"></span>
+              <span class="ln ln-new">{{ line.newLineNum }}</span>
+              <span class="line-sign">+</span>
+              <span class="line-content">{{ line.text }}</span>
+            </template>
+            <template v-else-if="line.type === 'removed'">
+              <span class="ln ln-old">{{ line.oldLineNum }}</span>
+              <span class="ln ln-new"></span>
+              <span class="line-sign">-</span>
+              <span class="line-content">{{ line.text }}</span>
+            </template>
+            <template v-else-if="line.type === 'ellipsis'">
+              <span class="ln ln-old"></span>
+              <span class="ln ln-new"></span>
+              <span class="line-content ellipsis-text">{{ line.text }}</span>
+            </template>
+          </div>
+          <div v-if="!unifiedLines.length" class="diff-empty">（无差异）</div>
         </div>
-        <div v-if="!unifiedLines.length" class="diff-empty">（无差异）</div>
       </div>
     </template>
 
@@ -277,41 +258,53 @@ defineExpose({ jumpToChange, totalChanges })
         <span class="diff-file old">--- {{ oldLabel }}</span>
         <span class="diff-file new">+++ {{ newLabel }}</span>
       </div>
-      <div ref="linesContainer" class="diff-lines split-lines">
-        <div
-          v-for="(pair, idx) in splitPairs"
-          :key="idx"
-          class="diff-row"
-          :class="`diff-row-${pair.type}`"
-        >
-          <!-- 左侧（旧） -->
-          <div class="diff-pane old-pane" :class="{ empty: !pair.oldLine }">
-            <template v-if="pair.type === 'ellipsis'">
-              <span class="ellipsis-text">{{ pair.text }}</span>
-            </template>
-            <template v-else-if="pair.oldLine">
-              <span class="ln">{{ pair.oldLine.num }}</span>
-              <span v-if="pair.type === 'removed' || pair.type === 'changed'" class="line-sign">-</span>
-              <span v-else class="line-sign-spacer"></span>
-              <span class="line-content">{{ pair.oldLine.text }}</span>
-            </template>
-          </div>
-          <!-- 分隔线 -->
-          <div class="diff-gutter"></div>
-          <!-- 右侧（新） -->
-          <div class="diff-pane new-pane" :class="{ empty: !pair.newLine }">
-            <template v-if="pair.type === 'ellipsis'">
-              <span class="ellipsis-text">{{ pair.text }}</span>
-            </template>
-            <template v-else-if="pair.newLine">
-              <span class="ln">{{ pair.newLine.num }}</span>
-              <span v-if="pair.type === 'added' || pair.type === 'changed'" class="line-sign">+</span>
-              <span v-else class="line-sign-spacer"></span>
-              <span class="line-content">{{ pair.newLine.text }}</span>
-            </template>
+      <div class="split-wrapper">
+        <div ref="splitLeftPane" class="split-scroll" @scroll="onSplitScroll">
+          <div class="split-scroll-inner">
+            <div
+              v-for="(pair, idx) in splitPairs"
+              :key="'l'+idx"
+              class="diff-split-row"
+              :class="`diff-row-${pair.type}`"
+            >
+              <template v-if="pair.type === 'ellipsis'">
+                <span class="ln">·</span>
+                <span class="ellipsis-text">{{ pair.text }}</span>
+              </template>
+              <template v-else-if="pair.oldLine">
+                <span class="ln">{{ pair.oldLine.num }}</span>
+                <span v-if="pair.type === 'removed' || pair.type === 'changed'" class="line-sign">-</span>
+                <span v-else class="line-sign-spacer"></span>
+                <span class="line-content">{{ pair.oldLine.text }}</span>
+              </template>
+              <span v-else class="empty-placeholder">&nbsp;</span>
+            </div>
+            <div v-if="!splitPairs.length" class="diff-empty">（无差异）</div>
           </div>
         </div>
-        <div v-if="!splitPairs.length" class="diff-empty">（无差异）</div>
+        <div ref="splitRightPane" class="split-scroll" @scroll="onSplitScroll">
+          <div class="split-scroll-inner">
+            <div
+              v-for="(pair, idx) in splitPairs"
+              :key="'r'+idx"
+              class="diff-split-row"
+              :class="`diff-row-${pair.type}`"
+            >
+              <template v-if="pair.type === 'ellipsis'">
+                <span class="ln">·</span>
+                <span class="ellipsis-text">{{ pair.text }}</span>
+              </template>
+              <template v-else-if="pair.newLine">
+                <span class="ln">{{ pair.newLine.num }}</span>
+                <span v-if="pair.type === 'added' || pair.type === 'changed'" class="line-sign">+</span>
+                <span v-else class="line-sign-spacer"></span>
+                <span class="line-content">{{ pair.newLine.text }}</span>
+              </template>
+              <span v-else class="empty-placeholder">&nbsp;</span>
+            </div>
+            <div v-if="!splitPairs.length" class="diff-empty">（无差异）</div>
+          </div>
+        </div>
       </div>
     </template>
   </div>
@@ -324,7 +317,8 @@ defineExpose({ jumpToChange, totalChanges })
   line-height: 1.55;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  overflow: auto;
+  overflow: hidden;
+  display: flex; flex-direction: column;
 }
 
 .diff-file-header {
@@ -333,84 +327,99 @@ defineExpose({ jumpToChange, totalChanges })
   background: var(--bg-inset);
   border-bottom: 1px solid var(--border);
   font-size: 0.72rem; font-weight: 600;
-  position: sticky; top: 0; z-index: 1;
+  flex-shrink: 0;
 }
 .diff-file.old { color: #c62828; }
 .diff-file.new { color: #2e7d32; }
-.diff-file-header.split {
-  justify-content: space-between;
-}
+.diff-file-header.split { justify-content: space-between; }
 
-/* ---- unified ---- */
-.diff-lines { overflow: auto; }
-
-.diff-line {
-  display: flex; align-items: baseline;
-  min-height: 1.55em; white-space: pre;
-}
-.diff-line.diff-added { background: #e6ffec; }
-.diff-line.diff-removed { background: #ffebe9; }
-.diff-line.diff-ellipsis { background: #f0f4ff; }
-
+/* ---- shared ---- */
 .ln {
   display: inline-block; width: 44px; min-width: 44px;
   text-align: right; padding-right: 8px;
   color: var(--text-muted); user-select: none;
-  font-size: 0.72rem; flex-shrink: 0;
+  font-size: 0.72rem;
 }
-.diff-added .ln { background: #ccffd8; }
-.diff-removed .ln { background: #ffd7d5; }
-
 .line-sign {
-  width: 16px; min-width: 16px; text-align: center; flex-shrink: 0;
-  font-weight: 700; user-select: none;
+  display: inline-block; width: 16px; min-width: 16px;
+  text-align: center; font-weight: 700; user-select: none;
 }
-.diff-added .line-sign { color: #1a7f37; }
-.diff-removed .line-sign { color: #cf222e; }
-.line-sign-spacer { width: 16px; min-width: 16px; flex-shrink: 0; }
+.line-sign-spacer { display: inline-block; width: 16px; min-width: 16px; }
+.line-content { padding-left: 4px; white-space: pre; }
+.ellipsis-text { color: var(--text-muted); font-style: italic; padding: 2px 8px; user-select: none; white-space: nowrap; }
+.diff-empty { padding: 24px; text-align: center; color: var(--text-muted); }
+.empty-placeholder { flex: 1; white-space: pre; }
+.empty-placeholder::after { content: '\00a0'; }
 
-.line-content { padding-left: 4px; }
-
-.ellipsis-text {
-  color: var(--text-muted); font-style: italic;
-  padding: 2px 8px; user-select: none;
+/* ---- unified ---- */
+.diff-lines {
+  flex: 1; overflow: auto;
 }
-
-.diff-empty {
-  padding: 24px; text-align: center; color: var(--text-muted);
+.diff-lines-inner {
+  display: inline-block; min-width: 100%;
 }
-
-/* ---- split ---- */
-.split-lines { overflow: auto; }
-
-.diff-row {
-  display: flex; min-height: 1.55em;
-}
-.diff-row.diff-row-changed,
-.diff-row.diff-row-added,
-.diff-row.diff-row-removed {
+.diff-line {
+  display: flex; align-items: baseline;
   min-height: 1.55em;
 }
-.diff-pane {
-  flex: 1; min-width: 0;
+.diff-line .ln { position: sticky; z-index: 1; }
+.diff-line .ln.ln-old { left: 0; }
+.diff-line .ln.ln-new { left: 44px; }
+.diff-line .line-sign { position: sticky; left: 88px; z-index: 1; }
+.diff-line.diff-unchanged .ln { background: #fff; }
+.diff-line.diff-added { background: #e6ffec; }
+.diff-line.diff-added .ln,
+.diff-line.diff-added .line-sign { background: #ccffd8; }
+.diff-line.diff-removed { background: #ffebe9; }
+.diff-line.diff-removed .ln,
+.diff-line.diff-removed .line-sign { background: #ffd7d5; }
+.diff-line.diff-ellipsis { background: #f0f4ff; }
+.diff-line.diff-ellipsis .ln { background: #f0f4ff; }
+.diff-added .line-sign { color: #1a7f37; }
+.diff-removed .line-sign { color: #cf222e; }
+
+/* ---- split ---- */
+.split-wrapper {
+  display: flex; flex: 1; overflow: hidden;
+}
+.split-scroll {
+  flex: 1; overflow: auto; min-width: 0;
+}
+.split-scroll-inner {
+  display: inline-block; min-width: 100%;
+}
+.diff-split-row {
   display: flex; align-items: baseline;
-  white-space: pre;
+  min-height: 1.55em;
 }
-.diff-pane.empty { background: #fafbfc; }
+.diff-split-row .ln { position: sticky; left: 0; z-index: 1; flex-shrink: 0; }
+.diff-split-row .line-sign,
+.diff-split-row .line-sign-spacer { position: sticky; left: 44px; z-index: 1; flex-shrink: 0; }
 
-.old-pane { border-right: none; }
-.diff-pane .ln { flex-shrink: 0; }
-
-.diff-row-removed .old-pane { background: #ffebe9; }
-.diff-row-added .new-pane { background: #e6ffec; }
-.diff-row-changed .old-pane { background: #ffebe9; }
-.diff-row-changed .new-pane { background: #e6ffec; }
+.diff-row-unchanged { background: #fff; }
+.diff-row-unchanged .ln,
+.diff-row-unchanged .line-sign-spacer { background: #fff; }
+.diff-row-removed { background: #ffebe9; }
+.diff-row-removed .ln,
+.diff-row-removed .line-sign,
+.diff-row-removed .line-sign-spacer { background: #ffd7d5; }
+.diff-row-added { background: #e6ffec; }
+.diff-row-added .ln,
+.diff-row-added .line-sign,
+.diff-row-added .line-sign-spacer { background: #ccffd8; }
+.diff-row-changed { background: #ffebe9; }
+.diff-row-changed .ln,
+.diff-row-changed .line-sign,
+.diff-row-changed .line-sign-spacer { background: #ffd7d5; }
 .diff-row-ellipsis { background: #f0f4ff; }
+.diff-row-ellipsis .ln { background: #f0f4ff; }
 
-.old-pane .line-sign { color: #cf222e; }
-.new-pane .line-sign { color: #1a7f37; }
+.diff-split-row .line-sign { color: #cf222e; }
+.diff-row-added .line-sign,
+.diff-row-changed .line-sign { color: #1a7f37; }
 
-.diff-gutter {
-  width: 1px; background: var(--border); flex-shrink: 0;
-}
+/* 右侧 pane 用不同的 sticky left 偏移 */
+.split-wrapper > :last-child .diff-split-row .ln { left: 0; }
+.split-wrapper > :last-child .diff-split-row .line-sign,
+.split-wrapper > :last-child .diff-split-row .line-sign-spacer { left: 44px; }
 </style>
