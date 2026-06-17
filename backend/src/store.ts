@@ -51,8 +51,16 @@ function toSummary(r: RecordedRequest): RecordSummary {
     state: r.state,
     apiType: r.apiType,
     streamText: r.streamText,
+    ...buildTokenSummary(r.tokenBreakdown),
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
+  };
+}
+
+function buildTokenSummary(tb?: TokenBreakdown | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput'> {
+  return {
+    cacheRead: tb?.cacheRead,
+    apiReportedInput: tb?.apiReportedInput,
   };
 }
 
@@ -87,13 +95,10 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
 
 function entityToSummary(row: RequestEntity): RecordSummary {
   // 从 computed_tokens JSON 字段提取缓存命中数和 API 报告的输入 token
-  let cacheRead: number | undefined
-  let apiReportedInput: number | undefined
+  let tokenBreakdown: TokenBreakdown | null = null
   if (row.computed_tokens) {
     try {
-      const tb = JSON.parse(row.computed_tokens) as TokenBreakdown
-      cacheRead = tb.cacheRead
-      apiReportedInput = tb.apiReportedInput
+      tokenBreakdown = JSON.parse(row.computed_tokens) as TokenBreakdown
     } catch (err) {
       console.warn(`[store] 解析 computed_tokens JSON 失败: ${(err as Error).message}`);
     }
@@ -110,8 +115,7 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     state: deriveState(row.finished, row.error ?? null),
     apiType: row.api_type as ApiType,
     streamText: streamBuf.get(row.id),
-    cacheRead,
-    apiReportedInput,
+    ...buildTokenSummary(tokenBreakdown),
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
