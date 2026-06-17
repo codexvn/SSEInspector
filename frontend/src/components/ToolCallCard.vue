@@ -55,7 +55,7 @@ function fmtArgs(args?: string): string {
   background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm);
   overflow: hidden; margin-bottom: 10px;
 }
-.tool-call + .tool-call { margin-top: -6px; }
+.tool-call + .tool-call { margin-top: 0; }
 
 .tool-header {
   padding: 10px 16px; background: #eef2ff; border-bottom: 1px solid var(--border);

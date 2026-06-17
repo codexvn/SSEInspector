@@ -1,289 +1,360 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
+import SystemMessageCard from './SystemMessageCard.vue'
+import UserMessageCard from './UserMessageCard.vue'
+import AssistantTextCard from './AssistantTextCard.vue'
+import AssistantThinkingCard from './AssistantThinkingCard.vue'
+import ToolCallCard from './ToolCallCard.vue'
+import ToolCallResultCard from './ToolCallResultCard.vue'
+import MessageMetaCard from './MessageMetaCard.vue'
+import ToolsListCard from './ToolsListCard.vue'
+import RawJsonCard from './RawJsonCard.vue'
+import type { ApiEndpoint } from '../types'
+
+type MessageFlowFormat = ApiEndpoint | 'unknown'
+type MessageFlowCardType =
+  | 'system_message'
+  | 'user_message'
+  | 'assistant_text'
+  | 'assistant_thinking'
+  | 'tool_call_request'
+  | 'tool_call_result'
+  | 'message_meta'
+  | 'tools_list'
+  | 'raw_json'
+
+interface MessageFlowCardDescriptor {
+  id: string
+  type: MessageFlowCardType
+  props: Record<string, unknown>
+  toolCallId?: string
+}
 
 const props = defineProps<{
   body: Record<string, unknown>
   apiType: 'openai' | 'anthropic'
+  path?: string
+  upstreamUrl?: string
 }>()
 
-// ---- 类型 ----
-interface FlowBlock {
-  type: 'text' | 'tool_use' | 'tool_result'
-  index: number
-  text?: string
-  id?: string
-  name?: string
-  input?: unknown
-  tool_use_id?: string
-  content?: unknown
+const format = computed(() => detectFormat(props.path, props.upstreamUrl, props.apiType, props.body))
+const cards = computed<MessageFlowCardDescriptor[]>(() => buildCards(props.body, format.value))
+
+function detectFormat(path: string | undefined, upstreamUrl: string | undefined, apiType: string, body: Record<string, unknown>): MessageFlowFormat {
+  const source = `${path ?? ''} ${upstreamUrl ?? ''}`
+  if (/\/chat\/completions(?:\?|$)/.test(source)) return 'openai-chat'
+  if (/\/responses(?:\?|$)/.test(source)) return 'openai-responses'
+  if (/\/messages(?:\?|$)/.test(source)) return 'anthropic-messages'
+  if (apiType === 'anthropic') return 'anthropic-messages'
+  if (Array.isArray(body.messages)) return 'openai-chat'
+  if (body.input !== undefined) return 'openai-responses'
+  return 'unknown'
 }
 
-interface FlowItem {
-  kind: 'header' | 'system' | 'user' | 'assistant' | 'block' | 'tool' | 'tools_header'
-  seq?: number
-  role?: string
-  label: string
-  content?: string
-  blocks?: FlowBlock[]
-  blockCount?: number
-  toolName?: string
-  toolCallId?: string
-  extra?: unknown
+function buildCards(body: Record<string, unknown>, fmt: MessageFlowFormat): MessageFlowCardDescriptor[] {
+  const baseCards = buildMetaCards(body, fmt)
+  switch (fmt) {
+    case 'openai-chat':
+      return [...baseCards, ...buildOpenAIChatCards(body)]
+    case 'openai-responses':
+      return [...baseCards, ...buildOpenAIResponsesCards(body)]
+    case 'anthropic-messages':
+      return [...baseCards, ...buildAnthropicCards(body)]
+    default:
+      return [...baseCards, rawCard('unknown-body', '未知请求体', body)]
+  }
 }
 
-// ---- 折叠状态 ----
-const collapsed = ref(new Set<string>())
-function toggle(id: string) {
-  if (collapsed.value.has(id)) collapsed.value.delete(id)
-  else collapsed.value.add(id)
-  collapsed.value = new Set(collapsed.value) // trigger reactivity
+function buildMetaCards(body: Record<string, unknown>, fmt: MessageFlowFormat): MessageFlowCardDescriptor[] {
+  const tools = Array.isArray(body.tools) ? body.tools : []
+  const result: MessageFlowCardDescriptor[] = [
+    {
+      id: 'meta',
+      type: 'message_meta',
+      props: {
+        model: stringValue(body.model),
+        endpoint: fmt,
+        stream: typeof body.stream === 'boolean' ? body.stream : undefined,
+        maxTokens: body.max_tokens ?? body.max_output_tokens,
+        temperature: body.temperature,
+        toolChoice: body.tool_choice,
+        parallelToolCalls: body.parallel_tool_calls,
+      },
+    },
+  ]
+  if (tools.length) {
+    result.push({ id: 'tools', type: 'tools_list', props: { tools } })
+  }
+  return result
 }
-function isCollapsed(id: string) { return collapsed.value.has(id) }
 
-// ---- 解析 ----
-const items = computed<FlowItem[]>(() => {
-  const b = props.body
-  if (!b) return []
-  const result: FlowItem[] = []
-  const tools = Array.isArray(b.tools) ? b.tools : undefined
-
-  // === 请求头 ===
-  const parts: string[] = []
-  if (b.model) parts.push(`model: ${b.model}`)
-  if (b.max_tokens) parts.push(`max_tokens: ${b.max_tokens}`)
-  if (b.temperature != null) parts.push(`temperature: ${b.temperature}`)
-  if (tools) parts.push(`tools: ${tools.length}`)
-  if (parts.length) result.push({ kind: 'header', label: '', content: parts.join('  ·  ') })
-
-  // === System ===
-  const system = getSystem(b)
-  if (system) {
-    if (typeof system === 'string') {
-      result.push({ kind: 'system', label: '', content: system })
-    } else if (Array.isArray(system)) {
-      const blocks: FlowBlock[] = (system as unknown[]).map((s, i) => ({
-        type: 'text' as const, index: i,
-        text: typeof (s as Record<string, unknown>).text === 'string' ? (s as Record<string, unknown>).text as string : JSON.stringify(s),
-      }))
-      result.push({ kind: 'system', label: `(${blocks.length} 块)`, blocks, blockCount: blocks.length })
+function buildOpenAIChatCards(body: Record<string, unknown>): MessageFlowCardDescriptor[] {
+  const messages = arrayOfRecords(body.messages)
+  const result: MessageFlowCardDescriptor[] = []
+  messages.forEach((message, index) => {
+    const role = String(message.role ?? 'unknown')
+    if (role === 'system') {
+      result.push(textCard(`chat-system-${index}`, 'system_message', stringifyContent(message.content)))
+      return
     }
+    if (role === 'user') {
+      pushContentCards(result, `chat-user-${index}`, 'user_message', message.content)
+      return
+    }
+    if (role === 'assistant') {
+      if (typeof message.reasoning_content === 'string') {
+        result.push(textCard(`chat-thinking-${index}`, 'assistant_thinking', message.reasoning_content))
+      }
+      pushContentCards(result, `chat-assistant-${index}`, 'assistant_text', message.content)
+      for (const [toolIndex, toolCall] of arrayOfRecords(message.tool_calls).entries()) {
+        result.push(toolRequestCard(`chat-tool-request-${index}-${toolIndex}`, toolCall))
+      }
+      return
+    }
+    if (role === 'tool') {
+      result.push(toolResultCard(`chat-tool-result-${index}`, message))
+      return
+    }
+    result.push(rawCard(`chat-raw-${index}`, `未知 Chat 消息: ${role}`, message))
+  })
+  return result
+}
+
+function buildOpenAIResponsesCards(body: Record<string, unknown>): MessageFlowCardDescriptor[] {
+  const result: MessageFlowCardDescriptor[] = []
+  if (typeof body.instructions === 'string') {
+    result.push(textCard('responses-instructions', 'system_message', body.instructions))
+  } else if (body.instructions !== undefined) {
+    result.push(rawCard('responses-instructions-raw', 'Instructions', body.instructions))
   }
 
-  // === Tools ===
-  if (tools && tools.length > 0) {
-    const names: string[] = []
-    for (const t of tools) {
-      const name = (t as Record<string, unknown>).name || ((t as Record<string, unknown>).function as Record<string, unknown>)?.name
-      if (name) names.push(String(name))
-    }
-    result.push({
-      kind: 'tools_header',
-      label: `${names.length} 个`,
-      content: names.join(', '),
-    })
+  const input = body.input
+  if (typeof input === 'string') {
+    result.push(textCard('responses-input', 'user_message', input))
+    return result
+  }
+  if (!Array.isArray(input)) {
+    if (input !== undefined) result.push(rawCard('responses-input-raw', 'Responses Input', input))
+    return result
   }
 
-  // === Messages ===
-  const messages = (b.messages ?? b.input) as Record<string, unknown>[] | undefined
-  if (messages) {
-    const counts: Record<string, number> = {}
-    for (const msg of messages) {
-      const role = extractRole(msg)
-      counts[role] = (counts[role] ?? 0) + 1
-      const seq = counts[role]
-      result.push(...parseMessage(msg, role, seq))
+  input.forEach((item, index) => {
+    if (!isRecord(item)) {
+      result.push(rawCard(`responses-raw-${index}`, '未知 Responses 项', item))
+      return
     }
-  }
+    const type = String(item.type ?? '')
+    const role = String(item.role ?? '')
+    if (type === 'message' || role) {
+      const targetRole = role || 'user'
+      if (targetRole === 'system') pushContentCards(result, `responses-system-${index}`, 'system_message', item.content)
+      else if (targetRole === 'assistant') pushContentCards(result, `responses-assistant-${index}`, 'assistant_text', item.content)
+      else pushContentCards(result, `responses-user-${index}`, 'user_message', item.content)
+      return
+    }
+    if (type === 'function_call' || type === 'custom_tool_call') {
+      result.push(toolRequestCard(`responses-tool-request-${index}`, item))
+      return
+    }
+    if (type === 'function_call_output') {
+      result.push(toolResultCard(`responses-tool-result-${index}`, item))
+      return
+    }
+    if (typeof item.text === 'string') {
+      result.push(textCard(`responses-text-${index}`, 'assistant_text', item.text))
+      return
+    }
+    if (typeof item.thinking === 'string') {
+      result.push(textCard(`responses-thinking-${index}`, 'assistant_thinking', item.thinking))
+      return
+    }
+    result.push(rawCard(`responses-raw-${index}`, `未知 Responses 项: ${type || 'unknown'}`, item))
+  })
 
   return result
-})
+}
 
-function getSystem(body: Record<string, unknown>): unknown {
-  if (body.system != null) return body.system
-  const msgs = body.messages as Record<string, unknown>[] | undefined
-  if (msgs) {
-    const sys = msgs.filter(m => m.role === 'system')
-    if (sys.length) return sys.map(s => s.content).filter(Boolean).join('\n\n')
+function buildAnthropicCards(body: Record<string, unknown>): MessageFlowCardDescriptor[] {
+  const result: MessageFlowCardDescriptor[] = []
+  if (typeof body.system === 'string') {
+    result.push(textCard('anthropic-system', 'system_message', body.system))
+  } else if (Array.isArray(body.system)) {
+    pushAnthropicBlocks(result, 'anthropic-system', 'system_message', body.system)
+  } else if (body.system !== undefined) {
+    result.push(rawCard('anthropic-system-raw', 'System', body.system))
   }
-  return null
-}
 
-function extractRole(msg: Record<string, unknown>): string {
-  return String(msg.role ?? 'user')
-}
-
-function parseMessage(msg: Record<string, unknown>, role: string, seq: number): FlowItem[] {
-  const items: FlowItem[] = []
-  if (role === 'system') return items
-  const content = msg.content
-
-  if (typeof content === 'string') {
-    if (role === 'tool') {
-      items.push({ kind: 'tool', role, seq, label: `#${seq}`, content,
-        toolName: (msg.name || msg.tool_call_id) as string, toolCallId: msg.tool_call_id as string })
-    } else {
-      const kind = role === 'user' ? 'user' : 'assistant'
-      items.push({ kind, role, seq, label: `#${seq}`, content })
+  arrayOfRecords(body.messages).forEach((message, index) => {
+    const role = String(message.role ?? 'user')
+    if (typeof message.content === 'string') {
+      result.push(textCard(`anthropic-${role}-${index}`, role === 'assistant' ? 'assistant_text' : 'user_message', message.content))
+      return
     }
-  } else if (Array.isArray(content)) {
-    const blocks: FlowBlock[] = (content as unknown[]).map((b, i) => {
-      const block = b as Record<string, unknown>
-      return { type: (block.type as FlowBlock['type']) || 'text', index: i,
-        text: block.text as string, id: block.id as string, name: block.name as string,
-        input: block.input, tool_use_id: block.tool_use_id as string, content: block.content }
-    })
-    items.push({ kind: 'block', role, seq, label: `#${seq}`, blocks, blockCount: blocks.length })
-  } else if (content && typeof content === 'object') {
-    const kind = role === 'user' ? 'user' : 'assistant'
-    items.push({ kind, role, seq, label: `#${seq}`, content: JSON.stringify(content, null, 2) })
-  }
-
-  // OpenAI tool_calls on assistant
-  const toolCalls = msg.tool_calls as Record<string, unknown>[] | undefined
-  if (role === 'assistant' && toolCalls?.length) {
-    if (items.length) items[items.length - 1].extra = toolCalls
-    else items.push({ kind: 'assistant', role, seq, label: `#${seq}`, content: '', extra: toolCalls })
-  }
-
-  return items
+    if (Array.isArray(message.content)) {
+      pushAnthropicBlocks(result, `anthropic-${role}-${index}`, role === 'assistant' ? 'assistant_text' : 'user_message', message.content)
+      return
+    }
+    result.push(rawCard(`anthropic-raw-${index}`, `未知 Anthropic 消息: ${role}`, message))
+  })
+  return result
 }
 
-function blockRoleLabel(item: FlowItem): string {
-  switch (item.kind) {
-    case 'header': return ''
-    case 'system': return item.blocks ? '📋 System' : 'System'
-    case 'tools_header': return 'Tools'
-    case 'user': return 'User'
-    case 'assistant': return item.extra ? 'Ass + ⚙' : 'Assistant'
-    case 'tool': return 'Tool'
-    case 'block': return item.role === 'user' ? 'User' : 'Assistant'
-    default: return ''
+function pushAnthropicBlocks(result: MessageFlowCardDescriptor[], prefix: string, fallbackType: MessageFlowCardType, blocks: unknown[]) {
+  blocks.forEach((block, index) => {
+    if (!isRecord(block)) {
+      result.push(rawCard(`${prefix}-raw-${index}`, '未知 Anthropic 块', block))
+      return
+    }
+    const type = String(block.type ?? '')
+    if (type === 'text') result.push(textCard(`${prefix}-text-${index}`, fallbackType, stringifyContent(block.text)))
+    else if (type === 'thinking') result.push(textCard(`${prefix}-thinking-${index}`, 'assistant_thinking', stringifyContent(block.thinking)))
+    else if (type === 'tool_use') result.push(toolRequestCard(`${prefix}-tool-request-${index}`, block))
+    else if (type === 'tool_result') result.push(toolResultCard(`${prefix}-tool-result-${index}`, block))
+    else result.push(rawCard(`${prefix}-raw-${index}`, `未知 Anthropic 块: ${type || 'unknown'}`, block))
+  })
+}
+
+function pushContentCards(result: MessageFlowCardDescriptor[], prefix: string, type: MessageFlowCardType, content: unknown) {
+  if (typeof content === 'string') {
+    result.push(textCard(prefix, type, content))
+    return
   }
+  if (Array.isArray(content)) {
+    content.forEach((block, index) => {
+      if (!isRecord(block)) {
+        result.push(rawCard(`${prefix}-raw-${index}`, '未知内容块', block))
+        return
+      }
+      const blockType = String(block.type ?? '')
+      if (typeof block.text === 'string') result.push(textCard(`${prefix}-text-${index}`, type, block.text))
+      else if (typeof block.input_text === 'string') result.push(textCard(`${prefix}-input-text-${index}`, type, block.input_text))
+      else if (typeof block.output_text === 'string') result.push(textCard(`${prefix}-output-text-${index}`, type, block.output_text))
+      else result.push(rawCard(`${prefix}-raw-${index}`, `未知内容块: ${blockType || 'unknown'}`, block))
+    })
+    return
+  }
+  if (content !== undefined && content !== null) result.push(rawCard(`${prefix}-raw`, '未知内容', content))
+}
+
+function textCard(id: string, type: MessageFlowCardType, text: string): MessageFlowCardDescriptor {
+  return { id, type, props: { text } }
+}
+
+function toolRequestCard(id: string, source: Record<string, unknown>): MessageFlowCardDescriptor {
+  const fn = isRecord(source.function) ? source.function : undefined
+  const toolCallId = stringValue(source.id ?? source.call_id ?? source.tool_call_id) ?? id
+  const toolName = stringValue(source.name ?? fn?.name ?? source.tool_name) ?? 'tool'
+  const rawArgs = source.arguments ?? source.input ?? fn?.arguments ?? source
+  return {
+    id,
+    type: 'tool_call_request',
+    toolCallId,
+    props: {
+      toolCallId,
+      toolName,
+      toolArgs: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs, null, 2),
+      requestId: '',
+      side: 'request',
+    },
+  }
+}
+
+function toolResultCard(id: string, source: Record<string, unknown>): MessageFlowCardDescriptor {
+  const toolCallId = stringValue(source.tool_call_id ?? source.tool_use_id ?? source.call_id ?? source.id) ?? id
+  const result = source.output ?? source.content ?? source.result ?? source
+  return {
+    id,
+    type: 'tool_call_result',
+    toolCallId,
+    props: {
+      toolCallId,
+      toolName: stringValue(source.name ?? source.tool_name),
+      result: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+    },
+  }
+}
+
+function rawCard(id: string, title: string, value: unknown): MessageFlowCardDescriptor {
+  return { id, type: 'raw_json', props: { title, value } }
+}
+
+function componentFor(type: MessageFlowCardType) {
+  return {
+    system_message: SystemMessageCard,
+    user_message: UserMessageCard,
+    assistant_text: AssistantTextCard,
+    assistant_thinking: AssistantThinkingCard,
+    tool_call_request: ToolCallCard,
+    tool_call_result: ToolCallResultCard,
+    message_meta: MessageMetaCard,
+    tools_list: ToolsListCard,
+    raw_json: RawJsonCard,
+  }[type]
+}
+
+function stringifyContent(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value == null) return ''
+  return JSON.stringify(value, null, 2)
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function arrayOfRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : []
 }
 </script>
 
 <template>
   <div class="msg-flow">
-    <div
-      v-for="(item, idx) in items"
-      :key="idx"
-      class="msg-item"
-      :class="`msg-${item.kind}`"
-    >
-      <!-- 卡片 -->
-      <div class="msg-card">
-        <div class="msg-card-header" :class="{ 'hd-only': item.kind === 'header' }" @click="item.content && item.content.length > 300 ? toggle(`c-${idx}`) : undefined">
-          <template v-if="item.kind === 'header'">
-            <span class="msg-meta-text">{{ item.content }}</span>
-          </template>
-          <template v-else>
-            <span class="msg-role-badge" :class="`role-${item.kind}`">{{ blockRoleLabel(item) }}</span>
-            <span v-if="item.kind === 'tool' && item.toolName" class="msg-toolname">{{ item.toolName }}</span>
-            <span v-if="item.blockCount" class="msg-blockcnt">{{ item.blockCount }} 块</span>
-            <span class="msg-seq">{{ item.label }}</span>
-          </template>
-        </div>
-
-        <div class="msg-card-body" v-if="item.content || item.blocks || item.extra" :class="{ collapsed: isCollapsed(`c-${idx}`) }">
-          <!-- 纯文本 -->
-          <div v-if="item.content" class="msg-text" :class="{ 'msg-text-long': item.content.length > 300 }">
-            {{ item.content }}
-          </div>
-
-          <!-- OpenAI tool_calls -->
-          <template v-if="item.extra && Array.isArray(item.extra)">
-            <div v-for="(tc, tci) in item.extra" :key="tci" class="msg-block msg-block-tool_use">
-              <div class="msg-block-hd">⚙ {{ (tc.function as Record<string,unknown>)?.name ?? tc.name }}</div>
-              <pre class="msg-block-pre">{{ typeof (tc.function as Record<string,unknown>)?.arguments === 'string' ? (tc.function as Record<string,unknown>).arguments : JSON.stringify(tc.input ?? tc, null, 2) }}</pre>
-            </div>
-          </template>
-
-          <!-- content blocks -->
-          <template v-if="item.blocks">
-            <div
-              v-for="(b, bi) in item.blocks"
-              :key="bi"
-              class="msg-block"
-              :class="`msg-block-${b.type}`"
-            >
-              <template v-if="b.type === 'text'">
-                <div v-if="item.blocks!.length > 1" class="msg-block-hd msg-hd-text">📄</div>
-                <div class="msg-text">{{ b.text }}</div>
-              </template>
-              <template v-else-if="b.type === 'tool_use'">
-                <div class="msg-block-hd msg-hd-tool_use">⚙ {{ b.name }}</div>
-                <pre class="msg-block-pre">{{ typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? {}, null, 2) }}</pre>
-              </template>
-              <template v-else-if="b.type === 'tool_result'">
-                <div class="msg-block-hd msg-hd-tool_result">📥 {{ b.name || b.tool_use_id?.slice(0, 16) }}</div>
-                <div class="msg-text">{{ typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? {}, null, 2) }}</div>
-              </template>
-              <template v-else>
-                <pre class="msg-block-pre">{{ JSON.stringify(b, null, 2) }}</pre>
-              </template>
-            </div>
-          </template>
-        </div>
-      </div>
+    <div v-for="card in cards" :key="card.id" class="msg-flow-item" :class="`flow-${card.type}`">
+      <component :is="componentFor(card.type)" v-bind="card.props" />
     </div>
   </div>
 </template>
 
 <style scoped>
-.msg-flow { display: flex; flex-direction: column; font-size: 0.82rem; line-height: 1.6; padding: 4px 0; }
-
-/* 时间线：左 border 竖线 + ::before 圆点 */
-.msg-flow { padding-left: 20px; border-left: 2px solid var(--border); margin-left: 4px; }
-.msg-item { position: relative; margin-bottom: 6px; }
-.msg-item:last-child { margin-bottom: 0; }
-.msg-item::before {
-  content: ''; position: absolute;
-  left: -26px; top: 10px;
-  width: 10px; height: 10px; border-radius: 50%;
-  background: var(--border); z-index: 1;
+.msg-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px 14px 16px 24px;
+  border-left: 2px solid var(--border);
+  margin-left: 4px;
 }
-.msg-card-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 12px; background: var(--bg-inset); border-bottom: 1px solid var(--border); font-size: 0.74rem; }
-.msg-card-header.hd-only { border-bottom: none; cursor: default; }
-.msg-card-body { padding: 10px 14px; }
-.msg-card-body.collapsed { max-height: 200px; overflow: hidden; position: relative; }
-.msg-card-body.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, var(--bg-card)); }
 
-/* 标签 */
-.msg-role-badge { padding: 1px 7px; border-radius: 8px; font-size: 0.64rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-.msg-seq { font-family: var(--font-mono); font-size: 0.66rem; color: var(--text-muted); }
-.msg-meta-text { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-secondary); }
-.msg-toolname { font-family: var(--font-mono); font-size: 0.68rem; color: #7b1fa2; font-weight: 600; }
-.msg-blockcnt { font-size: 0.64rem; color: var(--text-muted); }
+.msg-flow-item {
+  position: relative;
+  min-width: 0;
+}
 
-/* badge 颜色 */
-.role-system { background: #f5f5f5; color: #616161; }
-.role-user { background: #e3f2fd; color: #1565c0; }
-.role-assistant { background: #e8f5e9; color: #2e7d32; }
-.role-tool { background: #f3e5f5; color: #7b1fa2; }
-.role-block { background: #eceff1; color: #546e7a; }
-.role-header {}
-.role-tools_header { background: #fce4ec; color: #c62828; }
+.msg-flow-item::before {
+  content: '';
+  position: absolute;
+  left: -30px;
+  top: 14px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+  z-index: 1;
+}
 
-/* 卡片边框 + 圆点颜色 */
-.msg-system .msg-card { border-left-color: #9e9e9e; } .msg-system::before { background: #9e9e9e; }
-.msg-user .msg-card { border-left-color: #42a5f5; } .msg-user::before { background: #42a5f5; }
-.msg-assistant .msg-card { border-left-color: #66bb6a; } .msg-assistant::before { background: #66bb6a; }
-.msg-tool .msg-card { border-left-color: #ab47bc; } .msg-tool::before { background: #ab47bc; }
-.msg-block .msg-card { border-left-color: #78909c; } .msg-block::before { background: #78909c; }
-.msg-header .msg-card { border-left-color: #ff9800; } .msg-header::before { background: #ff9800; }
-.msg-tools_header .msg-card { border-left-color: #ef5350; } .msg-tools_header::before { background: #ef5350; }
-
-/* 文本 */
-.msg-text { white-space: pre-wrap; word-break: break-word; }
-.msg-text-long { font-size: 0.78rem; }
-
-/* blocks */
-.msg-block { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; margin-top: 6px; }
-.msg-block + .msg-block { margin-top: 4px; }
-.msg-block:first-child { margin-top: 0; }
-.msg-block-hd { padding: 4px 10px; font-size: 0.7rem; font-weight: 600; border-bottom: 1px solid var(--border); }
-.msg-hd-text { background: #eceff1; color: #546e7a; }
-.msg-hd-tool_use { background: #eef2ff; color: #4338ca; }
-.msg-hd-tool_result { background: #fff8e1; color: #f57f17; }
-.msg-block-pre { margin: 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 0.72rem; white-space: pre-wrap; word-break: break-all; }
+.flow-system_message::before { background: #9e9e9e; }
+.flow-user_message::before { background: #ab47bc; }
+.flow-assistant_text::before { background: #66bb6a; }
+.flow-assistant_thinking::before { background: #42a5f5; }
+.flow-tool_call_request::before { background: #4338ca; }
+.flow-tool_call_result::before { background: #7b1fa2; }
+.flow-message_meta::before { background: #ff9800; }
+.flow-tools_list::before { background: #ef5350; }
+.flow-raw_json::before { background: #78909c; }
 </style>

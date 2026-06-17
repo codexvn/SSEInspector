@@ -8,9 +8,13 @@ import TokenBreakdown from '../components/TokenBreakdown.vue'
 import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
+import ToolCallResultCard from '../components/ToolCallResultCard.vue'
 import StreamLive from '../components/StreamLive.vue'
 import DiffViewer from '../components/DiffViewer.vue'
 import MessageFlow from '../components/MessageFlow.vue'
+import UserMessageCard from '../components/UserMessageCard.vue'
+import AssistantTextCard from '../components/AssistantTextCard.vue'
+import AssistantThinkingCard from '../components/AssistantThinkingCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -59,18 +63,18 @@ const hasNext = computed(() => !!nextRecord.value)
 
 const diffViewerRef = ref<InstanceType<typeof DiffViewer> | null>(null)
 
-/** 请求体摘要 */
-const flowSummary = computed(() => {
+/** 请求体标题摘要 */
+const requestBodySummary = computed(() => {
   const body = parsedBody.value
-  if (!body) return '无'
-  const model = body.model
-  const msgs = (body.messages ?? body.input) as Record<string, unknown>[] | undefined
-  const tools = Array.isArray(body.tools) ? body.tools.length : 0
+  if (!body) return ''
   const parts: string[] = []
-  if (model) parts.push(String(model))
-  if (msgs) parts.push(`${msgs.length} 条消息`)
-  if (tools) parts.push(`${tools} 个工具`)
-  return parts.join('  ·  ')
+  if (body.model) parts.push(`model: ${String(body.model)}`)
+  if (typeof body.stream === 'boolean') parts.push(`stream: ${body.stream ? 'true' : 'false'}`)
+  if (body.max_tokens !== undefined) parts.push(`max_tokens: ${String(body.max_tokens)}`)
+  if (body.max_output_tokens !== undefined) parts.push(`max_output_tokens: ${String(body.max_output_tokens)}`)
+  const tools = Array.isArray(body.tools) ? body.tools.length : 0
+  if (tools) parts.push(`tools: ${tools}`)
+  return parts.join('  ')
 })
 
 /** diff 对比的目标记录 */
@@ -474,7 +478,7 @@ async function doExport() {
       <details class="headers-box" v-if="record.requestBody">
         <summary>
           请求体
-          <span class="body-summary-meta">{{ flowSummary }}</span>
+          <span v-if="requestBodySummary" class="body-summary-meta">{{ requestBodySummary }}</span>
           <span class="body-summary-actions">
             <button class="curl-btn" @click.prevent.stop="flowOpen = true">消息流</button>
           </span>
@@ -495,32 +499,27 @@ async function doExport() {
               </div>
             </div>
             <div class="diff-modal-body flow-body">
-              <MessageFlow :body="parsedBody" :api-type="record.apiType" />
+              <MessageFlow :body="parsedBody" :api-type="record.apiType" :path="record.path" :upstream-url="record.upstreamUrl" />
             </div>
           </div>
         </div>
       </Teleport>
 
       <!-- 用户请求 -->
-      <div v-if="userInput() || extractToolResults().length" class="user-request-card">
-        <span class="section-label label-user-request">用户请求</span>
-        <div v-if="userInput()" class="user-text">{{ userInput() }}</div>
+      <template v-if="userInput() || extractToolResults().length">
+        <UserMessageCard v-if="userInput()" title="用户请求" :text="userInput()" />
 
         <div v-if="extractToolResults().length" class="tool-results-section">
           <div class="tool-results-label">工具调用结果 ({{ extractToolResults().length }})</div>
-          <div v-for="tr in extractToolResults()" :key="tr.tool_call_id" class="tool-result-item">
-            <div class="tool-result-id">
-              <span>{{ tr.tool_call_id }}</span>
-              <span v-if="tr.tool_name" class="tool-tip-badge">{{ tr.tool_name }}</span>
-              <div v-if="getToolArgs(tr.tool_call_id)" class="tool-tip-popup">
-                <span class="tool-tip-name">{{ tr.tool_name || 'tool' }}</span>
-                <JsonViewer :value="getToolArgs(tr.tool_call_id)!" />
-              </div>
-            </div>
-            <JsonViewer :value="tr.content" />
-          </div>
+          <ToolCallResultCard
+            v-for="tr in extractToolResults()"
+            :key="tr.tool_call_id"
+            :tool-call-id="tr.tool_call_id"
+            :tool-name="tr.tool_name"
+            :result="tr.content"
+          />
         </div>
-      </div>
+      </template>
 
       <!-- 响应内容 -->
       <div v-if="isStreaming && streamText" class="card streaming-card">
@@ -530,21 +529,9 @@ async function doExport() {
 
       <div v-else-if="record.responseContent && !isStreaming">
         <!-- OpenAI Chat -->
-        <template v-if="isOpenAI && (record.responseContent as any)?.choices">
-          <div class="card" v-if="(record.responseContent as any).model">
-            <div class="card-title">模型: <span class="kv kv-model">{{ (record.responseContent as any).model }}</span></div>
-          </div>
-          <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
-            <details v-if="choice.message?.reasoning_content" class="details-card reasoning-card" open>
-              <summary>
-                <span class="section-label label-reasoning">推理过程</span>
-              </summary>
-              <div class="reasoning-content"><JsonViewer :value="choice.message.reasoning_content" lang="plaintext" /></div>
-            </details>
-            <div v-if="choice.message?.content" class="card">
-              <span class="section-label label-content">回答</span>
-              <div class="content-text">{{ choice.message.content }}</div>
-            </div>
+        <template v-if="isOpenAI && (record.responseContent as any)?.choices">          <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
+            <AssistantThinkingCard v-if="choice.message?.reasoning_content" :text="choice.message.reasoning_content" />
+            <AssistantTextCard v-if="choice.message?.content" :text="choice.message.content" />
             <ToolCallCard
               v-for="tc in (choice.message?.tool_calls ?? [])"
               :key="tc.index"
@@ -562,18 +549,8 @@ async function doExport() {
         </template>
 
         <!-- OpenAI Responses -->
-        <template v-else-if="(record.responseContent as any)?.object === 'response'">
-          <div class="card" v-if="(record.responseContent as any).model">
-            <div class="card-title">模型: <span class="kv kv-model">{{ (record.responseContent as any).model }}</span></div>
-          </div>
-          <details v-if="(record.responseContent as any).reasoning_text" class="details-card reasoning-card" open>
-            <summary><span class="section-label label-reasoning">推理过程</span></summary>
-            <div class="reasoning-content"><JsonViewer :value="(record.responseContent as any).reasoning_text" lang="plaintext" /></div>
-          </details>
-          <div v-if="(record.responseContent as any).output_text" class="card">
-            <span class="section-label label-content">回答</span>
-            <div class="content-text">{{ (record.responseContent as any).output_text }}</div>
-          </div>
+        <template v-else-if="(record.responseContent as any)?.object === 'response'">          <AssistantThinkingCard v-if="(record.responseContent as any).reasoning_text" :text="(record.responseContent as any).reasoning_text" />
+          <AssistantTextCard v-if="(record.responseContent as any).output_text" :text="(record.responseContent as any).output_text" />
           <!-- Responses API tool_calls: 从 output[] 提取 function_call -->
           <template v-for="(item, oi) in (record.responseContent as any).output ?? []" :key="oi">
             <ToolCallCard
@@ -589,20 +566,10 @@ async function doExport() {
         </template>
 
         <!-- Anthropic -->
-        <template v-else-if="isAnthropic">
-          <div class="card" v-if="(record.responseContent as any).model">
-            <div class="card-title">模型: <span class="kv kv-model">{{ (record.responseContent as any).model }}</span></div>
-          </div>
-          <div class="content-blocks">
+        <template v-else-if="isAnthropic">          <div class="content-blocks">
             <template v-for="block in (record.responseContent as any).content" :key="block.index">
-              <div v-if="block.type === 'text'" class="anthropic-block text">
-                <div class="block-header">文本块 #{{ block.index }}</div>
-                <div class="block-body"><div class="content-text">{{ block.text }}</div></div>
-              </div>
-              <div v-else-if="block.type === 'thinking'" class="anthropic-block thinking">
-                <div class="block-header">思考块 #{{ block.index }}</div>
-                <div class="block-body"><JsonViewer :value="block.thinking" lang="plaintext" /></div>
-              </div>
+              <AssistantTextCard v-if="block.type === 'text'" :text="block.text" />
+              <AssistantThinkingCard v-else-if="block.type === 'thinking'" :text="block.thinking" />
               <ToolCallCard
                 v-else-if="block.type === 'tool_use'"
                 :tool-call-id="block.id"
@@ -710,7 +677,7 @@ async function doExport() {
   background: var(--bg-card); border-radius: var(--radius); padding: 18px 20px;
   margin-bottom: 12px; box-shadow: var(--shadow-sm);
 }
-.card + .card { margin-top: -8px; }
+.card + .card { margin-top: 0; }
 .card-title {
   font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-secondary); font-weight: 600; margin-bottom: 8px;
@@ -746,7 +713,7 @@ async function doExport() {
 
 /* Reasoning */
 .reasoning-card { margin-bottom: 12px; }
-.reasoning-card + .reasoning-card { margin-top: -8px; }
+.reasoning-card + .reasoning-card { margin-top: 0; }
 .reasoning-content { border-top: 1px solid var(--border); }
 
 /* Content */
@@ -766,15 +733,6 @@ async function doExport() {
 .anthropic-block.thinking .block-header { background: #e3f2fd; color: #1565c0; }
 .anthropic-block.tool_use .block-header { background: #eef2ff; color: #4338ca; }
 
-/* User card */
-.user-request-card {
-  background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm);
-  overflow: hidden; margin-bottom: 12px; border-left: 4px solid #ab47bc; padding: 18px 20px;
-}
-.user-text {
-  white-space: pre-wrap; word-break: break-word;
-  min-height: 40px; font-size: 0.9rem;
-}
 .tool-results-section { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
 .tool-results-label {
   font-size: 0.75rem; font-weight: 600; color: #7b1fa2;
@@ -814,7 +772,6 @@ async function doExport() {
 .label-content { background: #e8f5e9; color: #2e7d32; }
 .label-tool { background: #eef2ff; color: #4338ca; }
 .label-streaming { background: #e0e7ff; color: #3730a3; animation: pulse 1.5s ease-in-out infinite; }
-.label-user-request { background: #f3e5f5; color: #7b1fa2; }
 
 /* Streaming */
 .streaming-card .stream-card { border-left: none; }
@@ -892,7 +849,9 @@ async function doExport() {
   flex: 1; overflow: hidden; display: flex;
 }
 .diff-modal-body.flow-body {
+  min-height: 0;
   overflow: auto;
+  padding: 0;
 }
 .diff-modal-body .diff-viewer {
   flex: 1; border: none; border-radius: 0; display: flex; flex-direction: column;
@@ -918,6 +877,16 @@ async function doExport() {
   line-height: 1;
 }
 .body-summary-meta {
-  font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin: 0 12px;
+  display: inline-block;
+  max-width: calc(100% - 120px);
+  margin-left: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

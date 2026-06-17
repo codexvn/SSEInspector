@@ -1,3 +1,6 @@
+export type ApiProvider = 'openai' | 'anthropic'
+export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
+
 /** 后端 RecordSummary 的前端映射 */
 export interface RecordSummary {
   id: string
