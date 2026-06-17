@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { upsertRecord, writeToolCalls, updateToolCallResults, ToolCallEntry } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
-import { RecordedRequest, ApiType, MergedContent } from './types';
+import { RecordedRequest, ApiType, ApiEndpoint, MergedContent } from './types';
 
 const HOP_HEADERS = [
   'connection', 'keep-alive', 'transfer-encoding', 'te',
@@ -208,7 +208,7 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
   }
 }
 
-export async function handleProxy(req: Request, res: Response, apiType: ApiType): Promise<void> {
+export async function handleProxy(req: Request, res: Response, apiType: ApiType, apiEndpoint: ApiEndpoint): Promise<void> {
   const upstreamUrl = process.env.UPSTREAM_URL;
   if (!upstreamUrl) {
     res.status(500).json({ error: 'UPSTREAM_URL not configured' });
@@ -274,7 +274,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.responseBody = JSON.stringify(json);
       record.state = 'done';
       record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiType) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiEndpoint) ?? undefined;
       record.apiUsage = JSON.stringify((json as any)?.usage);
       await upsertRecord(record);
       await writeToolCalls(id, extractToolCalls(json as MergedContent, apiType));
@@ -324,7 +324,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType)
       record.responseBody = fullText;
       record.state = 'done';
       record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiType) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiEndpoint) ?? undefined;
       record.apiUsage = JSON.stringify((merged as any)?.usage);
       delete record.streamText;
       await upsertRecord(record);

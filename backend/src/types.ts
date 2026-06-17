@@ -92,10 +92,17 @@ export interface AnthropicMergedResponse {
 // ---- Token breakdown ----
 
 export interface OpenAIResponsesUsage {
-  input_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
-  output_tokens: number;
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_tokens_details?: {
+    cached_tokens?: number;
+  };
+  output_tokens_details?: {
+    reasoning_tokens?: number;
+  };
   service_tier?: string;
 }
 
@@ -103,15 +110,16 @@ export interface TokenBreakdown {
   messages: number;           // 消息内容（不含 system）
   tools: number;              // 工具定义
   systemPrompt: number;       // 系统提示
-  cacheRead: number;          // 缓存命中（来自 usage.cache_read_input_tokens）
+  cacheRead: number;          // 缓存命中（OpenAI: input_tokens_details.cached_tokens；Anthropic: cache_read_input_tokens）
   totalInput: number;         // messages + tools + systemPrompt（我们算的）
-  apiReportedInput: number;   // API 报告输入（Chat: prompt_tokens, Responses: input_tokens + cache_read, Anthropic: input_tokens + cache_read）
+  apiReportedInput: number;   // API 报告输入（OpenAI: prompt_tokens/input_tokens；Anthropic: input_tokens + cache_read）
   tokenizerSource?: string;   // 使用的 tokenizer（如 "gpt-tokenizer"、"@anthropic-ai/tokenizer"、"hf-download"）
 }
 
 // ---- Shared ----
 
 export type ApiType = 'openai' | 'anthropic';
+export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
 export type RecordState = 'streaming' | 'done' | 'error';
 

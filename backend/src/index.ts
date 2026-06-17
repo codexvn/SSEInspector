@@ -116,9 +116,9 @@ async function start() {
 
   // ---- Proxy 路由 ----
 
-  app.post(/\/chat\/completions$/, (req, res) => handleProxy(req, res, 'openai'));
-  app.post(/\/responses$/, (req, res) => handleProxy(req, res, 'openai'));
-  app.post(/\/messages$/, (req, res) => handleProxy(req, res, 'anthropic'));
+  app.post(/\/chat\/completions$/, (req, res) => handleProxy(req, res, 'openai', 'openai-chat'));
+  app.post(/\/responses$/, (req, res) => handleProxy(req, res, 'openai', 'openai-responses'));
+  app.post(/\/messages$/, (req, res) => handleProxy(req, res, 'anthropic', 'anthropic-messages'));
 
   // ---- 前端静态资源（vite-express：dev HMR / prod static）----
 

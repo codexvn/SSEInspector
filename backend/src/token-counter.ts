@@ -1,4 +1,4 @@
-import { ApiType, TokenBreakdown, OpenAIResponsesUsage, MergedContent } from './types';
+import { ApiEndpoint, TokenBreakdown, OpenAIResponsesUsage, MergedContent } from './types';
 import { resolveTokenizer, ResolvedTokenizer } from './token-registry';
 
 function sourceLabel(t: ResolvedTokenizer | null): string | undefined {
@@ -79,10 +79,6 @@ function extractChatApiReportedInput(usage: Record<string, unknown> | null, mode
 
 // ---- OpenAI Chat ----
 
-function isOpenAIChatBody(body: Record<string, unknown>): boolean {
-  return Array.isArray(body.messages);
-}
-
 async function breakDownOpenAIChat(
   body: Record<string, unknown>,
   usage: Record<string, unknown> | null,
@@ -140,8 +136,13 @@ async function breakDownOpenAIChat(
 
 // ---- OpenAI Responses ----
 
-function isOpenAIResponsesBody(body: Record<string, unknown>): boolean {
-  return body.input !== undefined;
+function extractResponsesCacheRead(usage: OpenAIResponsesUsage | null): number {
+  if (!usage) return 0;
+  return usage.input_tokens_details?.cached_tokens ?? 0;
+}
+
+function extractResponsesApiReportedInput(usage: OpenAIResponsesUsage | null): number {
+  return usage?.input_tokens ?? 0;
 }
 
 async function breakDownOpenAIResponses(
@@ -174,9 +175,9 @@ async function breakDownOpenAIResponses(
   }
 
   const tools = encode(JSON.stringify(extractTools(body)));
-  const cacheRead = usage?.cache_read_input_tokens ?? 0;
+  const cacheRead = extractResponsesCacheRead(usage);
   const totalInput = messages + tools + systemPrompt + textFormatTokens;
-  const apiReportedInput = (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
+  const apiReportedInput = extractResponsesApiReportedInput(usage);
 
   return {
     messages, tools,
@@ -250,7 +251,7 @@ async function breakDownAnthropic(
 export async function computeTokenBreakdown(
   body: unknown,
   responseContent: MergedContent | null,
-  apiType: ApiType,
+  apiEndpoint: ApiEndpoint,
 ): Promise<TokenBreakdown | null> {
   if (!body || typeof body !== 'object') return null;
 
@@ -259,27 +260,25 @@ export async function computeTokenBreakdown(
   const tokenizer = await resolveTokenizer(model);
 
   try {
-    if (apiType === 'openai') {
-      if (isOpenAIResponsesBody(bodyObj)) {
+    switch (apiEndpoint) {
+      case 'openai-responses': {
         const usage = responseContent && 'usage' in responseContent
           ? (responseContent as { usage?: OpenAIResponsesUsage }).usage ?? null
           : null;
         return await breakDownOpenAIResponses(bodyObj, usage, tokenizer);
       }
-      if (isOpenAIChatBody(bodyObj)) {
+      case 'openai-chat': {
         const usage = responseContent && 'usage' in responseContent
           ? (responseContent as { usage?: Record<string, unknown> }).usage ?? null
           : null;
         return await breakDownOpenAIChat(bodyObj, usage, model, tokenizer);
       }
-      return null;
-    }
-
-    if (apiType === 'anthropic') {
-      const usage = responseContent && 'usage' in responseContent
-        ? (responseContent as { usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } }).usage ?? null
-        : null;
-      return await breakDownAnthropic(bodyObj, usage, tokenizer);
+      case 'anthropic-messages': {
+        const usage = responseContent && 'usage' in responseContent
+          ? (responseContent as { usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number } }).usage ?? null
+          : null;
+        return await breakDownAnthropic(bodyObj, usage, tokenizer);
+      }
     }
 
     return null;
