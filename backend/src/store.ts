@@ -21,8 +21,9 @@ function toolRepo() { return _toolRepo ?? (_toolRepo = AppDataSource.getReposito
 // ---- 内部 helper ----
 
 function toSummary(r: RecordedRequest): RecordSummary {
-  const model = ((r.responseContent as unknown as Record<string, unknown>)?.model as string)
-    ?? ((r.requestBody as unknown as Record<string, unknown>)?.model as string)
+  // 优先取请求体 model（请求模型与返回模型 ID 可能不同，列表以请求模型为准）
+  const model = ((r.requestBody as unknown as Record<string, unknown>)?.model as string)
+    ?? ((r.responseContent as unknown as Record<string, unknown>)?.model as string)
     ?? 'unknown';
 
   const preview = buildPreview(r);
