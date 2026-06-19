@@ -108,7 +108,7 @@ function sessionLabel(sid?: string, key?: string): string {
               <span v-else class="badge badge-openai">OpenAI</span>
             </td>
             <td class="cell-model" :title="r.model">{{ r.model }}</td>
-            <td>
+            <td class="cell-status">
               <span v-if="r.state === 'streaming'" class="badge badge-streaming">传输中</span>
               <span v-else-if="r.status < 300" class="badge badge-ok">{{ r.status }}</span>
               <span v-else-if="r.status < 500" class="badge badge-warn">{{ r.status }}</span>
@@ -183,7 +183,7 @@ thead { background: var(--bg-inset); border-bottom: 1px solid var(--border); }
 th {
   text-align: left; padding: 11px 16px; font-size: 0.73rem;
   font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--text-secondary);
+  color: var(--text-secondary); white-space: nowrap;
 }
 td { padding: 12px 16px; font-size: 0.84rem; border-bottom: 1px solid var(--border); }
 tbody tr { cursor: pointer; transition: background .12s; }
@@ -193,11 +193,12 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-time { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
 .cell-model { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .cell-api { white-space: nowrap; font-size: 0.75rem; }
+.cell-status { white-space: nowrap; }
 .cell-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); }
 .cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
 .cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
-.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: right; }
+.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: right; min-width: 5.5em; }
 .cache-hit { color: var(--success); font-weight: 600; }
 .cache-miss { color: var(--text-muted); }
 

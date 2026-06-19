@@ -27,10 +27,14 @@ const props = defineProps<{
 
 const speedText = ref('')
 let speedTimer: ReturnType<typeof setInterval> | null = null
-let tokenizeTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 流式实时速度刷新间隔（节流）：与 speedTimer 每秒刷显示的节奏对齐，避免每次 SSE 推送都调后端 */
+const TOKENIZE_INTERVAL = 1000
 
 /** 当前已取得的 token 数（流式实时更新） */
 let currentTokens = 0
+/** 上次调用后端 tokenize 的时间戳，用于流式节流（防抖在持续流式下永不触发） */
+let lastTokenizeAt = 0
 
 /** 解析单个 SSE data 行为对象，失败返回 null */
 function parseDataLine(line: string): Record<string, unknown> | null {
@@ -134,11 +138,15 @@ function updateSpeed() {
     speedText.value = finalSpeed.value
     return
   }
-  // 流式中：提取纯文本，防抖调 tokenize 接口，定时刷新显示
+  // 流式中：提取纯文本，节流调 tokenize 接口（用最新文本），定时刷新显示
   if (!props.text) { speedText.value = '…'; return }
   const text = extractOutputText(props.text)
-  if (tokenizeTimer) clearTimeout(tokenizeTimer)
-  tokenizeTimer = setTimeout(() => { refreshTokenCount(text) }, 300)
+  // 节流：距上次刷新超过间隔才真正调后端，否则用已有 currentTokens 渲染。
+  // 注意：流式 props.text 每 ~200ms 变化一次，用 debounce(停止才触发) 会导致后端调用永不触发、速度恒为 0。
+  if (Date.now() - lastTokenizeAt >= TOKENIZE_INTERVAL) {
+    lastTokenizeAt = Date.now()
+    void refreshTokenCount(text)
+  }
   renderLiveSpeed()
 }
 
@@ -155,7 +163,6 @@ watch(() => props.state, () => {
 
 onUnmounted(() => {
   if (speedTimer) clearInterval(speedTimer)
-  if (tokenizeTimer) clearTimeout(tokenizeTimer)
 })
 </script>
 
