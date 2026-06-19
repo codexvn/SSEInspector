@@ -41,6 +41,7 @@ export function useMonaco() {
       el.style.height = h + 'px'
       editor!.layout()
     })
+    requestAnimationFrame(() => editor!.layout())
     return editor
   }
 

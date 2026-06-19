@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
 import Pagination from '../components/Pagination.vue'
+import TokenSpeed from '../components/TokenSpeed.vue'
+import { detectApiEndpoint } from '../composables/useApiEndpoint'
 
 const store = useRequestsStore()
 const router = useRouter()
@@ -24,6 +26,12 @@ const errorCount = computed(() => store.counts.error)
 
 onMounted(() => {
   store.loadPage(1)
+  // 列表每次 SSE 推送后重查统计，保证顶部计数实时准确
+  store.onListUpdate = () => store.loadStats()
+})
+
+onUnmounted(() => {
+  store.onListUpdate = null
 })
 
 function openDetail(id: string) {
@@ -89,6 +97,7 @@ function sessionLabel(sid?: string, key?: string): string {
             <th>会话</th>
             <th>耗时</th>
             <th>缓存命中</th>
+            <th>速度</th>
           </tr>
         </thead>
         <tbody>
@@ -123,6 +132,7 @@ function sessionLabel(sid?: string, key?: string): string {
               </template>
               <template v-else>-</template>
             </td>
+            <td class="cell-speed"><TokenSpeed :text="r.streamText" :start-time="new Date(r.timestamp).getTime()" :endpoint="detectApiEndpoint(r.path, r.apiType)" :state="r.state" :output-tokens="r.outputTokens" :duration-ms="r.durationMs" :model="r.model" /></td>
           </tr>
         </tbody>
       </table>
@@ -187,6 +197,7 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); }
 .cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
 .cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
+.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: right; }
 .cache-hit { color: var(--success); font-weight: 600; }
 .cache-miss { color: var(--text-muted); }
 

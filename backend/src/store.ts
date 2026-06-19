@@ -37,8 +37,9 @@ function toSummary(r: RecordedRequest): RecordSummary {
     durationMs: r.durationMs,
     state: r.state,
     apiType: r.apiType,
+    path: r.path,
     streamText: r.streamText,
-    ...buildTokenSummary(r.tokenBreakdown),
+    ...buildTokenSummary(r.tokenBreakdown, r.apiUsage),
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
   };
@@ -88,10 +89,25 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-function buildTokenSummary(tb?: TokenBreakdown | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput'> {
+/** 从原始 usage JSON 提取输出 token 数（兼容 OpenAI completion_tokens 与 Anthropic/DeepSeek/Responses output_tokens） */
+function extractOutputTokens(apiUsage?: string | null): number | undefined {
+  if (!apiUsage) return undefined;
+  try {
+    const usage = JSON.parse(apiUsage) as Record<string, unknown>;
+    const out = (usage as { completion_tokens?: number; output_tokens?: number }).completion_tokens
+      ?? (usage as { output_tokens?: number }).output_tokens;
+    return typeof out === 'number' ? out : undefined;
+  } catch (err) {
+    console.warn(`[store] 解析 apiUsage 提取输出 token 失败: ${formatErrorChain(err)}`);
+    return undefined;
+  }
+}
+
+function buildTokenSummary(tb?: TokenBreakdown | null, apiUsage?: string | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput' | 'outputTokens'> {
   return {
     cacheRead: tb?.cacheRead,
     apiReportedInput: tb?.apiReportedInput,
+    outputTokens: extractOutputTokens(apiUsage),
   };
 }
 
@@ -119,6 +135,7 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     finished: row.finished,
     tokenBreakdown: (safeJsonParse(row.computed_tokens ?? null) as TokenBreakdown) ?? undefined,
     apiUsage: row.api_usage ?? undefined,
+    outputTokens: extractOutputTokens(row.api_usage),
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -145,8 +162,9 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     durationMs: row.duration_ms,
     state: deriveState(row.finished, row.error ?? null),
     apiType: row.api_type as ApiType,
+    path: row.path ?? undefined,
     streamText: streamBuf.get(row.id),
-    ...buildTokenSummary(tokenBreakdown),
+    ...buildTokenSummary(tokenBreakdown, row.api_usage),
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -196,6 +214,7 @@ const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
   computed_tokens: true, session_id: true, session_id_key: true,
+  path: true, api_usage: true,
 };
 
 // ---- 公开 API ----
@@ -284,13 +303,12 @@ export async function getById(id: string): Promise<RecordedRequest | undefined> 
   return entityToRecord(row);
 }
 
-/** 查询同一会话中指定请求的上一条已完成请求 */
+/** 查询同一会话中指定请求的上一条请求（不限定完成状态，实时反映流式中的相邻请求） */
 export async function getPrevInSession(id: string, sessionId: string): Promise<RecordedRequest | undefined> {
   const repo = reqRepo();
   const row = await repo
     .createQueryBuilder('r')
     .where('r.session_id = :sid', { sid: sessionId })
-    .andWhere('r.finished = :ok', { ok: 'ok' })
     .andWhere('r.timestamp < (SELECT timestamp FROM requests WHERE id = :id)', { id })
     .orderBy('r.timestamp', 'DESC')
     .limit(1)
@@ -309,6 +327,47 @@ export async function getNextInSession(id: string, sessionId: string): Promise<R
     .limit(1)
     .getOne();
   return row ? entityToRecord(row) : undefined;
+}
+
+/** 全量统计（实时查询 DB，供列表页顶部统计直接刷新） */
+export async function getStats(): Promise<{ total: number; openai: number; anthropic: number; streaming: number; error: number }> {
+  const repo = reqRepo();
+  const total = await repo.count();
+  const openai = await repo.count({ where: { api_type: 'openai' } });
+  const anthropic = await repo.count({ where: { api_type: 'anthropic' } });
+  const streaming = await repo.count({ where: { finished: 'pending' } });
+  const error = await repo.count({ where: { error: Not(IsNull()) } });
+  return { total, openai, anthropic, streaming, error };
+}
+
+/** 全局相邻与序号（按时间降序）：供详情页全局导航直接查接口刷新 */
+export async function getGlobalNeighbors(id: string): Promise<{ prevId: string | null; nextId: string | null; index: number; total: number }> {
+  const repo = reqRepo();
+  const total = await repo.count();
+  // 上一条（时间更早，降序排在后面）
+  const prevRow = await repo
+    .createQueryBuilder('r')
+    .select('r.id', 'id')
+    .where('r.timestamp < (SELECT timestamp FROM requests WHERE id = :id)', { id })
+    .orderBy('r.timestamp', 'DESC')
+    .limit(1)
+    .getRawOne<{ id: string }>();
+  // 下一条（时间更晚，降序排在前面的）
+  const nextRow = await repo
+    .createQueryBuilder('r')
+    .select('r.id', 'id')
+    .where('r.timestamp > (SELECT timestamp FROM requests WHERE id = :id)', { id })
+    .orderBy('r.timestamp', 'ASC')
+    .limit(1)
+    .getRawOne<{ id: string }>();
+  // 序号：时间更晚的条数 + 1（降序中第几个）
+  const later = await repo
+    .createQueryBuilder('r')
+    .select('COUNT(*)', 'cnt')
+    .where('r.timestamp > (SELECT timestamp FROM requests WHERE id = :id)', { id })
+    .getRawOne<{ cnt: string }>();
+  const index = Number(later?.cnt ?? 0) + 1;
+  return { prevId: prevRow?.id ?? null, nextId: nextRow?.id ?? null, index, total };
 }
 
 /** 清空全部记录 */

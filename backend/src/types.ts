@@ -152,6 +152,8 @@ export interface RecordedRequest {
   tokenBreakdown?: TokenBreakdown;
   /** 接口原始 usage 对象（JSON TEXT 列 api_usage），字段因供应商而异 */
   apiUsage?: string;
+  /** API 报告输出 token 数（从 apiUsage 解析：completion_tokens / output_tokens） */
+  outputTokens?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */
@@ -168,11 +170,15 @@ export interface RecordSummary {
   durationMs: number;
   state: RecordState;
   apiType: ApiType;
+  /** 请求路径，供前端按 /chat/completions、/responses、/messages 判定响应格式 */
+  path?: string;
   streamText?: string;
   /** 缓存命中 token 数（来自 apiUsage 解析） */
   cacheRead?: number;
   /** API 报告输入 token 数（来自 apiUsage 解析） */
   apiReportedInput?: number;
+  /** API 报告输出 token 数（来自 apiUsage 解析：completion_tokens / output_tokens） */
+  outputTokens?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */

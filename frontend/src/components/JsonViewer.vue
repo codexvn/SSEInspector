@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, nextTick, watch } from 'vue'
 import { useMonaco } from '../composables/useMonaco'
 
 const props = defineProps<{ value: string; lang?: string }>()
@@ -10,7 +10,10 @@ async function render() {
   if (container.value) await create(container.value, props.value, props.lang ?? 'json')
 }
 
-onMounted(render)
+onMounted(async () => {
+  await nextTick()
+  await render()
+})
 // 导航切换上下条时 Vue 复用组件不重新 mount，需手动同步 editor 内容
 watch(() => props.value, render)
 </script>

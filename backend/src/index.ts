@@ -4,7 +4,8 @@ import compression from 'compression';
 import path from 'path';
 import ViteExpress from 'vite-express';
 import { handleProxy, handlePassthrough } from './proxy';
-import { getAll, getById, getPrevInSession, getNextInSession, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
+import { getAll, getById, getPrevInSession, getNextInSession, getStats, getGlobalNeighbors, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
+import { resolveTokenizer } from './token-registry';
 import { initDb } from './db';
 import { RecordSummary } from './types';
 
@@ -31,7 +32,14 @@ async function start() {
   await initDb();
   const app = express();
 
-  app.use(compression());
+  app.use(compression({
+    // SSE 响应不压缩：压缩流会缓冲小块数据，导致 /api/events 推送不及时
+    filter: (req, res) => {
+      const type = res.getHeader('Content-Type');
+      if (typeof type === 'string' && type.includes('text/event-stream')) return false;
+      return compression.filter(req, res);
+    },
+  }));
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -66,6 +74,26 @@ async function start() {
     if (!cur || !cur.sessionId) { res.json(null); return; }
     const next = await getNextInSession(req.params.id, cur.sessionId);
     res.json(next ?? null);
+  }));
+
+  app.get('/api/stats', route(async (_req, res) => {
+    res.json(await getStats());
+  }));
+
+  app.get('/api/requests/:id/neighbors', route(async (req, res) => {
+    res.json(await getGlobalNeighbors(req.params.id));
+  }));
+
+  // token 计数：复用 resolveTokenizer 路由（OpenAI/Claude/HF），供前端流式实时速度估算
+  app.post('/api/tokenize', route(async (req, res) => {
+    const { text, model } = req.body as { text?: string; model?: string };
+    if (typeof text !== 'string' || typeof model !== 'string') {
+      res.status(400).json({ error: '需要 text 和 model 字段' });
+      return;
+    }
+    const tokenizer = await resolveTokenizer(model);
+    const count = tokenizer ? tokenizer.encoder(text) : 0;
+    res.json({ count, source: tokenizer?.source ?? null });
   }));
 
   app.delete('/api/requests', route(async (_req, res) => {

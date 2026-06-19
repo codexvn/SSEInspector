@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch, type ComponentPublicInstance } from 'vue'
 import SystemMessageCard from './SystemMessageCard.vue'
 import UserMessageCard from './UserMessageCard.vue'
 import AssistantTextCard from './AssistantTextCard.vue'
@@ -10,6 +10,7 @@ import MessageMetaCard from './MessageMetaCard.vue'
 import ToolsListCard from './ToolsListCard.vue'
 import RawJsonCard from './RawJsonCard.vue'
 import type { ApiEndpoint } from '../types'
+import { detectApiEndpoint } from '../composables/useApiEndpoint'
 
 type MessageFlowFormat = ApiEndpoint | 'unknown'
 type MessageFlowCardType =
@@ -44,16 +45,16 @@ const props = defineProps<{
   previousBody?: Record<string, unknown>
   apiType: 'openai' | 'anthropic'
   path?: string
-  upstreamUrl?: string
 }>()
 
-const format = computed(() => detectFormat(props.path, props.upstreamUrl, props.apiType, props.body))
+const format = computed(() => detectApiEndpoint(props.path, props.apiType))
 const groups = computed<MessageFlowGroupDescriptor[]>(() => buildGroups(props.body, format.value, props.previousBody))
 const newGroupCount = computed(() => groups.value.filter(group => group.isNew).length)
 const totalGroupCount = computed(() => groups.value.length)
 const expandedGroupIds = ref(new Set<string>())
 const activeGroupId = ref('')
 const groupElements = new Map<string, HTMLElement>()
+const rootEl = ref<HTMLElement | null>(null)
 const activeGroupIndex = computed(() => groups.value.findIndex(group => group.id === activeGroupId.value))
 const activeGroupPosition = computed(() => activeGroupIndex.value >= 0 ? activeGroupIndex.value + 1 : 0)
 const renderedGroupIds = ref(new Set<string>())
@@ -84,9 +85,26 @@ function toggleGroup(groupId: string) {
   if (expanded.has(groupId)) renderGroup(groupId)
 }
 
-function setGroupElement(groupId: string, element: Element | null) {
+function setGroupElement(groupId: string, element: Element | ComponentPublicInstance | null) {
   if (element instanceof HTMLElement) groupElements.set(groupId, element)
   else groupElements.delete(groupId)
+}
+
+/** 查找最近的纵向可滚动祖先（消息流弹窗内为 .diff-modal-body.flow-body） */
+/** 消息流内容的滚动容器（顶栏固定，仅 .msg-flow-body 滚动） */
+function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
+  return el?.querySelector<HTMLElement>('.msg-flow-body') ?? null
+}
+
+/** 累加 offsetTop 到滚动容器，得到目标相对容器的静态偏移（不受当前滚动位置影响） */
+function offsetTopWithin(target: HTMLElement, container: HTMLElement): number {
+  let top = 0
+  let el: HTMLElement | null = target
+  while (el && el !== container) {
+    top += el.offsetTop
+    el = el.offsetParent as HTMLElement | null
+  }
+  return top
 }
 
 function focusGroup(index: number) {
@@ -98,7 +116,12 @@ function focusGroup(index: number) {
   expanded.add(group.id)
   expandedGroupIds.value = expanded
   nextTick(() => {
-    groupElements.get(group.id)?.scrollIntoView({ behavior: 'auto', block: 'start' })
+    const container = scrollContainerOf(rootEl.value)
+    const target = groupElements.get(group.id)
+    if (!container || !target) return
+    const head = rootEl.value?.querySelector<HTMLElement>('.msg-flow-sticky-head')
+    const offset = offsetTopWithin(target, container) - (head?.offsetHeight ?? 0)
+    container.scrollTop = Math.max(offset, 0)
   })
 }
 
@@ -137,16 +160,6 @@ function updateRenderedGroups(centerIndex: number) {
   renderedGroupIds.value = nextRendered
 }
 
-function detectFormat(path: string | undefined, upstreamUrl: string | undefined, apiType: string, body: Record<string, unknown>): MessageFlowFormat {
-  const source = `${path ?? ''} ${upstreamUrl ?? ''}`
-  if (/\/chat\/completions(?:\?|$)/.test(source)) return 'openai-chat'
-  if (/\/responses(?:\?|$)/.test(source)) return 'openai-responses'
-  if (/\/messages(?:\?|$)/.test(source)) return 'anthropic-messages'
-  if (apiType === 'anthropic') return 'anthropic-messages'
-  if (Array.isArray(body.messages)) return 'openai-chat'
-  if (body.input !== undefined) return 'openai-responses'
-  return 'unknown'
-}
 
 function buildGroups(body: Record<string, unknown>, fmt: MessageFlowFormat, previousBody?: Record<string, unknown>): MessageFlowGroupDescriptor[] {
   const groups: MessageFlowGroupDescriptor[] = [
@@ -546,7 +559,7 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
 </script>
 
 <template>
-  <div class="msg-flow">
+  <div class="msg-flow" ref="rootEl">
     <div class="msg-flow-sticky-head">
       <div class="msg-flow-toolbar">
         <span class="msg-flow-total">总数 {{ totalGroupCount }}</span>
@@ -558,6 +571,7 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
         本次新增 {{ newGroupCount }} 组内容
       </div>
     </div>
+    <div class="msg-flow-body">
     <div
       v-for="(group, index) in groups"
       :key="group.id"
@@ -598,6 +612,7 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
         已展开，点击加载本组内容
       </button>
     </div>
+    </div>
   </div>
 </template>
 
@@ -605,25 +620,36 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
 .msg-flow {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   min-width: 0;
   max-width: 100%;
-  padding: 0 14px 16px 36px;
-  border-left: 2px solid var(--border);
-  margin-left: 4px;
+  height: 100%;
 }
 
 .msg-flow-sticky-head {
-  position: sticky;
-  top: 0;
-  z-index: 20;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-left: -36px;
-  padding: 12px 0 10px 36px;
+  margin-left: 4px;
+  padding: 12px 14px 10px 52px;
+  overflow-y: scroll;
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
+}
+
+.msg-flow-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: scroll;
+  margin-left: 4px;
+  border-left: 2px solid var(--border);
+  padding: 12px 14px 16px 52px;
+}
+
+.msg-flow-body .msg-flow-group + .msg-flow-group {
+  margin-top: 12px;
 }
 
 .msg-flow-toolbar {
@@ -847,13 +873,12 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
 }
 
 @media (max-width: 768px) {
-  .msg-flow {
-    padding-left: 30px;
+  .msg-flow-body {
+    padding-left: 46px;
   }
 
   .msg-flow-sticky-head {
-    margin-left: -30px;
-    padding-left: 30px;
+    padding-left: 46px;
   }
 
   .msg-flow-toolbar {
@@ -876,5 +901,25 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
   .msg-flow-group-badges {
     justify-content: flex-start;
   }
+}
+
+/* 统一消息流滚动条：窄而低调，避免顶栏预留空滚动条突兀 */
+.msg-flow ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.msg-flow ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.msg-flow ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+}
+.msg-flow ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+.msg-flow {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
 }
 </style>

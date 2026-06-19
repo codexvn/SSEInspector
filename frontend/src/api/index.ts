@@ -1,4 +1,4 @@
-import type { RecordSummary, RecordedRequest, ListResult, ToolCallEntry, SSEEvent } from '../types'
+import type { RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, TokenizeResult, ToolCallEntry, SSEEvent } from '../types'
 
 const BASE = '/api'
 
@@ -24,6 +24,28 @@ export async function fetchPrev(id: string): Promise<RecordedRequest | null> {
 /** 查询同一会话中指定请求的下一条请求 */
 export async function fetchNext(id: string): Promise<RecordedRequest | null> {
   const res = await fetch(`${BASE}/requests/${id}/next`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchStats(): Promise<StatsResult> {
+  const res = await fetch(`${BASE}/stats`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchNeighbors(id: string): Promise<GlobalNeighbors> {
+  const res = await fetch(`${BASE}/requests/${id}/neighbors`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+/** 调用后端 tokenizer 计算 token 数（复用后端模型路由） */
+export async function fetchTokenize(text: string, model: string): Promise<TokenizeResult> {
+  const res = await fetch(`${BASE}/tokenize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, model }),
+  })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }

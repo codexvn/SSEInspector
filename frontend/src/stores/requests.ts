@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { RecordSummary, RecordedRequest } from '../types'
-import { fetchList, fetchDetail, clearAll, connectSSE } from '../api'
+import { fetchList, fetchDetail, clearAll, connectSSE, fetchStats } from '../api'
 
 export const useRequestsStore = defineStore('requests', () => {
   // ---- 列表状态 ----
@@ -19,6 +19,9 @@ export const useRequestsStore = defineStore('requests', () => {
   /** 外部注册的 streaming→done 回调，供 DetailView 绑定刷新。
    *  使用 ref 以便 Pinia 正确代理 store 上的赋值。 */
   const onStreamDone = ref<((id: string) => void) | null>(null)
+  /** 外部注册的“列表有更新”回调：每次 SSE 推送后触发，
+   *  供 ListView 重查统计、DetailView 重查全局/会话导航。 */
+  const onListUpdate = ref<(() => void) | null>(null)
 
   function startSSE() {
     if (sseCleanup) sseCleanup()
@@ -30,12 +33,6 @@ export const useRequestsStore = defineStore('requests', () => {
           items.value.splice(idx, 1, summary)
         } else {
           total.value++
-          // SSE 增量更新全量统计
-          const c = { ...counts.value }
-          if (summary.apiType === 'openai') c.openai++; else c.anthropic++
-          if (summary.state === 'streaming') c.streaming++
-          else if (summary.state === 'error') c.error++
-          counts.value = c
           if (page.value === 1) {
             items.value.unshift(summary)
             if (items.value.length > pageSize) items.value.pop()
@@ -43,6 +40,8 @@ export const useRequestsStore = defineStore('requests', () => {
         }
         // 按时间降序排序
         items.value.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        // 统计改由接口实时查询，此处不再增量维护 counts
+        onListUpdate.value?.()
         // streaming → done 转换：通知详情页刷新
         if (wasStreaming && summary.state === 'done') {
           onStreamDone.value?.(summary.id)
@@ -51,6 +50,7 @@ export const useRequestsStore = defineStore('requests', () => {
       () => {
         items.value = []
         total.value = 0
+        onListUpdate.value?.()
       },
     )
   }
@@ -63,9 +63,19 @@ export const useRequestsStore = defineStore('requests', () => {
       items.value = data.items
       total.value = data.total
       page.value = data.page
-      if (data.counts) counts.value = data.counts
+      // 统一通过 /api/stats 实时查询统计，避免增量维护偏差
+      await loadStats()
     } finally {
       loading.value = false
+    }
+  }
+
+  /** 实时查询统计并更新 counts（供 ListView 与 SSE 推送后刷新） */
+  async function loadStats() {
+    try {
+      counts.value = await fetchStats()
+    } catch (e) {
+      console.warn(`[store] 加载统计失败: ${(e as Error).message}`)
     }
   }
 
@@ -74,6 +84,7 @@ export const useRequestsStore = defineStore('requests', () => {
     items.value = []
     total.value = 0
     page.value = 1
+    counts.value = { openai: 0, anthropic: 0, streaming: 0, error: 0 }
   }
 
   // ---- 详情缓存 ----
@@ -106,8 +117,8 @@ export const useRequestsStore = defineStore('requests', () => {
 
   return {
     items, page, pageSize, total, loading, totalPages, counts,
-    loadPage, doClear,
+    loadPage, doClear, loadStats,
     detailCache, loadDetail, updateDetailInCache,
-    onStreamDone,
+    onStreamDone, onListUpdate,
   }
 })

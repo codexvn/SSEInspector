@@ -2,14 +2,16 @@
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
-import type { RecordedRequest, ToolCallEntry } from '../types'
-import { fetchToolCalls, fetchPrev, fetchNext } from '../api'
+import type { RecordedRequest, ToolCallEntry, GlobalNeighbors } from '../types'
+import { fetchToolCalls, fetchPrev, fetchNext, fetchNeighbors } from '../api'
+import { detectApiEndpoint } from '../composables/useApiEndpoint'
 import TokenBreakdown from '../components/TokenBreakdown.vue'
 import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
 import ToolCallResultCard from '../components/ToolCallResultCard.vue'
 import StreamLive from '../components/StreamLive.vue'
+import TokenSpeed from '../components/TokenSpeed.vue'
 import DiffViewer from '../components/DiffViewer.vue'
 import MessageFlow from '../components/MessageFlow.vue'
 import UserMessageCard from '../components/UserMessageCard.vue'
@@ -27,6 +29,15 @@ const toolCalls = ref<ToolCallEntry[]>([])
 
 const id = computed(() => route.params.id as string)
 const isStreaming = computed(() => record.value?.state === 'streaming')
+/** 响应格式，由 path + apiType 判定，供流式解析与非流式渲染分流 */
+const endpoint = computed(() => detectApiEndpoint(record.value?.path, record.value?.apiType ?? 'openai'))
+/** 模型名：优先取响应体 model，回退请求体 model，供 tokenizer 路由 */
+const model = computed(() => {
+  const respModel = (record.value?.responseContent as Record<string, unknown> | null)?.model
+  if (typeof respModel === 'string' && respModel) return respModel
+  const bodyModel = parsedBody.value?.model
+  return typeof bodyModel === 'string' && bodyModel ? bodyModel : 'unknown'
+})
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
 function parseBody(body: unknown, label: string): Record<string, unknown> | undefined {
@@ -204,6 +215,7 @@ async function load(detailId: string) {
       toolCalls.value = []
     }
     checkNeighbors()
+    loadGlobalNeighbors()
   } catch (e) {
     error.value = `加载失败: ${formatErrorChain(e)}`
   } finally {
@@ -218,10 +230,16 @@ onMounted(() => {
   store.onStreamDone = (doneId: string) => {
     if (doneId === route.params.id) load(doneId)
   }
+  // 列表有更新时重查全局导航与会话相邻，保证 3/237、会话 ◀▶、diff 实时刷新
+  store.onListUpdate = () => {
+    loadGlobalNeighbors()
+    checkNeighbors()
+  }
   document.addEventListener('keydown', onKeydown)
 })
 onUnmounted(() => {
   store.onStreamDone = null
+  store.onListUpdate = null
   document.removeEventListener('keydown', onKeydown)
 })
 watch(() => route.params.id as string, load)
@@ -244,20 +262,23 @@ function fmtJson(val: unknown): string {
   return JSON.stringify(val, null, 2)
 }
 
-// ---- 全局导航 ----
+// ---- 全局导航（直接查接口，实时反映新记录插入） ----
+const globalNeighbors = ref<GlobalNeighbors | null>(null)
+
+async function loadGlobalNeighbors() {
+  try {
+    globalNeighbors.value = await fetchNeighbors(id.value)
+  } catch (e) {
+    console.warn(`[DetailView] 加载全局导航失败: ${formatErrorChain(e)}`)
+    globalNeighbors.value = null
+  }
+}
 function globalPrev() {
-  const idx = store.items.findIndex(r => r.id === id.value)
-  if (idx < 0) return
-  const prev = store.items[idx + 1]
-  if (prev) router.push({ name: 'detail', params: { id: prev.id } })
+  if (globalNeighbors.value?.prevId) router.push({ name: 'detail', params: { id: globalNeighbors.value.prevId } })
 }
 function globalNext() {
-  const idx = store.items.findIndex(r => r.id === id.value)
-  if (idx < 0) return
-  const next = store.items[idx - 1]
-  if (next) router.push({ name: 'detail', params: { id: next.id } })
+  if (globalNeighbors.value?.nextId) router.push({ name: 'detail', params: { id: globalNeighbors.value.nextId } })
 }
-const globalIdx = computed(() => store.items.findIndex(r => r.id === id.value))
 
 /** 从 requestBody 取最新用户输入——支持 messages 数组和 input 数组两种格式 */
 function userInput(): string {
@@ -386,9 +407,9 @@ async function doExport() {
       <!-- 全局导航 -->
       <div class="nav-group">
         <span class="nav-group-label">全局</span>
-        <button class="btn-nav" :disabled="globalIdx <= 0" @click="globalPrev">&#9650;</button>
-        <span class="nav-pos">{{ globalIdx + 1 }} / {{ store.total }}</span>
-        <button class="btn-nav" :disabled="globalIdx < 0 || globalIdx >= store.total - 1" @click="globalNext">&#9660;</button>
+        <button class="btn-nav" :disabled="!globalNeighbors?.prevId" @click="globalPrev">&#9650;</button>
+        <span class="nav-pos">{{ globalNeighbors ? globalNeighbors.index : "-" }} / {{ globalNeighbors?.total ?? store.total }}</span>
+        <button class="btn-nav" :disabled="!globalNeighbors?.nextId" @click="globalNext">&#9660;</button>
       </div>
 
       <span class="nav-sep"></span>
@@ -424,6 +445,7 @@ async function doExport() {
         <span>流式: {{ record.streaming ? '是' : '否' }}</span>
         <span>耗时: {{ isStreaming ? '…' : record.durationMs + 'ms' }}</span>
         <span>状态: <span :class="`badge ${record.responseStatus < 300 ? 'badge-ok' : record.responseStatus < 500 ? 'badge-warn' : 'badge-err'}`">{{ record.responseStatus }}</span></span>
+        <span>速度: <TokenSpeed :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="endpoint" :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" :model="model" /></span>
         <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
@@ -536,7 +558,6 @@ async function doExport() {
                 :previous-body="previousParsedBody"
                 :api-type="record.apiType"
                 :path="record.path"
-                :upstream-url="record.upstreamUrl"
               />
             </div>
           </div>
@@ -562,12 +583,12 @@ async function doExport() {
       <!-- 响应内容 -->
       <div v-if="isStreaming && streamText" class="card streaming-card">
         <span class="section-label label-streaming">实时接收中…</span>
-        <StreamLive :text="streamText" />
+        <StreamLive :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="endpoint" :model="model" />
       </div>
 
       <div v-else-if="record.responseContent && !isStreaming">
         <!-- OpenAI Chat -->
-        <template v-if="isOpenAI && (record.responseContent as any)?.choices">          <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
+        <template v-if="endpoint === 'openai-chat'">          <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
             <AssistantThinkingCard v-if="choice.message?.reasoning_content" :text="choice.message.reasoning_content" />
             <AssistantTextCard v-if="choice.message?.content" :text="choice.message.content" />
             <ToolCallCard
@@ -587,7 +608,7 @@ async function doExport() {
         </template>
 
         <!-- OpenAI Responses -->
-        <template v-else-if="(record.responseContent as any)?.object === 'response'">          <AssistantThinkingCard v-if="(record.responseContent as any).reasoning_text" :text="(record.responseContent as any).reasoning_text" />
+        <template v-else-if="endpoint === 'openai-responses'">          <AssistantThinkingCard v-if="(record.responseContent as any).reasoning_text" :text="(record.responseContent as any).reasoning_text" />
           <AssistantTextCard v-if="(record.responseContent as any).output_text" :text="(record.responseContent as any).output_text" />
           <!-- Responses API tool_calls: 从 output[] 提取 function_call -->
           <template v-for="(item, oi) in (record.responseContent as any).output ?? []" :key="oi">
@@ -604,7 +625,7 @@ async function doExport() {
         </template>
 
         <!-- Anthropic -->
-        <template v-else-if="isAnthropic">          <div class="content-blocks">
+        <template v-else-if="endpoint === 'anthropic-messages'">          <div class="content-blocks">
             <template v-for="block in (record.responseContent as any).content" :key="block.index">
               <AssistantTextCard v-if="block.type === 'text'" :text="block.text" />
               <AssistantThinkingCard v-else-if="block.type === 'thinking'" :text="block.thinking" />
@@ -888,7 +909,7 @@ async function doExport() {
 }
 .diff-modal-body.flow-body {
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 0;
 }
 .diff-modal-body .diff-viewer {
