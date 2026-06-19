@@ -25,20 +25,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     ?? ((r.requestBody as unknown as Record<string, unknown>)?.model as string)
     ?? 'unknown';
 
-  // 从 requestBody 取最新用户输入作为列表 preview
-  let preview = '';
-  const body = r.requestBody as Record<string, unknown> | undefined;
-  const msgs = (body?.messages ?? body?.input) as { role: string; content: unknown }[] | undefined;
-  if (msgs) {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') {
-        const content = msgs[i].content;
-        preview = typeof content === 'string' ? content : JSON.stringify(content);
-        break;
-      }
-    }
-  }
-  if (!preview && r.error) preview = r.error;
+  const preview = buildPreview(r);
 
   return {
     id: r.id,
@@ -55,6 +42,50 @@ function toSummary(r: RecordedRequest): RecordSummary {
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
   };
+}
+
+function buildPreview(record: RecordedRequest): string {
+  const body = isRecord(record.requestBody) ? record.requestBody : undefined;
+  const userInput = latestUserInput(body);
+  if (userInput) return userInput;
+  return record.error ?? '';
+}
+
+function latestUserInput(body?: Record<string, unknown>): string {
+  if (!body) return '';
+
+  const messages = arrayOfRecords(body.messages);
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === 'user') return extractText(message.content);
+  }
+
+  const input = body.input;
+  if (typeof input === 'string') return input;
+  if (!Array.isArray(input)) return '';
+
+  for (let index = input.length - 1; index >= 0; index--) {
+    const item = input[index];
+    if (!isRecord(item)) continue;
+    const type = String(item.type ?? '');
+    const role = String(item.role ?? '');
+    if (role === 'user' || type === 'message') {
+      return extractText(item.content) || extractText(item);
+    }
+  }
+  return '';
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join('\n');
+  if (!isRecord(value)) return '';
+  return stringValue(value.text ?? value.input_text ?? value.output_text ?? value.thinking)
+    ?? extractText(value.content);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function buildTokenSummary(tb?: TokenBreakdown | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput'> {
@@ -100,7 +131,7 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     try {
       tokenBreakdown = JSON.parse(row.computed_tokens) as TokenBreakdown
     } catch (err) {
-      console.warn(`[store] 解析 computed_tokens JSON 失败: ${(err as Error).message}`);
+      console.warn(`[store] 解析 computed_tokens JSON 失败: ${formatErrorChain(err)}`);
     }
   }
 
@@ -123,7 +154,35 @@ function entityToSummary(row: RequestEntity): RecordSummary {
 
 function safeJsonParse(s: string | null): unknown {
   if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch (err) {
+    console.warn(`[store] JSON 解析失败: ${formatErrorChain(err)}`);
+    return null;
+  }
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
+  }
+  return messages.join(' -> ');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function arrayOfRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
 function deriveState(finished: string, error: string | null): RecordState {

@@ -29,15 +29,21 @@ const id = computed(() => route.params.id as string)
 const isStreaming = computed(() => record.value?.state === 'streaming')
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
-/** requestBody 在服务器端透传 raw string（不 JSON.parse），前端惰性解析后缓存 */
-const parsedBody = computed(() => {
-  const body = record.value?.requestBody
+function parseBody(body: unknown, label: string): Record<string, unknown> | undefined {
   if (!body) return undefined
   if (typeof body === 'string') {
-    try { return JSON.parse(body) as Record<string, unknown> } catch { return undefined }
+    try {
+      return JSON.parse(body) as Record<string, unknown>
+    } catch (e) {
+      console.warn(`[DetailView] ${label} JSON 解析失败: ${formatErrorChain(e)}`)
+      return undefined
+    }
   }
   return body as Record<string, unknown>
-})
+}
+
+/** requestBody 在服务器端透传 raw string（不 JSON.parse），前端惰性解析后缓存 */
+const parsedBody = computed(() => parseBody(record.value?.requestBody, '当前请求体'))
 
 /** 响应体 tab：'raw' | 'merged' */
 const respBodyTab = ref<'raw' | 'merged'>('raw')
@@ -49,6 +55,7 @@ const mergedContentText = computed(() =>
 // ---- 会话导航 & diff ----
 const prevRecord = ref<RecordedRequest | null>(null)
 const nextRecord = ref<RecordedRequest | null>(null)
+const previousParsedBody = computed(() => parseBody(prevRecord.value?.requestBody, '上一条请求体'))
 const diffOpen = ref(false)
 const diffDirection = ref<'prev' | 'next'>('prev')
 const diffTab = ref<'reqHead' | 'reqBody' | 'resHead' | 'resBody'>('reqBody')
@@ -113,9 +120,27 @@ function formatDiffJSON(val: unknown): string {
   if (!val) return ''
   if (typeof val === 'string') {
     try { return JSON.stringify(JSON.parse(val), null, 2) }
-    catch { return val }
+    catch (e) {
+      console.warn(`[DetailView] diff JSON 格式化失败: ${formatErrorChain(e)}`)
+      return val
+    }
   }
   return JSON.stringify(val, null, 2)
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`)
+      current = current.cause
+      continue
+    }
+    messages.push(String(current))
+    break
+  }
+  return messages.join(' -> ')
 }
 
 async function checkNeighbors() {
@@ -128,7 +153,7 @@ async function checkNeighbors() {
     prevRecord.value = prev
     nextRecord.value = next
   } catch (e) {
-    console.warn(`[DetailView] 查询相邻请求失败: ${(e as Error).message}`)
+    console.warn(`[DetailView] 查询相邻请求失败: ${formatErrorChain(e)}`)
     prevRecord.value = null
     nextRecord.value = null
   }
@@ -174,10 +199,13 @@ async function load(detailId: string) {
     try {
       const tc = await fetchToolCalls(r.id)
       toolCalls.value = tc.toolCalls ?? []
-    } catch { toolCalls.value = [] }
+    } catch (e) {
+      console.warn(`[DetailView] 加载工具调用失败: ${formatErrorChain(e)}`)
+      toolCalls.value = []
+    }
     checkNeighbors()
   } catch (e) {
-    error.value = `加载失败: ${(e as Error).message}`
+    error.value = `加载失败: ${formatErrorChain(e)}`
   } finally {
     loading.value = false
   }
@@ -208,7 +236,10 @@ function onKeydown(e: KeyboardEvent) {
 function fmtJson(val: unknown): string {
   if (typeof val === 'string') {
     try { return JSON.stringify(JSON.parse(val), null, 2) }
-    catch { return val }
+    catch (e) {
+      console.warn(`[DetailView] JSON 格式化失败: ${formatErrorChain(e)}`)
+      return val
+    }
   }
   return JSON.stringify(val, null, 2)
 }
@@ -254,6 +285,7 @@ function userInput(): string {
         if (Array.isArray(c)) {
           for (const block of c as Record<string, unknown>[]) {
             if (typeof block.text === 'string') return block.text
+            if (typeof block.input_text === 'string') return block.input_text
           }
         }
       }
@@ -499,7 +531,13 @@ async function doExport() {
               </div>
             </div>
             <div class="diff-modal-body flow-body">
-              <MessageFlow :body="parsedBody" :api-type="record.apiType" :path="record.path" :upstream-url="record.upstreamUrl" />
+              <MessageFlow
+                :body="parsedBody"
+                :previous-body="previousParsedBody"
+                :api-type="record.apiType"
+                :path="record.path"
+                :upstream-url="record.upstreamUrl"
+              />
             </div>
           </div>
         </div>
