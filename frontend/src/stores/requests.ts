@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { RecordSummary, RecordedRequest } from '../types'
-import { fetchList, fetchDetail, clearAll, connectSSE, fetchStats } from '../api'
+import type { RecordSummary, RecordedRequest, RequestListFilter } from '../types'
+import { fetchList, fetchDetail, connectSSE, fetchStats } from '../api'
 
 export const useRequestsStore = defineStore('requests', () => {
   // ---- 列表状态 ----
@@ -10,9 +10,27 @@ export const useRequestsStore = defineStore('requests', () => {
   const pageSize = 50
   const total = ref(0)
   const loading = ref(false)
-  const counts = ref({ openai: 0, anthropic: 0, streaming: 0, error: 0 })
+  const counts = ref({ total: 0, openai: 0, anthropic: 0, streaming: 0, error: 0 })
+  const activeFilter = ref<RequestListFilter>('all')
 
   const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+
+  function matchesActiveFilter(record: RecordSummary): boolean {
+    switch (activeFilter.value) {
+      case 'openai':
+        return record.apiType === 'openai'
+      case 'anthropic':
+        return record.apiType === 'anthropic'
+      case 'streaming':
+        return record.state === 'streaming'
+      case 'error':
+        return record.state === 'error'
+      case 'all':
+        return true
+      default:
+        return true
+    }
+  }
 
   // ---- SSE ----
   let sseCleanup: (() => void) | null = null
@@ -25,41 +43,46 @@ export const useRequestsStore = defineStore('requests', () => {
 
   function startSSE() {
     if (sseCleanup) sseCleanup()
-    sseCleanup = connectSSE(
-      (summary) => {
-        const idx = items.value.findIndex(r => r.id === summary.id)
-        const wasStreaming = idx >= 0 && items.value[idx].state === 'streaming'
+    sseCleanup = connectSSE((summary) => {
+      const idx = items.value.findIndex(r => r.id === summary.id)
+      const wasStreaming = idx >= 0 && items.value[idx].state === 'streaming'
+      const matchesFilter = matchesActiveFilter(summary)
+      if (!matchesFilter) {
         if (idx >= 0) {
-          items.value.splice(idx, 1, summary)
-        } else {
-          total.value++
-          if (page.value === 1) {
-            items.value.unshift(summary)
-            if (items.value.length > pageSize) items.value.pop()
-          }
+          items.value.splice(idx, 1)
+          total.value = Math.max(0, total.value - 1)
         }
-        // 按时间降序排序
-        items.value.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-        // 统计改由接口实时查询，此处不再增量维护 counts
         onListUpdate.value?.()
-        // streaming → done 转换：通知详情页刷新
         if (wasStreaming && summary.state === 'done') {
           onStreamDone.value?.(summary.id)
         }
-      },
-      () => {
-        items.value = []
-        total.value = 0
-        onListUpdate.value?.()
-      },
-    )
+        return
+      }
+      if (idx >= 0) {
+        items.value.splice(idx, 1, summary)
+      } else {
+        total.value++
+        if (page.value === 1) {
+          items.value.unshift(summary)
+          if (items.value.length > pageSize) items.value.pop()
+        }
+      }
+      // 按时间降序排序
+      items.value.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      // 统计改由接口实时查询，此处不再增量维护 counts
+      onListUpdate.value?.()
+      // streaming → done 转换：通知详情页刷新
+      if (wasStreaming && summary.state === 'done') {
+        onStreamDone.value?.(summary.id)
+      }
+    })
   }
 
   // ---- 操作 ----
   async function loadPage(p: number) {
     loading.value = true
     try {
-      const data = await fetchList(p, pageSize)
+      const data = await fetchList(p, pageSize, activeFilter.value)
       items.value = data.items
       total.value = data.total
       page.value = data.page
@@ -75,16 +98,17 @@ export const useRequestsStore = defineStore('requests', () => {
     try {
       counts.value = await fetchStats()
     } catch (e) {
-      console.warn(`[store] 加载统计失败: ${(e as Error).message}`)
+      console.warn(`[store] 加载统计失败: ${formatErrorChain(e)}`)
     }
   }
 
-  async function doClear() {
-    await clearAll()
-    items.value = []
-    total.value = 0
-    page.value = 1
-    counts.value = { openai: 0, anthropic: 0, streaming: 0, error: 0 }
+  async function setFilter(filter: RequestListFilter) {
+    if (activeFilter.value === filter) {
+      activeFilter.value = 'all'
+    } else {
+      activeFilter.value = filter
+    }
+    await loadPage(1)
   }
 
   // ---- 详情缓存 ----
@@ -99,7 +123,8 @@ export const useRequestsStore = defineStore('requests', () => {
       const record = await fetchDetail(id)
       detailCache.value.set(id, record)
       return record
-    } catch {
+    } catch (e) {
+      console.warn(`[store] 加载详情失败: ${formatErrorChain(e)}`)
       // 如果 fetch 失败但有缓存，返回缓存
       return cached ?? undefined
     }
@@ -116,9 +141,24 @@ export const useRequestsStore = defineStore('requests', () => {
   startSSE()
 
   return {
-    items, page, pageSize, total, loading, totalPages, counts,
-    loadPage, doClear, loadStats,
+    items, page, pageSize, total, loading, totalPages, counts, activeFilter,
+    loadPage, loadStats, setFilter,
     detailCache, loadDetail, updateDetailInCache,
     onStreamDone, onListUpdate,
   }
 })
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`)
+      current = current.cause
+      continue
+    }
+    messages.push(String(current))
+    break
+  }
+  return messages.join(' -> ')
+}

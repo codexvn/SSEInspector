@@ -4,7 +4,8 @@
   "description": "vLLM/OpenAI-compatible API proxy with SSE recording and inspection",
   "scripts": {
     "start": "tsx backend/src/index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test:sse": "tsx backend/test/sse-merger.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
@@ -16,6 +17,7 @@
     "better-sqlite3": "^12.10.1",
     "compression": "^1.8.1",
     "dompurify": "^3.4.11",
+    "eventsource-parser": "^3.1.0",
     "express": "^4.21.0",
     "gpt-tokenizer": "^2.9.0",
     "katex": "^0.17.0",

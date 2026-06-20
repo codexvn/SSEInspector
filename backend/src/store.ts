@@ -1,9 +1,9 @@
 import { EventEmitter } from 'events';
-import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown, RecordState } from './types';
+import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown, RecordState, RequestListFilter } from './types';
 import { AppDataSource } from './db';
 import { RequestEntity } from './entity/RequestEntity';
 import { ToolCall } from './entity/ToolCall';
-import { Not, IsNull, Repository } from 'typeorm';
+import { Not, IsNull, Repository, FindManyOptions, FindOptionsWhere } from 'typeorm';
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(500);
@@ -205,9 +205,26 @@ function arrayOfRecords(value: unknown): Record<string, unknown>[] {
 }
 
 function deriveState(finished: string, error: string | null): RecordState {
-  if (finished !== 'pending') return 'done';
   if (error) return 'error';
+  if (finished !== 'pending') return 'done';
   return 'streaming';
+}
+
+function buildSummaryWhere(filter: RequestListFilter): FindOptionsWhere<RequestEntity> | undefined {
+  switch (filter) {
+    case 'openai':
+      return { api_type: 'openai' };
+    case 'anthropic':
+      return { api_type: 'anthropic' };
+    case 'streaming':
+      return { finished: 'pending' };
+    case 'error':
+      return { error: Not(IsNull()) };
+    case 'all':
+      return undefined;
+    default:
+      return undefined;
+  }
 }
 
 // 列表查询的 select 列（跳过 blob，保证分页性能）
@@ -274,15 +291,18 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
 }
 
 /** 分页列表 */
-export async function getAll(page?: number, pageSize?: number): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
+export async function getAll(page?: number, pageSize?: number, filter: RequestListFilter = 'all'): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
   const repo = reqRepo();
+  const where = buildSummaryWhere(filter);
   if (page && pageSize) {
-    const [rows, total] = await repo.findAndCount({
+    const options: FindManyOptions<RequestEntity> = {
       select: SUMMARY_SELECT,
       order: { timestamp: 'DESC' },
       skip: (page - 1) * pageSize,
       take: pageSize,
-    });
+    };
+    if (where) options.where = where;
+    const [rows, total] = await repo.findAndCount(options);
     // 全量统计（不受分页影响）
     const openaiCount = await repo.count({ where: { api_type: 'openai' } });
     const anthropicCount = await repo.count({ where: { api_type: 'anthropic' } });
@@ -290,10 +310,12 @@ export async function getAll(page?: number, pageSize?: number): Promise<RecordSu
     const errorCount = await repo.count({ where: { error: Not(IsNull()) } });
     return { items: rows.map(entityToSummary), total, page, pageSize, counts: { openai: openaiCount, anthropic: anthropicCount, streaming: streamingCount, error: errorCount } };
   }
-  const rows = await repo.find({
+  const options: FindManyOptions<RequestEntity> = {
     select: SUMMARY_SELECT,
     order: { timestamp: 'DESC' },
-  });
+  };
+  if (where) options.where = where;
+  const rows = await repo.find(options);
   return rows.map(entityToSummary);
 }
 
@@ -371,14 +393,6 @@ export async function getGlobalNeighbors(id: string): Promise<{ prevId: string |
   return { prevId: prevRow?.id ?? null, nextId: nextRow?.id ?? null, index, total };
 }
 
-/** 清空全部记录 */
-export async function clear(): Promise<void> {
-  streamBuf.clear();
-  await toolRepo().delete({});
-  await reqRepo().delete({});
-  emitter.emit('clear');
-}
-
 /** 写入工具调用 */
 export interface ToolCallEntry {
   tool_call_id: string;
@@ -448,11 +462,6 @@ export async function getToolCallPair(
 export function onUpdate(cb: (summary: RecordSummary) => void): () => void {
   emitter.on('update', cb);
   return () => emitter.off('update', cb);
-}
-
-export function onClear(cb: () => void): () => void {
-  emitter.on('clear', cb);
-  return () => emitter.off('clear', cb);
 }
 
 // ---- 暴露流式缓冲，供 SSE 使用 ----

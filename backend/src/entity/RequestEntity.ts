@@ -2,6 +2,9 @@ import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
 
 /** 请求主表。每个被代理的 AI API 请求对应一行。 */
 @Entity('requests')
+@Index('idx_requests_api_type_ts', ['api_type', 'timestamp'])
+@Index('idx_requests_finished_ts', ['finished', 'timestamp'])
+@Index('idx_requests_error_ts', ['error', 'timestamp'])
 export class RequestEntity {
   /** UUID v4，proxy.ts 中 crypto.randomUUID() 生成 */
   @PrimaryColumn('text')

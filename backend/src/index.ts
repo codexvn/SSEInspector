@@ -4,10 +4,10 @@ import compression from 'compression';
 import path from 'path';
 import ViteExpress from 'vite-express';
 import { handleProxy, handlePassthrough } from './proxy';
-import { getAll, getById, getPrevInSession, getNextInSession, getStats, getGlobalNeighbors, clear, onUpdate, onClear, getToolCalls, getToolCallPair } from './store';
+import { getAll, getById, getPrevInSession, getNextInSession, getStats, getGlobalNeighbors, onUpdate, getToolCalls, getToolCallPair } from './store';
 import { resolveTokenizer } from './token-registry';
 import { initDb } from './db';
-import { RecordSummary } from './types';
+import { RecordSummary, RequestListFilter } from './types';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const UPSTREAM_URL = process.env.UPSTREAM_URL;
@@ -22,10 +22,30 @@ if (!UPSTREAM_URL) {
 function route(fn: (req: express.Request, res: express.Response) => Promise<void>) {
   return (req: express.Request, res: express.Response) => {
     fn(req, res).catch((err) => {
-      console.error(`[api] ${req.method} ${req.path} 失败: ${(err as Error).message}`);
+      console.error(`[api] ${req.method} ${req.path} 失败: ${formatErrorChain(err)}`);
       if (!res.headersSent) res.status(500).json({ error: '服务器内部错误' });
     });
   };
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
+  }
+  return messages.join(' -> ');
+}
+
+function parseRequestListFilter(value: unknown): RequestListFilter {
+  const allowedFilters: RequestListFilter[] = ['all', 'openai', 'anthropic', 'streaming', 'error'];
+  return allowedFilters.includes(value as RequestListFilter) ? value as RequestListFilter : 'all';
 }
 
 async function start() {
@@ -48,7 +68,8 @@ async function start() {
   app.get('/api/requests', route(async (req, res) => {
     const page = parseInt(req.query.page as string) || undefined;
     const pageSize = parseInt(req.query.pageSize as string) || undefined;
-    res.json(await getAll(page, pageSize));
+    const filter = parseRequestListFilter(req.query.filter);
+    res.json(await getAll(page, pageSize, filter));
   }));
 
   app.get('/api/requests/:id', route(async (req, res) => {
@@ -96,11 +117,6 @@ async function start() {
     res.json({ count, source: tokenizer?.source ?? null });
   }));
 
-  app.delete('/api/requests', route(async (_req, res) => {
-    await clear();
-    res.status(204).send();
-  }));
-
   // SSE events stream
   app.get('/api/events', (req, res) => {
     res.writeHead(200, {
@@ -114,10 +130,6 @@ async function start() {
       res.write(`data: ${JSON.stringify({ type: 'update', record: summary })}\n\n`);
     });
 
-    const removeClear = onClear(() => {
-      res.write(`data: ${JSON.stringify({ type: 'clear' })}\n\n`);
-    });
-
     const heartbeat = setInterval(() => {
       res.write(': heartbeat\n\n');
     }, 15000);
@@ -125,7 +137,6 @@ async function start() {
     req.on('close', () => {
       clearInterval(heartbeat);
       removeUpdate();
-      removeClear();
     });
   });
 

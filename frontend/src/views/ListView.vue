@@ -38,11 +38,6 @@ function openDetail(id: string) {
   router.push({ name: 'detail', params: { id } })
 }
 
-async function handleClear() {
-  if (!confirm('确认清空全部记录？')) return
-  await store.doClear()
-}
-
 function fmtTime(iso: string) {
   const d = new Date(iso)
   return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0')
@@ -72,21 +67,31 @@ function sessionLabel(sid?: string, key?: string): string {
     <!-- 顶栏 -->
     <div class="top-bar">
       <div class="stats">
-        <span>总计 {{ store.total }}</span>
-        <span>OpenAI {{ openaiCount }}</span>
-        <span>Anthropic {{ anthropicCount }}</span>
-        <span class="stat-streaming">进行中 {{ streamingCount }}</span>
-        <span>错误 {{ errorCount }}</span>
+        <button class="stat-filter" :class="{ active: store.activeFilter === 'all' }" @click="store.setFilter('all')">总计 {{ store.counts.total }}</button>
+        <button class="stat-filter" :class="{ active: store.activeFilter === 'openai' }" @click="store.setFilter('openai')">OpenAI {{ openaiCount }}</button>
+        <button class="stat-filter" :class="{ active: store.activeFilter === 'anthropic' }" @click="store.setFilter('anthropic')">Anthropic {{ anthropicCount }}</button>
+        <button class="stat-filter stat-streaming" :class="{ active: store.activeFilter === 'streaming' }" @click="store.setFilter('streaming')">进行中 {{ streamingCount }}</button>
+        <button class="stat-filter" :class="{ active: store.activeFilter === 'error' }" @click="store.setFilter('error')">错误 {{ errorCount }}</button>
       </div>
       <div class="top-actions">
         <input v-model="searchQuery" placeholder="搜索路径、模型、请求、响应…" class="search-input" />
-        <button class="btn-clear" @click="handleClear">清空</button>
       </div>
     </div>
 
     <!-- 表格 -->
     <div class="list-view">
       <table v-if="filtered.length > 0">
+        <colgroup>
+          <col class="col-time" />
+          <col class="col-api" />
+          <col class="col-model" />
+          <col class="col-status" />
+          <col class="col-preview" />
+          <col class="col-session" />
+          <col class="col-duration" />
+          <col class="col-cache" />
+          <col class="col-speed" />
+        </colgroup>
         <thead>
           <tr>
             <th>时间</th>
@@ -147,15 +152,21 @@ function sessionLabel(sid?: string, key?: string): string {
 </template>
 
 <style scoped>
-.list-page { max-width: 1280px; margin: 0 auto; padding: 28px 24px; }
+.list-page { width: min(100% - 80px, 1520px); margin: 0 auto; padding: 28px 0; }
 
 .top-bar {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 24px; padding: 20px 24px; flex-wrap: wrap; gap: 12px;
   background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.stats { display: flex; gap: 20px; font-size: 0.82rem; color: var(--text-secondary); font-weight: 500; }
-.stats span { white-space: nowrap; }
+.stats { display: flex; gap: 8px; font-size: 0.82rem; color: var(--text-secondary); font-weight: 500; flex-wrap: wrap; }
+.stat-filter {
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent;
+  padding: 5px 10px; color: var(--text-secondary); font: inherit; cursor: pointer; white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.stat-filter:hover { background: var(--bg-inset); border-color: var(--border); }
+.stat-filter.active { background: #e0e7ff; border-color: #c7d2fe; color: #3730a3; }
 .stat-streaming { color: var(--accent); }
 .stat-hint { color: var(--text-muted); font-size: 0.7rem; }
 .top-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
@@ -167,44 +178,47 @@ function sessionLabel(sid?: string, key?: string): string {
 .search-input:focus { border-color: var(--accent); }
 .search-input::placeholder { color: var(--text-muted); }
 
-.btn-clear {
-  margin-left: 10px; background: var(--error); color: #fff; border: none;
-  padding: 8px 18px; border-radius: var(--radius-sm); cursor: pointer;
-  font-size: 0.82rem; font-weight: 600; transition: opacity .15s;
-}
-.btn-clear:hover { opacity: .85; }
-
 .list-view {
   background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
 }
 
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.col-time { width: 9.5%; }
+.col-api { width: 8.5%; }
+.col-model { width: 9%; }
+.col-status { width: 6%; }
+.col-preview { width: 31.5%; }
+.col-session { width: 10.5%; }
+.col-duration { width: 7.5%; }
+.col-cache { width: 8%; }
+.col-speed { width: 9.5%; }
 thead { background: var(--bg-inset); border-bottom: 1px solid var(--border); }
 th {
-  text-align: left; padding: 11px 16px; font-size: 0.73rem;
+  text-align: center; padding: 11px 10px; font-size: 0.73rem;
   font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--text-secondary); white-space: nowrap;
 }
-td { padding: 12px 16px; font-size: 0.84rem; border-bottom: 1px solid var(--border); }
+td { padding: 12px 10px; font-size: 0.84rem; border-bottom: 1px solid var(--border); }
 tbody tr { cursor: pointer; transition: background .12s; }
 tbody tr:hover { background: #f5f6ff; }
 tbody tr:last-child td { border-bottom: none; }
 
-.cell-time { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
-.cell-model { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-.cell-api { white-space: nowrap; font-size: 0.75rem; }
-.cell-status { white-space: nowrap; }
-.cell-preview { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
-.cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); }
-.cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; }
-.cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
-.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: right; min-width: 5.5em; }
+.cell-time { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
+.cell-model { overflow-wrap: anywhere; font-weight: 500; text-align: center; }
+.cell-api { white-space: nowrap; font-size: 0.75rem; text-align: center; }
+.cell-status { white-space: nowrap; text-align: center; }
+.cell-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); text-align: center; }
+.cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
+.cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: center; }
+.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: center; }
 .cache-hit { color: var(--success); font-weight: 600; }
 .cache-miss { color: var(--text-muted); }
 
 .empty-state { text-align: center; padding: 64px 20px; color: var(--text-muted); font-size: 0.95rem; }
 
 @media (max-width: 768px) {
+  .list-page { width: calc(100% - 24px); }
   .top-bar { flex-wrap: wrap; gap: 12px; }
   .cell-preview { max-width: 120px; }
   .cell-model { max-width: 80px; }

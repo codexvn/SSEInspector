@@ -1,5 +1,6 @@
 export type ApiProvider = 'openai' | 'anthropic'
 export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
+export type RequestListFilter = 'all' | 'openai' | 'anthropic' | 'streaming' | 'error'
 
 /** 后端 RecordSummary 的前端映射 */
 export interface RecordSummary {
@@ -96,6 +97,6 @@ export interface TokenizeResult {
 }
 
 export interface SSEEvent {
-  type: 'update' | 'clear'
+  type: 'update'
   record?: RecordSummary
 }

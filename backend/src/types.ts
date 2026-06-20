@@ -13,14 +13,22 @@ export interface MergedToolCall {
 interface MergedMessage {
   role: string;
   content: string;
+  refusal?: string;
   reasoning_content?: string;
+  function_call?: { name?: string; arguments: string };
   tool_calls?: MergedToolCall[];
+  logprobs?: unknown;
+  filter_results?: unknown;
+  [key: string]: unknown;
 }
 
 interface MergedChoice {
   index: number;
   message: MergedMessage;
   finish_reason: string | null;
+  logprobs?: unknown;
+  content_filter_results?: unknown;
+  [key: string]: unknown;
 }
 
 /**
@@ -36,6 +44,7 @@ interface MergedUsage {
     cached_tokens?: number;
     cache_miss_tokens?: number;
   };
+  [key: string]: unknown;
 }
 
 export interface MergedResponse {
@@ -45,6 +54,7 @@ export interface MergedResponse {
   model: string;
   choices: MergedChoice[];
   usage?: MergedUsage;
+  [key: string]: unknown;
 }
 
 export interface OpenAIResponsesMergedResponse {
@@ -59,18 +69,34 @@ export interface OpenAIResponsesMergedResponse {
   output?: unknown[];
   tool_calls?: MergedToolCall[];
   usage?: OpenAIResponsesUsage;
+  error?: Record<string, unknown> | null;
+  incomplete_details?: Record<string, unknown> | null;
+  [key: string]: unknown;
 }
 
 // ---- Anthropic types ----
 
 export interface AnthropicContentBlock {
-  type: 'text' | 'tool_use' | 'thinking';
+  type: 'text' | 'tool_use' | 'thinking' | 'redacted_thinking' | string;
   index: number;
   text?: string;
   thinking?: string;
+  citations?: unknown[];
+  signature?: string;
   id?: string;
   name?: string;
   input?: unknown;
+  data?: unknown;
+  [key: string]: unknown;
+}
+
+export interface AnthropicUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  service_tier?: string;
+  [key: string]: unknown;
 }
 
 export interface AnthropicMergedResponse {
@@ -80,13 +106,7 @@ export interface AnthropicMergedResponse {
   content: AnthropicContentBlock[];
   stop_reason: string | null;
   stop_sequence: string | null;
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    service_tier?: string;
-  };
+  usage?: AnthropicUsage;
 }
 
 // ---- Token breakdown ----
@@ -104,6 +124,7 @@ export interface OpenAIResponsesUsage {
     reasoning_tokens?: number;
   };
   service_tier?: string;
+  [key: string]: unknown;
 }
 
 export interface TokenBreakdown {
@@ -122,6 +143,7 @@ export type ApiType = 'openai' | 'anthropic';
 export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
 export type RecordState = 'streaming' | 'done' | 'error';
+export type RequestListFilter = 'all' | 'openai' | 'anthropic' | 'streaming' | 'error';
 
 export interface SSEChunk {
   event?: string;

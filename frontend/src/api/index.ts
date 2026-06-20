@@ -1,9 +1,14 @@
-import type { RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, TokenizeResult, ToolCallEntry, SSEEvent } from '../types'
+import type { RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, TokenizeResult, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
 
 const BASE = '/api'
 
-export async function fetchList(page: number, pageSize: number): Promise<ListResult> {
-  const res = await fetch(`${BASE}/requests?page=${page}&pageSize=${pageSize}`)
+export async function fetchList(page: number, pageSize: number, filter: RequestListFilter): Promise<ListResult> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+    filter,
+  })
+  const res = await fetch(`${BASE}/requests?${params.toString()}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
@@ -50,10 +55,6 @@ export async function fetchTokenize(text: string, model: string): Promise<Tokeni
   return res.json()
 }
 
-export async function clearAll(): Promise<void> {
-  await fetch(`${BASE}/requests`, { method: 'DELETE' })
-}
-
 export async function fetchToolCalls(requestId: string): Promise<{ toolCalls: ToolCallEntry[] }> {
   const res = await fetch(`${BASE}/tool-calls?requestId=${requestId}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -71,16 +72,32 @@ export async function fetchToolCallPair(
 }
 
 /** 连接 SSE 实时推送，返回取消函数 */
-export function connectSSE(onUpdate: (r: RecordSummary) => void, onClear: () => void): () => void {
+export function connectSSE(onUpdate: (r: RecordSummary) => void): () => void {
   const es = new EventSource(`${BASE}/events`)
 
   es.addEventListener('message', (e) => {
     try {
       const msg: SSEEvent = JSON.parse(e.data)
       if (msg.type === 'update' && msg.record) onUpdate(msg.record)
-      else if (msg.type === 'clear') onClear()
-    } catch { /* ignore malformed */ }
+    } catch (err) {
+      console.warn(`[api] SSE 消息解析失败: ${formatErrorChain(err)}`)
+    }
   })
 
   return () => es.close()
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`)
+      current = current.cause
+      continue
+    }
+    messages.push(String(current))
+    break
+  }
+  return messages.join(' -> ')
 }
