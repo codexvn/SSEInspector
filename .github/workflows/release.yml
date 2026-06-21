@@ -26,10 +26,10 @@ jobs:
           cache: 'npm'
 
       - name: 安装后端依赖
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: 安装前端依赖
-        run: npm ci --prefix frontend
+        run: npm ci --prefix frontend --ignore-scripts
 
       - name: 构建前端（vite build）
         run: npm run build --prefix frontend
