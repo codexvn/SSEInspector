@@ -1,0 +1,53 @@
+name: Release
+
+# 推送 v* 格式的 tag 自动触发（如 git tag v1.0.0 && git push origin v1.0.0）；
+# 也支持 Actions 页面手动触发。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 创建 Release 需要对仓库的写权限
+
+jobs:
+  release:
+    runs-on: ubuntu-latest   # tarball 是平台无关的 JS + 静态资源，单平台构建即可；
+                             # better-sqlite3 的原生二进制由用户机器按 ABI 自行下载，与构建机无关。
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装后端依赖
+        run: npm ci
+
+      - name: 安装前端依赖
+        run: npm ci --prefix frontend
+
+      - name: 构建前端（vite build）
+        run: npm run build --prefix frontend
+
+      - name: 构建后端（tsc）
+        run: npm run build
+
+      - name: 预览 tarball 内容（校验 files 白名单）
+        run: npm pack --dry-run --ignore-scripts
+
+      - name: 打包 tarball
+        run: npm pack --ignore-scripts   # 跳过 prepack 重复构建（前面已构建）
+
+      - name: 重命名为带 tag 版本
+        run: mv sse-inspector-*.tgz sse-inspector-${{ github.ref_name }}.tgz
+
+      - name: 创建 Release 并上传 tarball
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sse-inspector-${{ github.ref_name }}.tgz
+          generate_release_notes: true   # 自动根据 commits 生成 Release 说明

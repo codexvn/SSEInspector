@@ -1,10 +1,29 @@
 {
-  "name": "SSEInspector",
+  "name": "sse-inspector",
   "version": "1.0.0",
   "description": "vLLM/OpenAI-compatible API proxy with SSE recording and inspection",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "bin": {
+    "sse-inspector": "bin/sse-inspector.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "frontend/dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "tsx backend/src/index.ts",
     "build": "tsc",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:all": "npm run build && npm run build:frontend",
+    "prepack": "npm run build:all",
     "test:sse": "tsx backend/test/sse-merger.test.ts"
   },
   "dependencies": {
@@ -16,8 +35,7 @@
     "express": "^4.21.0",
     "gpt-tokenizer": "^2.9.0",
     "reflect-metadata": "^0.2.2",
-    "typeorm": "^1.0.0",
-    "vite-express": "^0.22.1"
+    "typeorm": "^1.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -26,7 +44,8 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vite-express": "^0.22.1"
   },
   "private": true
 }

@@ -2,7 +2,16 @@ import { Request, Response } from 'express';
 import { upsertRecord, writeToolCalls, updateToolCallResults, ToolCallEntry } from './store';
 import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
+import { config } from './config';
 import { RecordedRequest, ApiType, ApiEndpoint, MergedContent } from './types';
+
+/**
+ * 读取上游 URL。生产模式（CLI 启动）用 config.upstreamUrl；
+ * 开发模式（tsx 直跑）回退 UPSTREAM_URL 环境变量以保持向后兼容。
+ */
+function getUpstreamUrl(): string {
+  return config.upstreamUrl || process.env.UPSTREAM_URL || '';
+}
 
 const HOP_HEADERS = [
   'connection', 'keep-alive', 'transfer-encoding', 'te',
@@ -58,7 +67,7 @@ function baseRecord(
   id: string, req: Request, status: number, streaming: boolean, apiType: ApiType,
   startTime: number, error?: string,
 ): RecordedRequest {
-  const targetUrl = (process.env.UPSTREAM_URL ?? '').replace(/\/$/, '') + req.path;
+  const targetUrl = getUpstreamUrl().replace(/\/$/, '') + req.path;
   const sid = extractSessionId(req);
   return {
     id,
@@ -149,7 +158,7 @@ function extractToolCalls(
 }
 
 export async function handlePassthrough(req: Request, res: Response): Promise<void> {
-  const upstreamUrl = process.env.UPSTREAM_URL;
+  const upstreamUrl = getUpstreamUrl();
   if (!upstreamUrl) {
     res.status(500).json({ error: 'UPSTREAM_URL not configured' });
     return;
@@ -209,7 +218,7 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
 }
 
 export async function handleProxy(req: Request, res: Response, apiType: ApiType, apiEndpoint: ApiEndpoint): Promise<void> {
-  const upstreamUrl = process.env.UPSTREAM_URL;
+  const upstreamUrl = getUpstreamUrl();
   if (!upstreamUrl) {
     res.status(500).json({ error: 'UPSTREAM_URL not configured' });
     return;

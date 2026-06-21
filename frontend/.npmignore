@@ -1,0 +1,3 @@
+# npm 发布忽略清单（仅用于打包，不影响 git）
+node_modules
+*.log

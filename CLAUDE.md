@@ -28,17 +28,59 @@ npm start
 # 后端 TypeScript 构建
 npm run build
 
+# 前端构建
+npm run build:frontend
+
+# 后端 + 前端全量构建（打包发布前）
+npm run build:all
+
 # SSE 合并回归测试
 npm run test:sse
-
-# 前端构建
-cd frontend && npm run build
 ```
 
-运行时环境变量：
+## 运行方式
 
-- `UPSTREAM_URL`：上游 API 地址，必填。
-- `PORT`：代理端口，默认 `3000`。
+### 生产模式（npx / 打包产物，推荐）
+
+```bash
+# 通过 GitHub Release tarball 直接运行
+npx https://github.com/codexvn/SSEInspector/releases/download/v1.0.0/sse-inspector-v1.0.0.tgz \
+  --upstream http://localhost:8000
+
+# 本地构建产物直接运行
+npm run build:all
+node bin/sse-inspector.js --upstream http://localhost:8000
+```
+
+CLI 参数：
+
+- `--upstream <url>`：上游 API 地址，必填。
+- `--port <n>`：监听端口，默认 `3000`。
+- `--db-path <path>`：SQLite 数据库路径，默认 `~/.sseinspector/data.db`。
+- `-h, --help`：显示帮助。
+
+### 开发模式（tsx + HMR）
+
+```bash
+npm start
+```
+
+开发模式直接运行 TS 源码，配置回退环境变量：`UPSTREAM_URL`（必填）、`PORT`（默认 3000）、`SQLITE_PATH`（数据库路径）。
+
+## 打包与发布
+
+项目以 GitHub Release tarball 分发（不发 npm）。打包由 `package.json` 的 `files` 白名单 + `frontend/.npmignore` 控制，最终 tarball 含 `bin/`、`dist/`、`frontend/dist/`、`README.md`、`LICENSE`。
+
+发布流程：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+`.github/workflows/release.yml` 在 push `v*` tag 时自动触发，构建后端 + 前端，`npm pack` 生成 tarball 并上传到 GitHub Release，文件名为 `sse-inspector-v1.0.0.tgz`。
+
+`better-sqlite3` 是原生模块，用户 `npx` 时由 npm 自动安装并下载预编译二进制；非 LTS Node 版本或小众平台可能触发 node-gyp 编译，需 Python3 + C++ 工具链。
 
 ## 关键目录和文件职责
 
@@ -47,6 +89,18 @@ backend/src/proxy.ts
 ```
 
 代理入口，负责上游转发、流式原文缓存、非流式响应记录。修改时必须避免破坏透明代理语义。
+
+```text
+backend/src/config.ts
+```
+
+中央运行时配置容器。由 CLI 入口 `bin/sse-inspector.js` 在启动时通过 `setConfig()` 填充，被 `index.ts` / `proxy.ts` / `db/index.ts` 读取。生产模式走 config，开发模式（tsx 直跑）回退环境变量。
+
+```text
+bin/sse-inspector.js
+```
+
+CLI 入口（CJS，不经 tsc），带 shebang。解析 `--upstream` / `--port` / `--db-path` 参数，填充 config 后 `require` 编译产物启动。`npx` 直跑的入口。
 
 ```text
 backend/src/sse-parser.ts

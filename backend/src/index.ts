@@ -2,19 +2,29 @@ import 'reflect-metadata';
 import express from 'express';
 import compression from 'compression';
 import path from 'path';
-import ViteExpress from 'vite-express';
 import { handleProxy, handlePassthrough } from './proxy';
 import { getAll, getById, getPrevInSession, getNextInSession, getStats, getGlobalNeighbors, onUpdate, getToolCalls, getToolCallPair } from './store';
 import { resolveTokenizer } from './token-registry';
 import { initDb } from './db';
+import { config } from './config';
 import { RecordSummary, RequestListFilter } from './types';
 
-const PORT = parseInt(process.env.PORT || '3000', 10);
-const UPSTREAM_URL = process.env.UPSTREAM_URL;
+/**
+ * 运行模式判定。
+ * - 生产模式（NODE_ENV=production，经 bin/sse-inspector.js 启动）：用原生 express.static 服务前端构建产物。
+ * - 开发模式（tsx 直跑 index.ts）：用 vite-express 提供 HMR。
+ */
+const isDev = process.env.NODE_ENV !== 'production';
+
+/** 端口：生产模式读 config（CLI 传入），开发模式回退 PORT 环境变量 */
+const PORT = config.port || parseInt(process.env.PORT || '3000', 10);
+/** 上游 URL：生产模式读 config，开发模式回退 UPSTREAM_URL 环境变量 */
+const UPSTREAM_URL = config.upstreamUrl || process.env.UPSTREAM_URL;
 
 if (!UPSTREAM_URL) {
-  console.error('Error: UPSTREAM_URL environment variable is required.');
-  console.error('Example: UPSTREAM_URL=http://localhost:8000 npm start');
+  console.error('Error: 上游地址未配置。');
+  console.error('  生产模式: sse-inspector --upstream http://localhost:8000');
+  console.error('  开发模式: UPSTREAM_URL=http://localhost:8000 npm start');
   process.exit(1);
 }
 
@@ -159,28 +169,41 @@ async function start() {
   app.post(/\/responses$/, (req, res) => handleProxy(req, res, 'openai', 'openai-responses'));
   app.post(/\/messages$/, (req, res) => handleProxy(req, res, 'anthropic', 'anthropic-messages'));
 
-  // ---- 前端静态资源（vite-express：dev HMR / prod static）----
+  // ---- 前端静态资源 ----
 
-  const frontRoot = path.resolve(__dirname, '..', '..', 'frontend');
-  ViteExpress.config({ inlineViteConfig: { root: frontRoot } });
-  app.use(ViteExpress.static());
+  if (isDev) {
+    // 开发模式：vite-express 直接从 frontend/ 源码目录起 Vite dev server（HMR）
+    const ViteExpress = require('vite-express').default;
+    const frontRoot = path.resolve(__dirname, '..', '..', 'frontend');
+    ViteExpress.config({ inlineViteConfig: { root: frontRoot } });
+    app.use(ViteExpress.static());
+  } else {
+    // 生产模式：直接服务 frontend/dist 静态产物（前端用 hash 路由，无需 SPA fallback）
+    // __dirname = <pkgroot>/dist，上一级到 pkgroot，再进 frontend/dist
+    const frontendDist = path.resolve(__dirname, '..', 'frontend', 'dist');
+    app.use(express.static(frontendDist, { index: 'index.html' }));
+  }
 
-  // ---- Catch-all：透传未匹配请求到上游 ----（在 ViteExpress.static 之后注册）
-
+  // ---- Catch-all：透传未匹配请求到上游 ----
+  // 透明代理核心语义：除 /api、根路径和静态文件外，其余一律原样转发上游。
+  // 前端用 hash 路由（createWebHashHistory），路由切换不发请求，故无需 SPA fallback。
   app.use((req, res, next) => {
-    // Skip inspector API (already handled) and root (SPA fallback)
     if (req.path.startsWith('/api/') || req.path === '/') return next();
-    // Skip static file requests
     if (req.method === 'GET' && req.path.includes('.')) return next();
     handlePassthrough(req, res);
   });
 
   // ---- 启动 ----
-
-  ViteExpress.listen(app, PORT, () => {
+  const onStart = () => {
     console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
     console.log(`Proxying to ${UPSTREAM_URL}`);
-  });
+  };
+  if (isDev) {
+    const ViteExpress = require('vite-express').default;
+    ViteExpress.listen(app, PORT, onStart);
+  } else {
+    app.listen(PORT, onStart);
+  }
 }
 
 start().catch((err) => {
