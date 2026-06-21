@@ -35,7 +35,10 @@ jobs:
         run: npm run build --prefix frontend
 
       - name: 构建后端（tsc）
-        run: npm run build
+        run: |
+          echo "=== 源码文件 ===" && ls backend/src/
+          echo "=== TypeScript 版本 ===" && npx tsc --version
+          echo "=== 执行 tsc ===" && npx tsc --listEmittedFiles 2>&1
 
       - name: 预览 tarball 内容（校验 files 白名单）
         run: npm pack --dry-run --ignore-scripts
