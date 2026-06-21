@@ -19,18 +19,40 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 - 非监控请求自动直通上游（如 `/v1/models`）
 - 控制台打印每次请求的原始路径与代理后上游地址
 
-## 启动
+## 安装
 
 ```bash
 git clone https://github.com/codexvn/SSEInspector.git
 cd SSEInspector
-npm install
+npm install && npm run build:all
+```
 
+## 启动
+
+### 方式一：CLI 参数（推荐）
+
+```bash
+node bin/sse-inspector.js --upstream http://your-upstream:8000
+```
+
+参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `--upstream <url>` | 是 | — | 上游 API 地址 |
+| `--port <n>` | 否 | `3000` | 监听端口 |
+| `--db-path <path>` | 否 | `~/.sseinspector/data.db` | SQLite 数据库路径 |
+| `-h, --help` | — | — | 显示帮助 |
+
+### 方式二：环境变量（开发模式，HMR）
+
+```bash
 UPSTREAM_URL=http://your-upstream:8000 npm start
 ```
 
 - `UPSTREAM_URL` — 上游 API 地址，必填
 - `PORT` — 代理端口，默认 `3000`
+- `SQLITE_PATH` — 数据库路径，默认 `./.db/data.db`
 
 ## 使用
 
