@@ -12,24 +12,33 @@ export const useRequestsStore = defineStore('requests', () => {
   const loading = ref(false)
   const counts = ref({ total: 0, openai: 0, anthropic: 0, streaming: 0, error: 0 })
   const activeFilter = ref<RequestListFilter>('all')
+  /** 会话维度过滤，与类别 filter 正交；非空时只显示该会话的请求 */
+  const sessionFilter = ref<string | null>(null)
 
   const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
   function matchesActiveFilter(record: RecordSummary): boolean {
+    // 类别维度
     switch (activeFilter.value) {
       case 'openai':
-        return record.apiType === 'openai'
+        if (record.apiType !== 'openai') return false
+        break
       case 'anthropic':
-        return record.apiType === 'anthropic'
+        if (record.apiType !== 'anthropic') return false
+        break
       case 'streaming':
-        return record.state === 'streaming'
+        if (record.state !== 'streaming') return false
+        break
       case 'error':
-        return record.state === 'error'
+        if (record.state !== 'error') return false
+        break
       case 'all':
-        return true
       default:
-        return true
+        break
     }
+    // 会话维度：与类别 filter 取交集
+    if (sessionFilter.value && record.sessionId !== sessionFilter.value) return false
+    return true
   }
 
   // ---- SSE ----
@@ -82,7 +91,7 @@ export const useRequestsStore = defineStore('requests', () => {
   async function loadPage(p: number) {
     loading.value = true
     try {
-      const data = await fetchList(p, pageSize, activeFilter.value)
+      const data = await fetchList(p, pageSize, activeFilter.value, sessionFilter.value ?? undefined)
       items.value = data.items
       total.value = data.total
       page.value = data.page
@@ -107,6 +116,16 @@ export const useRequestsStore = defineStore('requests', () => {
       activeFilter.value = 'all'
     } else {
       activeFilter.value = filter
+    }
+    await loadPage(1)
+  }
+
+  /** 设置/切换会话维度过滤：传入当前会话 id 则清除（toggle），否则设为该会话 */
+  async function setSessionFilter(sid: string | null) {
+    if (!sid || sessionFilter.value === sid) {
+      sessionFilter.value = null
+    } else {
+      sessionFilter.value = sid
     }
     await loadPage(1)
   }
@@ -141,8 +160,8 @@ export const useRequestsStore = defineStore('requests', () => {
   startSSE()
 
   return {
-    items, page, pageSize, total, loading, totalPages, counts, activeFilter,
-    loadPage, loadStats, setFilter,
+    items, page, pageSize, total, loading, totalPages, counts, activeFilter, sessionFilter,
+    loadPage, loadStats, setFilter, setSessionFilter,
     detailCache, loadDetail, updateDetailInCache,
     onStreamDone, onListUpdate,
   }

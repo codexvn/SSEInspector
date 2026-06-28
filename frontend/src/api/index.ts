@@ -2,12 +2,13 @@ import type { RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNei
 
 const BASE = '/api'
 
-export async function fetchList(page: number, pageSize: number, filter: RequestListFilter): Promise<ListResult> {
+export async function fetchList(page: number, pageSize: number, filter: RequestListFilter, sessionId?: string): Promise<ListResult> {
   const params = new URLSearchParams({
     page: String(page),
     pageSize: String(pageSize),
     filter,
   })
+  if (sessionId) params.set('sessionId', sessionId)
   const res = await fetch(`${BASE}/requests?${params.toString()}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

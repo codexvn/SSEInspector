@@ -24,6 +24,18 @@ const anthropicCount = computed(() => store.counts.anthropic)
 const streamingCount = computed(() => store.counts.streaming)
 const errorCount = computed(() => store.counts.error)
 
+/** 当前会话筛选的展示标签：从已加载记录中查找会话头来源以复用 sessionLabel */
+const activeSessionLabel = computed(() => {
+  const sid = store.sessionFilter
+  if (!sid) return ''
+  const row = store.items.find(r => r.sessionId === sid)
+  return sessionLabel(sid, row?.sessionIdKey)
+})
+
+function clearSessionFilter() {
+  store.setSessionFilter(store.sessionFilter)
+}
+
 onMounted(() => {
   store.loadPage(1)
   // 列表每次 SSE 推送后重查统计，保证顶部计数实时准确
@@ -74,6 +86,10 @@ function sessionLabel(sid?: string, key?: string): string {
         <button class="stat-filter" :class="{ active: store.activeFilter === 'error' }" @click="store.setFilter('error')">错误 {{ errorCount }}</button>
       </div>
       <div class="top-actions">
+        <span v-if="store.sessionFilter" class="session-chip" :title="store.sessionFilter">
+          会话: {{ activeSessionLabel }}
+          <button class="session-chip-close" @click="clearSessionFilter" title="清除会话筛选">×</button>
+        </span>
         <input v-model="searchQuery" placeholder="搜索路径、模型、请求、响应…" class="search-input" />
       </div>
     </div>
@@ -124,7 +140,13 @@ function sessionLabel(sid?: string, key?: string): string {
               <span v-else>{{ r.preview }}</span>
             </td>
             <td class="cell-session" :title="r.sessionId || undefined">
-              {{ sessionLabel(r.sessionId, r.sessionIdKey) }}
+              <span
+                v-if="r.sessionId"
+                class="session-link"
+                :class="{ active: store.sessionFilter === r.sessionId }"
+                @click.stop="store.setSessionFilter(r.sessionId)"
+              >{{ sessionLabel(r.sessionId, r.sessionIdKey) }}</span>
+              <span v-else>-</span>
             </td>
             <td class="cell-duration">
               <template v-if="r.state === 'streaming'">…</template>
@@ -143,7 +165,7 @@ function sessionLabel(sid?: string, key?: string): string {
       </table>
 
       <div v-else class="empty-state">
-        {{ searchQuery ? '无匹配请求' : '暂无记录，发送请求到代理即可看到' }}
+        {{ searchQuery ? '无匹配请求' : (store.sessionFilter ? '当前会话无记录' : '暂无记录，发送请求到代理即可看到') }}
       </div>
     </div>
 
@@ -209,6 +231,20 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-status { white-space: nowrap; text-align: center; }
 .cell-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); text-align: center; }
+.session-link { cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm); transition: background .15s, color .15s; }
+.session-link:hover { background: var(--bg-inset); color: var(--text-secondary); }
+.session-link.active { background: #e0e7ff; color: #3730a3; }
+.session-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
+  border-radius: var(--radius-sm); background: #e0e7ff; color: #3730a3;
+  font-size: 0.78rem; font-family: var(--font-mono); white-space: nowrap;
+  max-width: 240px; overflow: hidden; text-overflow: ellipsis;
+}
+.session-chip-close {
+  border: none; background: transparent; color: #3730a3; cursor: pointer;
+  font-size: 0.95rem; line-height: 1; padding: 0; margin-left: 2px;
+}
+.session-chip-close:hover { color: #1e1b4b; }
 .cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
 .cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: center; }
 .cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: center; }

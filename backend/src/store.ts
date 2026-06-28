@@ -210,21 +210,34 @@ function deriveState(finished: string, error: string | null): RecordState {
   return 'streaming';
 }
 
-function buildSummaryWhere(filter: RequestListFilter): FindOptionsWhere<RequestEntity> | undefined {
+function buildSummaryWhere(
+  filter: RequestListFilter,
+  sessionId?: string,
+): FindOptionsWhere<RequestEntity> | undefined {
+  let where: FindOptionsWhere<RequestEntity> | undefined;
   switch (filter) {
     case 'openai':
-      return { api_type: 'openai' };
+      where = { api_type: 'openai' };
+      break;
     case 'anthropic':
-      return { api_type: 'anthropic' };
+      where = { api_type: 'anthropic' };
+      break;
     case 'streaming':
-      return { finished: 'pending' };
+      where = { finished: 'pending' };
+      break;
     case 'error':
-      return { error: Not(IsNull()) };
+      where = { error: Not(IsNull()) };
+      break;
     case 'all':
-      return undefined;
     default:
-      return undefined;
+      where = undefined;
+      break;
   }
+  // 会话维度：与类别 filter 正交，取交集
+  if (sessionId) {
+    where = { ...where, session_id: sessionId };
+  }
+  return where;
 }
 
 // 列表查询的 select 列（跳过 blob，保证分页性能）
@@ -291,9 +304,9 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
 }
 
 /** 分页列表 */
-export async function getAll(page?: number, pageSize?: number, filter: RequestListFilter = 'all'): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
+export async function getAll(page?: number, pageSize?: number, filter: RequestListFilter = 'all', sessionId?: string): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
   const repo = reqRepo();
-  const where = buildSummaryWhere(filter);
+  const where = buildSummaryWhere(filter, sessionId);
   if (page && pageSize) {
     const options: FindManyOptions<RequestEntity> = {
       select: SUMMARY_SELECT,

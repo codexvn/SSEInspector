@@ -79,7 +79,10 @@ async function start() {
     const page = parseInt(req.query.page as string) || undefined;
     const pageSize = parseInt(req.query.pageSize as string) || undefined;
     const filter = parseRequestListFilter(req.query.filter);
-    res.json(await getAll(page, pageSize, filter));
+    // 可选会话维度过滤，与类别 filter 正交组合
+    const sessionIdRaw = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+    const sessionId = sessionIdRaw || undefined;
+    res.json(await getAll(page, pageSize, filter, sessionId));
   }));
 
   app.get('/api/requests/:id', route(async (req, res) => {
