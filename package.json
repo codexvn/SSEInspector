@@ -19,7 +19,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "start": "tsx backend/src/index.ts",
+    "start": "node bin/sse-inspector.js --dev",
     "build": "tsc",
     "build:frontend": "npm --prefix frontend run build",
     "build:all": "npm run build && npm run build:frontend",

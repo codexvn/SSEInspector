@@ -29,30 +29,29 @@ npm install && npm run build:all
 
 ## 启动
 
-### 方式一：CLI 参数（推荐）
+### 生产模式（CLI 参数）
 
 ```bash
-node bin/sse-inspector.js --upstream http://your-upstream:8000
+node bin/sse-inspector.js --upstream http://your-upstream:8000 --db-path ./data.db
 ```
+
+### 开发模式（HMR）
+
+```bash
+npm start -- --upstream http://your-upstream:8000 --db-path ./data.db
+```
+
+`npm start` 等价于 `node bin/sse-inspector.js --dev`，同进程用 tsx 加载 TS 源码，前端 HMR 由 vite-express 提供。
 
 参数：
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
 | `--upstream <url>` | 是 | — | 上游 API 地址 |
+| `--db-path <path>` | 是 | — | SQLite 数据库路径 |
 | `--port <n>` | 否 | `3000` | 监听端口 |
-| `--db-path <path>` | 否 | `~/.sseinspector/data.db` | SQLite 数据库路径 |
+| `--dev` | 否 | — | 开发模式（同进程 tsx + HMR，`npm start` 已内置） |
 | `-h, --help` | — | — | 显示帮助 |
-
-### 方式二：环境变量（开发模式，HMR）
-
-```bash
-UPSTREAM_URL=http://your-upstream:8000 npm start
-```
-
-- `UPSTREAM_URL` — 上游 API 地址，必填
-- `PORT` — 代理端口，默认 `3000`
-- `SQLITE_PATH` — 数据库路径，默认 `./.db/data.db`
 
 ## 使用
 

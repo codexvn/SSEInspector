@@ -16,15 +16,15 @@ import { RecordSummary, RequestListFilter } from './types';
  */
 const isDev = process.env.NODE_ENV !== 'production';
 
-/** 端口：生产模式读 config（CLI 传入），开发模式回退 PORT 环境变量 */
-const PORT = config.port || parseInt(process.env.PORT || '3000', 10);
-/** 上游 URL：生产模式读 config，开发模式回退 UPSTREAM_URL 环境变量 */
-const UPSTREAM_URL = config.upstreamUrl || process.env.UPSTREAM_URL;
+/** 端口：由 CLI 入口 setConfig 填充（bin/sse-inspector.js --port） */
+const PORT = config.port;
+/** 上游 URL：由 CLI 入口 setConfig 填充（bin/sse-inspector.js --upstream） */
+const UPSTREAM_URL = config.upstreamUrl;
 
 if (!UPSTREAM_URL) {
   console.error('Error: 上游地址未配置。');
-  console.error('  生产模式: sse-inspector --upstream http://localhost:8000');
-  console.error('  开发模式: UPSTREAM_URL=http://localhost:8000 npm start');
+  console.error('  请通过 CLI 启动: sse-inspector --upstream http://localhost:8000 --db-path ./data.db');
+  console.error('  开发模式: npm start -- --upstream http://localhost:8000 --db-path ./data.db');
   process.exit(1);
 }
 
@@ -173,7 +173,10 @@ async function start() {
 
   if (isDev) {
     // 开发模式：vite-express 直接从 frontend/ 源码目录起 Vite dev server（HMR）
-    const ViteExpress = require('vite-express').default;
+    // vite-express 是 CJS 包，直接导出 config/listen/static；
+    // ESM 上下文（tsx 直跑 index.ts）下经 cjs 互操作会包成 .default，CJS 上下文（bin --dev 经 tsx/cjs/api）则无 .default，故兼容两者。
+    const ve = require('vite-express');
+    const ViteExpress = ve.default ?? ve;
     const frontRoot = path.resolve(__dirname, '..', '..', 'frontend');
     ViteExpress.config({ inlineViteConfig: { root: frontRoot } });
     app.use(ViteExpress.static());
@@ -199,7 +202,8 @@ async function start() {
     console.log(`Proxying to ${UPSTREAM_URL}`);
   };
   if (isDev) {
-    const ViteExpress = require('vite-express').default;
+    const ve = require('vite-express');
+    const ViteExpress = ve.default ?? ve;
     ViteExpress.listen(app, PORT, onStart);
   } else {
     app.listen(PORT, onStart);

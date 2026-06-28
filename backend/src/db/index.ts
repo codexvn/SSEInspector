@@ -7,17 +7,11 @@ import { config } from '../config';
 /**
  * 解析数据库路径。
  *
- * 生产模式（经 bin/sse-inspector.js 启动）：config.dbPath 已由 CLI 入口设置。
- * 开发模式（tsx 直接运行 index.ts）：回退到 SQLITE_PATH 环境变量，
- *   保持 `npm start` 走 tsx 时的向后兼容。
+ * 由 CLI 入口（bin/sse-inspector.js）通过 setConfig 填充 config.dbPath。
+ * config.assertConfigured 已在 DataSource 求值前兜底空值，此处直接返回。
  */
 function resolveDbPath(): string {
-  if (config.dbPath) return config.dbPath;
-  if (process.env.SQLITE_PATH) return process.env.SQLITE_PATH;
-  console.error('[db] 请指定 SQLite 数据库路径:');
-  console.error('    生产模式: sse-inspector --upstream URL --db-path ./data.db');
-  console.error('    开发模式: SQLITE_PATH=./data.db npm start');
-  process.exit(1);
+  return config.dbPath;
 }
 
 export const AppDataSource = new DataSource({
