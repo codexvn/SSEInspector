@@ -24,7 +24,8 @@
     "build:frontend": "npm --prefix frontend run build",
     "build:all": "npm run build && npm run build:frontend",
     "prepack": "npm run build:all",
-    "test:sse": "tsx backend/test/sse-merger.test.ts"
+    "test:sse": "tsx backend/test/sse-merger.test.ts",
+    "test:decode": "tsx backend/test/body-decode.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",

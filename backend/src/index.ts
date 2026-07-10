@@ -71,7 +71,11 @@ async function start() {
     },
   }));
 
-  app.use(express.json({ limit: '10mb' }));
+  // 仅 /api 路由需要解析 JSON body（如 /api/tokenize 读 req.body）。
+  // 代理路由（/chat/completions、/responses、/messages）与 catch-all 透传必须保持原始请求体，
+  // 不得经过任何 body 消费型中间件——否则压缩请求体（gzip/deflate/br/zstd）会被消费破坏透明性，
+  // body-parser 也会对不支持的编码（如 zstd）抛 UnsupportedMediaTypeError。原始请求体读取见 proxy.ts readRawBody。
+  app.use('/api', express.json({ limit: '10mb' }));
 
   // ---- API 路由 ----
 

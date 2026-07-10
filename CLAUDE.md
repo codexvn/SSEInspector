@@ -36,6 +36,9 @@ npm run build:all
 
 # SSE 合并回归测试
 npm run test:sse
+
+# 请求体解码（gzip/deflate/br/zstd）纯函数测试
+npm run test:decode
 ```
 
 ## 运行方式
@@ -91,11 +94,25 @@ backend/src/proxy.ts
 
 代理入口，负责上游转发、流式原文缓存、非流式响应记录。修改时必须避免破坏透明代理语义。
 
+请求体按原始字节透传上游（保留 content-encoding）：代理路由不走全局 body-parser（`express.json` 仅挂载于 `/api`），`readRawBody` 自行读取 raw body 字节透传，`decodeRequestBody`（见 `body-decode.ts`）解码一份副本仅供检查器（记录 / token 统计 / 工具回填），解码失败只降级、不阻塞透传。
+
+```text
+backend/src/body-decode.ts
+```
+
+请求体解码纯函数：按单一 `content-encoding` 头解压（identity / gzip / deflate / br / zstd）并 `JSON.parse`，供检查器使用。失败只返回 error 不抛，绝不阻塞代理透传。单测见 `backend/test/body-decode.test.ts`。
+
 ```text
 backend/src/config.ts
 ```
 
 中央运行时配置容器。由 CLI 入口 `bin/sse-inspector.js` 在启动时通过 `setConfig()` 填充，被 `index.ts` / `proxy.ts` / `db/index.ts` 读取。dev / prod 均走 config，不再有环境变量回退。
+
+```text
+tsconfig.json
+```
+
+后端 TS 编译配置。`lib` 显式为 `["es2022"]`（不含 DOM）：本项目是 Node 后端，fetch / RequestInit / BodyInit 类型应来自 `@types/node`（undici），其 BodyInit 含 Buffer；若带上 DOM lib，`@types/node` 22 的泛型 `Buffer<ArrayBufferLike>` 会与 DOM 的 BodyInit 不匹配，导致透传 Buffer 请求体时 tsc 报错。
 
 ```text
 bin/sse-inspector.js
@@ -143,6 +160,12 @@ backend/test/sse-merger.test.ts
 ```
 
 SSE 合并回归测试。修改 SSE parser 或 accumulator 时必须同步补充测试。
+
+```text
+backend/test/body-decode.test.ts
+```
+
+请求体解码纯函数测试（identity / gzip / deflate / br / zstd / 损坏数据 / 非 JSON / 未知编码 / 多值降级 / 大小写空格归一化 / 空 body）。
 
 ```text
 frontend/src/

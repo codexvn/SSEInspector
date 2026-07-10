@@ -4,6 +4,7 @@ import { parseSSE, mergeChunks } from './sse-merger';
 import { computeTokenBreakdown } from './token-counter';
 import { config } from './config';
 import { RecordedRequest, ApiType, ApiEndpoint, MergedContent } from './types';
+import { decodeRequestBody } from './body-decode';
 
 /**
  * 读取上游 URL。生产模式（CLI 启动）用 config.upstreamUrl；
@@ -11,6 +12,20 @@ import { RecordedRequest, ApiType, ApiEndpoint, MergedContent } from './types';
  */
 function getUpstreamUrl(): string {
   return config.upstreamUrl || process.env.UPSTREAM_URL || '';
+}
+
+/**
+ * 读取请求原始字节。代理路径不走 body-parser（仅 /api 挂载 express.json），需自行消费 req 流
+ * 拿到完整 body：用于原样字节透传上游，并供 decodeRequestBody 解码副本给检查器。
+ * 不设大小上限：SSEInspector 是本地 / 内网检查器，非公网服务，原 body-parser 的 10mb 限制是副作用而非安全边界。
+ * 流错误 / 客户端中断时抛错，由 handleProxy / handlePassthrough 兜底响应。
+ */
+async function readRawBody(req: Request): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 const HOP_HEADERS = [
@@ -65,7 +80,7 @@ function filterHeaders(headers: Record<string, string | string[] | undefined>): 
 
 function baseRecord(
   id: string, req: Request, status: number, streaming: boolean, apiType: ApiType,
-  startTime: number, error?: string,
+  startTime: number, parsedBody: unknown, error?: string,
 ): RecordedRequest {
   const targetUrl = getUpstreamUrl().replace(/\/$/, '') + req.path;
   const sid = extractSessionId(req);
@@ -76,7 +91,7 @@ function baseRecord(
     path: req.path,
     upstreamUrl: targetUrl,
     requestHeaders: filterHeaders(req.headers as Record<string, string | string[] | undefined>),
-    requestBody: req.body,
+    requestBody: parsedBody,
     responseStatus: status,
     responseContent: null,
     streaming,
@@ -168,6 +183,18 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
 
   console.log(`[passthrough] ${req.method} ${req.path} -> ${targetUrl}`);
 
+  // 读取原始请求体原样字节透传（catch-all 不做检查器解码，仅透传）。
+  // 读取失败（流错误 / 客户端中断）兜底 400，避免 unhandled promise rejection 导致请求挂死。
+  let rawBody: Buffer;
+  try {
+    rawBody = await readRawBody(req);
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    console.error(`[passthrough] ${req.method} ${req.path} 读取请求体失败: ${err.message} (code=${err.code})`);
+    if (!res.headersSent) res.status(400).json({ error: '读取请求体失败', detail: err.message });
+    return;
+  }
+
   const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
   delete upstreamHeaders['host'];
   delete upstreamHeaders['content-length'];
@@ -177,11 +204,10 @@ export async function handlePassthrough(req: Request, res: Response): Promise<vo
     headers: upstreamHeaders,
   };
 
-  if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
-    fetchInit.body = JSON.stringify(req.body);
-    if (!upstreamHeaders['content-type']) {
-      upstreamHeaders['content-type'] = 'application/json';
-    }
+  // 原样字节透传：content-encoding 头由 filterHeaders 透传，content-length 让 undici 按 Buffer 长度重算。
+  // 不再凭空补 content-type——透明代理原样透传客户端头。
+  if (req.method !== 'GET' && req.method !== 'HEAD' && rawBody.length > 0) {
+    fetchInit.body = rawBody;
   }
 
   try {
@@ -226,10 +252,39 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType,
 
   const id = crypto.randomUUID();
   const startTime = Date.now();
-  const isStreaming = (req.body as Record<string, unknown>)?.stream === true;
   const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
 
   console.log(`[proxy] ${req.method} ${req.path} -> ${targetUrl}`);
+
+  // 读取原始请求体：原样字节透传上游 + 解码副本供检查器。
+  // 读取失败（流错误 / 客户端中断）兜底 400，避免 unhandled promise rejection 导致请求挂死。
+  let rawBody: Buffer;
+  try {
+    rawBody = await readRawBody(req);
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    const msg = `读取请求体失败: ${err.message}`;
+    console.error(`[proxy] ${req.method} ${req.path} ${msg} (code=${err.code})`);
+    if (!res.headersSent) res.status(400).json({ error: msg });
+    await upsertRecord(baseRecord(id, req, 400, false, apiType, startTime, undefined, msg));
+    return;
+  }
+
+  // 解码副本供检查器（记录 / token / 工具回填）。解码失败只降级，绝不阻塞透传。
+  const contentEncodingHeader = req.headers['content-encoding'];
+  const contentEncoding = typeof contentEncodingHeader === 'string' ? contentEncodingHeader : undefined;
+  const decoded = decodeRequestBody(rawBody, contentEncoding);
+  if (decoded.error) {
+    console.warn(`[proxy] ${req.method} ${req.path} 请求体解码降级（透传不受影响）: ${decoded.error}`);
+  }
+  const parsedBody = decoded.parsed;
+
+  // isStreaming：优先请求体 stream 字段；decode 失败（parsedBody 未知）时用 accept 头兜底，
+  // 避免非流式分支对 SSE 响应 await text() 阻塞到上游流结束。
+  const acceptHeader = req.headers['accept'];
+  const acceptSse = typeof acceptHeader === 'string' && acceptHeader.includes('text/event-stream');
+  const isStreaming = (parsedBody as Record<string, unknown> | undefined)?.stream === true
+    || (parsedBody === undefined && acceptSse);
 
   const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
   delete upstreamHeaders['host'];
@@ -244,12 +299,13 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType,
     headers: upstreamHeaders,
   };
 
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    fetchInit.body = JSON.stringify(req.body);
+  // 原样字节透传：content-encoding 头由 filterHeaders 透传，content-length 让 undici 按 Buffer 长度重算。
+  if (req.method !== 'GET' && req.method !== 'HEAD' && rawBody.length > 0) {
+    fetchInit.body = rawBody;
   }
 
   // 回填上一轮工具调用的返回结果（result 在下一次请求的 requestBody 中）
-  await backfillToolResults(req.body, apiType);
+  await backfillToolResults(parsedBody, apiType);
 
   try {
     const upstreamRes = await fetch(targetUrl, fetchInit);
@@ -271,25 +327,25 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType,
       } catch (parseErr) {
         console.error(`[proxy] JSON parse failed:`, (parseErr as Error).message);
         res.status(responseStatus).send(rawText);
-        await upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime,
+        await upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime, parsedBody,
           `JSON parse error: ${(parseErr as Error).message}, raw=${rawText}`));
         return;
       }
       res.json(json);
 
-      const record = baseRecord(id, req, responseStatus, false, apiType, startTime);
+      const record = baseRecord(id, req, responseStatus, false, apiType, startTime, parsedBody);
       record.responseContent = json as MergedContent;
       record.responseHeaders = responseHeaders;
       record.responseBody = JSON.stringify(json);
       record.state = 'done';
       record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(req.body, json as MergedContent, apiEndpoint) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(parsedBody, json as MergedContent, apiEndpoint) ?? undefined;
       record.apiUsage = JSON.stringify((json as any)?.usage);
       await upsertRecord(record);
       await writeToolCalls(id, extractToolCalls(json as MergedContent, apiType));
     } else {
       // --- Streaming ---
-      const record = baseRecord(id, req, responseStatus, true, apiType, startTime);
+      const record = baseRecord(id, req, responseStatus, true, apiType, startTime, parsedBody);
       record.responseHeaders = responseHeaders;
       await upsertRecord(record);
 
@@ -333,7 +389,7 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType,
       record.responseBody = fullText;
       record.state = 'done';
       record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(req.body, merged, apiEndpoint) ?? undefined;
+      record.tokenBreakdown = await computeTokenBreakdown(parsedBody, merged, apiEndpoint) ?? undefined;
       record.apiUsage = JSON.stringify((merged as any)?.usage);
       delete record.streamText;
       await upsertRecord(record);
@@ -345,6 +401,6 @@ export async function handleProxy(req: Request, res: Response, apiType: ApiType,
     if (!res.headersSent) {
       res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
     }
-    await upsertRecord(baseRecord(id, req, res.headersSent ? 200 : 502, isStreaming, apiType, startTime, String(err)));
+    await upsertRecord(baseRecord(id, req, res.headersSent ? 200 : 502, isStreaming, apiType, startTime, parsedBody, String(err)));
   }
 }
