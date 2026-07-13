@@ -5,7 +5,7 @@
  * 需要一份「解压 + JSON.parse」后的副本。本模块只做解码，不依赖 Express / DB，便于单测。
  *
  * 设计原则：解码失败只返回 error，绝不抛出——检查器功能降级，绝不阻塞代理透传。
- * 详见 CLAUDE.md「保持代理透明」与 proxy.ts readRawBody。
+ * 该函数只在 Recorder Worker 中处理旁路捕获副本，主线程不调用。
  */
 
 import * as zlib from 'node:zlib';
@@ -46,7 +46,9 @@ export function decompressBuffer(buf: Buffer, contentEncoding: string | undefine
         return { ok: false, error: `未知的 content-encoding: ${contentEncoding}` };
     }
   } catch (e) {
-    return { ok: false, error: `解压失败 (${enc}): ${(e as Error).message}` };
+    const error = `解压失败 (${enc}): ${formatErrorChain(e)}`;
+    console.warn(`[body-decode] ${error}`);
+    return { ok: false, error };
   }
 }
 
@@ -64,6 +66,23 @@ export function decodeRequestBody(buf: Buffer, contentEncoding: string | undefin
   try {
     return { parsed: JSON.parse(decompressed.buffer.toString('utf-8')) };
   } catch (e) {
-    return { error: `请求体 JSON 解析失败: ${(e as Error).message}` };
+    const error = `请求体 JSON 解析失败: ${formatErrorChain(e)}`;
+    console.warn(`[body-decode] ${error}`);
+    return { error };
   }
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
+  }
+  return messages.join(' -> ');
 }

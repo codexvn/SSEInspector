@@ -26,7 +26,7 @@ export function parseSSEText(rawText: string): SSEChunk[] {
       try {
         chunks.push({ event: event.event, data: JSON.parse(data) });
       } catch (err) {
-        console.warn(`[sse-parser] SSE data JSON 解析失败: ${formatErrorChain(err)} data=${data.slice(0, 500)}`);
+        console.warn(`[sse-parser] SSE data JSON 解析失败: ${formatErrorChain(err)}`);
       }
     },
     onError(error) {

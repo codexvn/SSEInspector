@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, shallowRef, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
-import type { RecordedRequest, ToolCallEntry, GlobalNeighbors } from '../types'
-import { fetchToolCalls, fetchPrev, fetchNext, fetchNeighbors } from '../api'
-import { detectApiEndpoint } from '../composables/useApiEndpoint'
+import type { RecordedRequest, GlobalNeighbors } from '../types'
+import { fetchPrev, fetchNext, fetchNeighbors } from '../api'
+import { findLatestUserMessage } from '../protocol-content'
+import { buildResponseCards } from '../response-flow'
 import TokenBreakdown from '../components/TokenBreakdown.vue'
 import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
-import ToolCallResultCard from '../components/ToolCallResultCard.vue'
 import StreamLive from '../components/StreamLive.vue'
 import TokenSpeed from '../components/TokenSpeed.vue'
 import DiffViewer from '../components/DiffViewer.vue'
@@ -17,29 +17,31 @@ import MessageFlow from '../components/MessageFlow.vue'
 import UserMessageCard from '../components/UserMessageCard.vue'
 import AssistantTextCard from '../components/AssistantTextCard.vue'
 import AssistantThinkingCard from '../components/AssistantThinkingCard.vue'
+import AssistantRefusalCard from '../components/AssistantRefusalCard.vue'
+import RawJsonCard from '../components/RawJsonCard.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useRequestsStore()
+let detailGeneration = 0
 
 const record = ref<RecordedRequest | null>(null)
 const loading = ref(false)
 const error = ref('')
-const toolCalls = ref<ToolCallEntry[]>([])
+const parsedBody = shallowRef<Record<string, unknown>>()
+const parsedBodyCache = new Map<string, Record<string, unknown> | undefined>()
 
 const id = computed(() => route.params.id as string)
 const isStreaming = computed(() => record.value?.state === 'streaming')
-/** 响应格式，由 path + apiType 判定，供流式解析与非流式渲染分流 */
-const endpoint = computed(() => detectApiEndpoint(record.value?.path, record.value?.apiType ?? 'openai'))
 /** 模型名：优先取响应体 model，回退请求体 model，供 tokenizer 路由 */
 const model = computed(() => {
-  const respModel = (record.value?.responseContent as Record<string, unknown> | null)?.model
+  const response = isRecord(record.value?.responseContent) ? record.value.responseContent : undefined
+  const respModel = response?.model
   if (typeof respModel === 'string' && respModel) return respModel
   const bodyModel = parsedBody.value?.model
   return typeof bodyModel === 'string' && bodyModel ? bodyModel : 'unknown'
 })
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
-const isAnthropic = computed(() => record.value?.apiType === 'anthropic')
 function parseBody(body: unknown, label: string): Record<string, unknown> | undefined {
   if (!body) return undefined
   if (typeof body === 'string') {
@@ -53,11 +55,24 @@ function parseBody(body: unknown, label: string): Record<string, unknown> | unde
   return body as Record<string, unknown>
 }
 
-/** requestBody 在服务器端透传 raw string（不 JSON.parse），前端惰性解析后缓存 */
-const parsedBody = computed(() => parseBody(record.value?.requestBody, '当前请求体'))
+function parseRecordBody(target: RecordedRequest, label: string): Record<string, unknown> | undefined {
+  if (parsedBodyCache.has(target.id)) return parsedBodyCache.get(target.id)
+  const parsed = parseBody(target.requestBody, label)
+  parsedBodyCache.set(target.id, parsed)
+  return parsed
+}
+
+const latestUserMessage = computed(() => record.value
+  ? findLatestUserMessage(parsedBody.value, record.value.apiEndpoint)
+  : '')
+const responseCards = computed(() => record.value
+  ? buildResponseCards(record.value.responseContent, record.value.apiEndpoint)
+  : [])
 
 /** 响应体 tab：'raw' | 'merged' */
 const respBodyTab = ref<'raw' | 'merged'>('raw')
+const requestBodyOpen = ref(false)
+const responseBodyOpen = ref(false)
 /** 合并后的响应内容 JSON（用于"合并"tab） */
 const mergedContentText = computed(() =>
   record.value?.responseContent ? JSON.stringify(record.value.responseContent, null, 2) : ''
@@ -66,7 +81,12 @@ const mergedContentText = computed(() =>
 // ---- 会话导航 & diff ----
 const prevRecord = ref<RecordedRequest | null>(null)
 const nextRecord = ref<RecordedRequest | null>(null)
-const previousParsedBody = computed(() => parseBody(prevRecord.value?.requestBody, '上一条请求体'))
+const previousParsedBody = shallowRef<Record<string, unknown>>()
+const prevResolved = ref(false)
+const nextResolved = ref(false)
+const previousBodyResolved = ref(false)
+let prevRequest: Promise<RecordedRequest | null> | null = null
+let nextRequest: Promise<RecordedRequest | null> | null = null
 const diffOpen = ref(false)
 const diffDirection = ref<'prev' | 'next'>('prev')
 const diffTab = ref<'reqHead' | 'reqBody' | 'resHead' | 'resBody'>('reqBody')
@@ -74,10 +94,11 @@ const diffMode = ref<'unified' | 'split'>('split')
 const diffCollapsed = ref(true)
 const diffLoading = ref(false)
 const flowOpen = ref(false)
+const flowLoading = ref(false)
 
 const hasSession = computed(() => !!record.value?.sessionId)
-const hasPrev = computed(() => !!prevRecord.value)
-const hasNext = computed(() => !!nextRecord.value)
+const hasPrev = computed(() => hasSession.value && (!prevResolved.value || !!prevRecord.value))
+const hasNext = computed(() => hasSession.value && (!nextResolved.value || !!nextRecord.value))
 
 const diffViewerRef = ref<InstanceType<typeof DiffViewer> | null>(null)
 
@@ -120,7 +141,7 @@ function diffPair(field: (r: RecordedRequest) => unknown) {
 
 /** diff 的四个维度 */
 const diffHeadReq = computed(() => diffPair(r => r.requestHeaders))
-const diffBodyReq = computed(() => diffPair(r => r.requestBody))
+const diffBodyReq = computed(() => diffPair(r => parseRecordBody(r, 'diff 请求体')))
 const diffHeadRes = computed(() => diffPair(r => r.responseHeaders))
 const diffBodyRes = computed(() => diffPair(r => r.responseContent))
 
@@ -154,42 +175,104 @@ function formatErrorChain(error: unknown): string {
   return messages.join(' -> ')
 }
 
-async function checkNeighbors() {
-  if (!record.value?.sessionId) { prevRecord.value = null; nextRecord.value = null; return }
+function resetSessionNeighbors() {
+  prevRecord.value = null
+  nextRecord.value = null
+  previousParsedBody.value = undefined
+  prevResolved.value = false
+  nextResolved.value = false
+  previousBodyResolved.value = false
+  prevRequest = null
+  nextRequest = null
+}
+
+async function ensureSessionNeighbor(direction: 'prev' | 'next'): Promise<RecordedRequest | null> {
+  if (!record.value?.sessionId) return null
+  const inFlight = direction === 'prev' ? prevRequest : nextRequest
+  if (inFlight) return inFlight
+  const request = loadSessionNeighbor(direction)
+  if (direction === 'prev') prevRequest = request
+  else nextRequest = request
   try {
-    const [prev, next] = await Promise.all([
-      fetchPrev(record.value.id),
-      fetchNext(record.value.id),
-    ])
-    prevRecord.value = prev
-    nextRecord.value = next
+    return await request
+  } finally {
+    if (direction === 'prev' && prevRequest === request) prevRequest = null
+    if (direction === 'next' && nextRequest === request) nextRequest = null
+  }
+}
+
+async function loadSessionNeighbor(direction: 'prev' | 'next'): Promise<RecordedRequest | null> {
+  const current = record.value
+  if (!current?.sessionId) return null
+  const generation = detailGeneration
+  const recordId = current.id
+  const resolved = direction === 'prev' ? prevResolved : nextResolved
+  const target = direction === 'prev' ? prevRecord : nextRecord
+  if (resolved.value) return target.value
+  try {
+    const neighbor = direction === 'prev'
+      ? await fetchPrev(recordId)
+      : await fetchNext(recordId)
+    if (generation !== detailGeneration || record.value?.id !== recordId) return null
+    target.value = neighbor
+    resolved.value = true
+    return target.value
   } catch (e) {
-    console.warn(`[DetailView] 查询相邻请求失败: ${formatErrorChain(e)}`)
-    prevRecord.value = null
-    nextRecord.value = null
+    console.warn(`[DetailView] 查询会话${direction === 'prev' ? '上一条' : '下一条'}请求失败: ${formatErrorChain(e)}`)
+    return null
   }
 }
 
 async function goToPrev() {
-  if (!prevRecord.value) return
-  router.push({ name: 'detail', params: { id: prevRecord.value.id } })
+  const target = await ensureSessionNeighbor('prev')
+  if (target) router.push({ name: 'detail', params: { id: target.id } })
 }
 
 async function goToNext() {
-  if (!nextRecord.value) return
-  router.push({ name: 'detail', params: { id: nextRecord.value.id } })
+  const target = await ensureSessionNeighbor('next')
+  if (target) router.push({ name: 'detail', params: { id: target.id } })
 }
 
 async function openDiff(dir: 'prev' | 'next') {
   if (diffOpen.value && diffDirection.value === dir) { diffOpen.value = false; return }
   diffLoading.value = true
   try {
-    await checkNeighbors()
-    const target = dir === 'prev' ? prevRecord.value : nextRecord.value
+    const target = await ensureSessionNeighbor(dir)
     if (target) { diffDirection.value = dir; diffOpen.value = true }
   } finally {
     diffLoading.value = false
   }
+}
+
+async function openMessageFlow() {
+  if (!parsedBody.value || flowLoading.value) return
+  flowLoading.value = true
+  try {
+    if (!previousBodyResolved.value) {
+      const previous = await ensureSessionNeighbor('prev')
+      if (!hasSession.value || prevResolved.value) {
+        previousParsedBody.value = previous
+          ? parseRecordBody(previous, '上一条请求体')
+          : undefined
+        previousBodyResolved.value = true
+      }
+    }
+    flowOpen.value = true
+  } finally {
+    flowLoading.value = false
+  }
+}
+
+function onRequestBodyToggle(event: Event) {
+  requestBodyOpen.value = (event.currentTarget as HTMLDetailsElement).open
+}
+
+function onResponseBodyToggle(event: Event) {
+  responseBodyOpen.value = (event.currentTarget as HTMLDetailsElement).open
+}
+
+function rawBodyText(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
 }
 
 /** 流式文本：优先从 store.items（SSE 推送）取，fallback 到完整 record */
@@ -199,27 +282,30 @@ const streamText = computed(() => {
 })
 
 async function load(detailId: string) {
+  const generation = ++detailGeneration
   loading.value = true
   error.value = ''
   diffOpen.value = false
   flowOpen.value = false
+  requestBodyOpen.value = false
+  responseBodyOpen.value = false
+  respBodyTab.value = 'raw'
+  globalNeighbors.value = null
+  parsedBody.value = undefined
+  parsedBodyCache.clear()
+  resetSessionNeighbors()
   try {
     const r = await store.loadDetail(detailId)
+    if (generation !== detailGeneration) return
     if (!r) { error.value = '请求未找到'; return }
     record.value = r
-    try {
-      const tc = await fetchToolCalls(r.id)
-      toolCalls.value = tc.toolCalls ?? []
-    } catch (e) {
-      console.warn(`[DetailView] 加载工具调用失败: ${formatErrorChain(e)}`)
-      toolCalls.value = []
-    }
-    checkNeighbors()
-    loadGlobalNeighbors()
+    parsedBody.value = parseRecordBody(r, '当前请求体')
+    loadGlobalNeighbors(detailId, generation)
   } catch (e) {
+    if (generation !== detailGeneration) return
     error.value = `加载失败: ${formatErrorChain(e)}`
   } finally {
-    loading.value = false
+    if (generation === detailGeneration) loading.value = false
   }
 }
 
@@ -230,10 +316,10 @@ onMounted(() => {
   store.onStreamDone = (doneId: string) => {
     if (doneId === route.params.id) load(doneId)
   }
-  // 列表有更新时重查全局导航与会话相邻，保证 3/237、会话 ◀▶、diff 实时刷新
+  // 列表更新时只刷新轻量全局导航；会话相邻记录在用户操作时重新加载。
   store.onListUpdate = () => {
     loadGlobalNeighbors()
-    checkNeighbors()
+    resetSessionNeighbors()
   }
   document.addEventListener('keydown', onKeydown)
 })
@@ -251,24 +337,15 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-function fmtJson(val: unknown): string {
-  if (typeof val === 'string') {
-    try { return JSON.stringify(JSON.parse(val), null, 2) }
-    catch (e) {
-      console.warn(`[DetailView] JSON 格式化失败: ${formatErrorChain(e)}`)
-      return val
-    }
-  }
-  return JSON.stringify(val, null, 2)
-}
-
 // ---- 全局导航（直接查接口，实时反映新记录插入） ----
 const globalNeighbors = ref<GlobalNeighbors | null>(null)
 
-async function loadGlobalNeighbors() {
+async function loadGlobalNeighbors(detailId = id.value, generation = detailGeneration) {
   try {
-    globalNeighbors.value = await fetchNeighbors(id.value)
+    const neighbors = await fetchNeighbors(detailId)
+    if (generation === detailGeneration && id.value === detailId) globalNeighbors.value = neighbors
   } catch (e) {
+    if (generation !== detailGeneration || id.value !== detailId) return
     console.warn(`[DetailView] 加载全局导航失败: ${formatErrorChain(e)}`)
     globalNeighbors.value = null
   }
@@ -278,83 +355,6 @@ function globalPrev() {
 }
 function globalNext() {
   if (globalNeighbors.value?.nextId) router.push({ name: 'detail', params: { id: globalNeighbors.value.nextId } })
-}
-
-/** 从 requestBody 取最新用户输入——支持 messages 数组和 input 数组两种格式 */
-function userInput(): string {
-  const body = parsedBody.value
-  if (!body) return ''
-  // messages 格式（OpenAI Chat）
-  const msgs = body.messages as Record<string, unknown>[] | undefined
-  if (msgs) {
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') {
-        const c = msgs[i].content
-        return typeof c === 'string' ? c : JSON.stringify(c)
-      }
-    }
-  }
-  // input 格式（OpenAI Responses / Anthropic）
-  const input = body.input
-  if (typeof input === 'string') return input
-  if (Array.isArray(input)) {
-    for (let i = input.length - 1; i >= 0; i--) {
-      const item = input[i] as Record<string, unknown>
-      if (item.role === 'user' || item.type === 'message') {
-        const c = item.content
-        if (typeof c === 'string') return c
-        if (Array.isArray(c)) {
-          for (const block of c as Record<string, unknown>[]) {
-            if (typeof block.text === 'string') return block.text
-            if (typeof block.input_text === 'string') return block.input_text
-          }
-        }
-      }
-    }
-  }
-  return ''
-}
-
-/** 从 requestBody 提取 tool_result——仅最新一轮（和旧版 extractUserRequest 一致）。
- *  找最后一条 user 消息，往前扫 tool 消息，遇到 assistant 就停（本轮边界）。 */
-function extractToolResults(): { tool_call_id: string; content: string; tool_name?: string }[] {
-  const body = parsedBody.value
-  if (!body) return []
-  const findTc = (id: string) => toolCalls.value.find(t => t.tool_call_id === id)
-  const msgs = body.messages as Record<string, unknown>[] | undefined
-  if (!msgs) return []
-
-  let lastUserIdx = -1
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'user') { lastUserIdx = i; break }
-  }
-  if (lastUserIdx === -1) return []
-
-  const toolResults: { tool_call_id: string; content: string; tool_name?: string }[] = []
-  for (let i = lastUserIdx - 1; i >= 0; i--) {
-    const msg = msgs[i]
-    if (msg.role === 'assistant') break
-    if (isOpenAI.value && msg.role === 'tool' && msg.tool_call_id) {
-      const tc = findTc(String(msg.tool_call_id))
-      toolResults.unshift({ tool_call_id: String(msg.tool_call_id), content: fmtJson(msg.content), tool_name: tc?.tool_name })
-    }
-    if (isAnthropic.value && Array.isArray(msg.content)) {
-      for (const block of msg.content as Record<string, unknown>[]) {
-        if (block.type === 'tool_result' && block.tool_use_id) {
-          const tc = findTc(String(block.tool_use_id))
-          toolResults.unshift({ tool_call_id: String(block.tool_use_id), content: fmtJson(block.content), tool_name: tc?.tool_name })
-        }
-      }
-    }
-  }
-  return toolResults
-}
-
-function getToolArgs(toolCallId: string): string | undefined {
-  return toolCalls.value.find(t => t.tool_call_id === toolCallId)?.arguments
-}
-function getToolResult(toolCallId: string): string | undefined {
-  return toolCalls.value.find(t => t.tool_call_id === toolCallId)?.result
 }
 
 function buildCurl(url: string): string {
@@ -388,10 +388,14 @@ async function doExport() {
   out += `| 字段 | 值 |\n|------|----|\n`
   out += `| ID | ${r.id} |\n| 时间 | ${new Date(r.timestamp).toLocaleString('zh-CN')} |\n`
   out += `| API | ${r.apiType} |\n| 耗时 | ${r.durationMs}ms |\n| 状态 | ${r.responseStatus} |\n\n`
-  const ui = userInput()
+  const ui = latestUserMessage.value
   if (ui) out += `## 用户请求\n\n${ui}\n\n`
   if (r.responseContent) out += `## 响应\n\n${JSON.stringify(r.responseContent, null, 2)}\n\n`
   copyText(out)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 </script>
 
@@ -420,7 +424,7 @@ async function doExport() {
         <button class="btn-nav" :disabled="!hasPrev" @click="goToPrev">&#9664;</button>
         <span class="nav-pos" v-if="hasSession">{{ prevRecord ? prevRecord.id.slice(0, 6) : '-' }} · {{ nextRecord ? nextRecord.id.slice(0, 6) : '-' }}</span>
         <span class="nav-pos" v-else>无</span>
-        <button class="btn-nav" :disabled="!nextRecord" @click="goToNext">&#9654;</button>
+        <button class="btn-nav" :disabled="!hasNext" @click="goToNext">&#9654;</button>
       </div>
 
       <span class="nav-sep"></span>
@@ -445,7 +449,7 @@ async function doExport() {
         <span>流式: {{ record.streaming ? '是' : '否' }}</span>
         <span>耗时: {{ isStreaming ? '…' : record.durationMs + 'ms' }}</span>
         <span>状态: <span :class="`badge ${record.responseStatus < 300 ? 'badge-ok' : record.responseStatus < 500 ? 'badge-warn' : 'badge-err'}`">{{ record.responseStatus }}</span></span>
-        <span>速度: <TokenSpeed :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="endpoint" :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" :model="model" /></span>
+        <span>速度: <TokenSpeed :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="record.apiEndpoint" :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" :model="model" /></span>
         <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
@@ -529,15 +533,17 @@ async function doExport() {
       <HeadersViewer title="请求头" :headers="record.requestHeaders" />
 
       <!-- 请求体 -->
-      <details class="headers-box" v-if="record.requestBody">
+      <details class="headers-box" v-if="record.requestBody" :open="requestBodyOpen" @toggle="onRequestBodyToggle">
         <summary>
           请求体
           <span v-if="requestBodySummary" class="body-summary-meta">{{ requestBodySummary }}</span>
           <span class="body-summary-actions">
-            <button class="curl-btn" @click.prevent.stop="flowOpen = true">消息流</button>
+            <button class="curl-btn" :disabled="flowLoading" @click.prevent.stop="openMessageFlow">
+              {{ flowLoading ? '加载中…' : '消息流' }}
+            </button>
           </span>
         </summary>
-        <JsonViewer :value="fmtJson(record.requestBody)" />
+        <JsonViewer v-if="requestBodyOpen" :value="rawBodyText(record.requestBody)" lang="json" />
       </details>
 
       <!-- 消息流弹窗 -->
@@ -556,8 +562,7 @@ async function doExport() {
               <MessageFlow
                 :body="parsedBody"
                 :previous-body="previousParsedBody"
-                :api-type="record.apiType"
-                :path="record.path"
+                :api-endpoint="record.apiEndpoint"
               />
             </div>
           </div>
@@ -565,80 +570,28 @@ async function doExport() {
       </Teleport>
 
       <!-- 用户请求 -->
-      <template v-if="userInput() || extractToolResults().length">
-        <UserMessageCard v-if="userInput()" title="用户请求" :text="userInput()" />
-
-        <div v-if="extractToolResults().length" class="tool-results-section">
-          <div class="tool-results-label">工具调用结果 ({{ extractToolResults().length }})</div>
-          <ToolCallResultCard
-            v-for="tr in extractToolResults()"
-            :key="tr.tool_call_id"
-            :tool-call-id="tr.tool_call_id"
-            :tool-name="tr.tool_name"
-            :result="tr.content"
-          />
-        </div>
-      </template>
+      <UserMessageCard v-if="latestUserMessage" title="用户请求" :text="latestUserMessage" />
 
       <!-- 响应内容 -->
       <div v-if="isStreaming && streamText" class="card streaming-card">
         <span class="section-label label-streaming">实时接收中…</span>
-        <StreamLive :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="endpoint" :model="model" />
+        <StreamLive :text="streamText" />
       </div>
 
       <div v-else-if="record.responseContent && !isStreaming">
-        <!-- OpenAI Chat -->
-        <template v-if="endpoint === 'openai-chat'">          <template v-for="choice in (record.responseContent as any).choices" :key="choice.index">
-            <AssistantThinkingCard v-if="choice.message?.reasoning_content" :text="choice.message.reasoning_content" />
-            <AssistantTextCard v-if="choice.message?.content" :text="choice.message.content" />
-            <ToolCallCard
-              v-for="tc in (choice.message?.tool_calls ?? [])"
-              :key="tc.index"
-              :tool-call-id="tc.id"
-              :tool-name="tc.function?.name"
-              :tool-args="getToolArgs(tc.id) ?? tc.function?.arguments"
-              :result="getToolResult(tc.id)"
-              :request-id="record.id"
-              side="request"
-            />
-            <div v-if="choice.finish_reason" class="finish-reason">
-              结束原因: <span :class="`kv kv-finish kv-finish-${choice.finish_reason}`">{{ choice.finish_reason }}</span>
-            </div>
-          </template>
-        </template>
-
-        <!-- OpenAI Responses -->
-        <template v-else-if="endpoint === 'openai-responses'">          <AssistantThinkingCard v-if="(record.responseContent as any).reasoning_text" :text="(record.responseContent as any).reasoning_text" />
-          <AssistantTextCard v-if="(record.responseContent as any).output_text" :text="(record.responseContent as any).output_text" />
-          <!-- Responses API tool_calls: 从 output[] 提取 function_call -->
-          <template v-for="(item, oi) in (record.responseContent as any).output ?? []" :key="oi">
-            <ToolCallCard
-              v-if="item?.type === 'function_call'"
-              :tool-call-id="item.id || item.call_id"
-              :tool-name="item.name"
-              :tool-args="getToolArgs(item.id||item.call_id) ?? item.arguments"
-              :result="getToolResult(item.id||item.call_id)"
-              :request-id="record.id"
-              side="request"
-            />
-          </template>
-        </template>
-
-        <!-- Anthropic -->
-        <template v-else-if="endpoint === 'anthropic-messages'">          <div class="content-blocks">
-            <template v-for="block in (record.responseContent as any).content" :key="block.index">
-              <AssistantTextCard v-if="block.type === 'text'" :text="block.text" />
-              <AssistantThinkingCard v-else-if="block.type === 'thinking'" :text="block.thinking" />
-              <ToolCallCard
-                v-else-if="block.type === 'tool_use'"
-                :tool-call-id="block.id"
-                :tool-name="block.name"
-                :tool-args="getToolArgs(block.id) ?? fmtJson(block.input)"
-                :result="getToolResult(block.id)"
-                :request-id="record.id"
-                side="request"
-              />
-            </template>
+        <template v-for="card in responseCards" :key="card.id">
+          <AssistantTextCard v-if="card.type === 'assistant_text'" :text="card.text" />
+          <AssistantThinkingCard v-else-if="card.type === 'assistant_thinking'" :text="card.text" />
+          <AssistantRefusalCard v-else-if="card.type === 'assistant_refusal'" :text="card.text" />
+          <ToolCallCard
+            v-else-if="card.type === 'tool_call'"
+            :tool-call-id="card.callId"
+            :tool-name="card.name"
+            :tool-args="card.arguments"
+          />
+          <RawJsonCard v-else-if="card.type === 'raw_item'" :title="card.title" :value="card.value" />
+          <div v-else-if="card.type === 'finish_reason'" class="finish-reason">
+            结束原因: <span :class="`kv kv-finish kv-finish-${card.value}`">{{ card.value }}</span>
           </div>
         </template>
       </div>
@@ -647,16 +600,16 @@ async function doExport() {
       <HeadersViewer title="响应头" :headers="record.responseHeaders ?? {}" />
 
       <!-- 响应体（原始 / 合并双 tab） -->
-      <details class="details-card" v-if="record.responseBody">
+      <details class="details-card" v-if="record.responseBody" :open="responseBodyOpen" @toggle="onResponseBodyToggle">
         <summary>响应体</summary>
         <div class="rb-tabs">
           <button class="rb-tab" :class="{ active: respBodyTab === 'raw' }" @click="respBodyTab = 'raw'">原始</button>
           <button class="rb-tab" :class="{ active: respBodyTab === 'merged' }" @click="respBodyTab = 'merged'">合并</button>
         </div>
-        <div class="rb-pane" v-show="respBodyTab === 'raw'">
+        <div v-if="responseBodyOpen && respBodyTab === 'raw'" class="rb-pane">
           <JsonViewer :value="record.responseBody" :lang="record.responseBody.startsWith('{') ? 'json' : 'plaintext'" />
         </div>
-        <div class="rb-pane" v-show="respBodyTab === 'merged'">
+        <div v-else-if="responseBodyOpen" class="rb-pane">
           <JsonViewer :value="mergedContentText" lang="json" />
         </div>
       </details>
@@ -791,40 +744,6 @@ async function doExport() {
 .anthropic-block.text .block-header { background: #e8f5e9; color: #2e7d32; }
 .anthropic-block.thinking .block-header { background: #e3f2fd; color: #1565c0; }
 .anthropic-block.tool_use .block-header { background: #eef2ff; color: #4338ca; }
-
-.tool-results-section { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
-.tool-results-label {
-  font-size: 0.75rem; font-weight: 600; color: #7b1fa2;
-  text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;
-}
-.tool-result-item {
-  background: var(--bg-inset); border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 8px;
-}
-.tool-result-item:last-child { margin-bottom: 0; }
-.tool-result-id {
-  padding: 6px 12px; font-family: var(--font-mono); font-size: 0.7rem;
-  color: var(--text-muted); background: #ede7f6; border-bottom: 1px solid #d1c4e9;
-  position: relative; display: flex; align-items: center; gap: 8px;
-}
-.tool-result-id:hover .tool-tip-popup,
-.tool-tip-popup:hover { display: block; }
-.tool-tip-badge {
-  font-family: var(--font-sans); font-size: 0.65rem; font-weight: 600;
-  color: var(--accent); background: #eef2ff; padding: 1px 8px;
-  border-radius: 10px; border: 1px solid #c7d2fe;
-}
-.tool-tip-popup {
-  display: none; position: absolute; top: 100%; left: 0; z-index: 100;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow-lg);
-  padding: 12px 16px; min-width: 320px; max-width: 480px;
-}
-.tool-tip-popup :deep(.monaco-box) { min-width: 300px; min-height: 60px; max-height: 300px; }
-.tool-tip-name {
-  display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
-  font-weight: 700; color: #4338ca; background: #eef2ff; padding: 4px 10px;
-  border-radius: 5px; border: 1px solid #c7d2fe; margin-bottom: 8px;
-}
 
 /* Section labels */
 .label-reasoning { background: #e3f2fd; color: #1565c0; }

@@ -2,34 +2,31 @@ import {
   MergedResponse,
   OpenAIResponsesMergedResponse,
   AnthropicMergedResponse,
-  ApiType,
+  ApiEndpoint,
   SSEChunk,
 } from './types';
 import { parseSSEText } from './sse-parser';
-import { AnthropicAccumulator } from './stream-accumulators/anthropic';
-import { OpenAIChatAccumulator } from './stream-accumulators/openai-chat';
-import { OpenAIResponsesAccumulator, isOpenAIResponsesEvent } from './stream-accumulators/openai-responses';
+import { getEndpointDefinition } from './endpoints';
 
-export function parseSSE(rawText: string, _apiType: ApiType): SSEChunk[] {
+export function parseSSE(rawText: string): SSEChunk[] {
   return parseSSEText(rawText);
 }
 
-export function mergeChunks(
-  chunks: SSEChunk[], apiType: ApiType,
-): MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse | null {
-  if (apiType === 'anthropic') {
-    const accumulator = new AnthropicAccumulator();
-    for (const chunk of chunks) accumulator.accept(chunk);
-    return accumulator.final();
+export function mergeChunks(chunks: SSEChunk[], endpoint: ApiEndpoint): MergedContentResult | null {
+  switch (endpoint) {
+    case 'openai-chat':
+    case 'openai-responses':
+    case 'anthropic-messages': {
+      const accumulator = getEndpointDefinition(endpoint).createAccumulator();
+      for (const chunk of chunks) accumulator.accept(chunk);
+      return accumulator.final();
+    }
   }
+  return assertNever(endpoint);
+}
 
-  if (chunks.some(chunk => isOpenAIResponsesEvent(chunk.data))) {
-    const accumulator = new OpenAIResponsesAccumulator();
-    for (const chunk of chunks) accumulator.accept(chunk);
-    return accumulator.final();
-  }
+type MergedContentResult = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
 
-  const accumulator = new OpenAIChatAccumulator();
-  for (const chunk of chunks) accumulator.accept(chunk);
-  return accumulator.final();
+function assertNever(value: never): never {
+  throw new Error(`未实现的 endpoint: ${String(value)}`);
 }

@@ -2,11 +2,13 @@
 import { ref } from 'vue'
 import { fetchToolCallPair } from '../api'
 import JsonViewer from './JsonViewer.vue'
+import { formatErrorChain } from '../error'
 
 const props = defineProps<{
   toolCallId: string
   toolName?: string
   result?: string
+  empty?: boolean
 }>()
 
 const hoverData = ref<string | null>(null)
@@ -18,7 +20,8 @@ async function onEnter() {
   try {
     const pair = await fetchToolCallPair(props.toolName, props.toolCallId)
     hoverData.value = pair.nextRequest ?? null
-  } catch {
+  } catch (error) {
+    console.warn(`[ToolCallResultCard] 加载工具配对失败: ${formatErrorChain(error)}`)
     hoverData.value = null
   } finally {
     loading.value = false
@@ -41,7 +44,8 @@ function onLeave() {
         <JsonViewer :value="hoverData" />
       </div>
     </div>
-    <JsonViewer :value="result ?? ''" />
+    <div v-if="empty" class="empty-result">空结果</div>
+    <JsonViewer v-else :value="result ?? ''" />
   </div>
 </template>
 
@@ -80,6 +84,14 @@ function onLeave() {
   font-family: var(--font-mono);
   color: var(--text-muted);
   font-size: 0.72rem;
+}
+
+.empty-result {
+  padding: 10px 16px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-style: italic;
+  background: var(--bg-inset);
 }
 
 .tool-result-header:hover .tool-tip-popup,

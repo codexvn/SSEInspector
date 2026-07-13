@@ -1,12 +1,16 @@
 <script lang="ts">
-/** 模块级单例缓存：纯文本 → token 数，跨所有 TokenSpeed 实例共享，避免列表多行重复请求后端 */
+/** 模块级单例缓存：模型 + 纯文本 → token 数，跨实例共享。 */
 const tokenCountCache = new Map<string, number>()
+const pendingTokenCounts = new Map<string, Promise<number>>()
+const MAX_TOKEN_CACHE_ENTRIES = 256
 </script>
 
 <script setup lang="ts">
 import { ref, watch, onUnmounted, computed } from 'vue'
 import type { ApiEndpoint } from '../types'
 import { fetchTokenize } from '../api'
+import { formatErrorChain } from '../error'
+import { IncrementalSseTextExtractor } from '../stream-text'
 
 const props = defineProps<{
   /** 流式原始文本（实时估算用，流式中由 SSE 推送更新） */
@@ -35,71 +39,9 @@ const TOKENIZE_INTERVAL = 1000
 let currentTokens = 0
 /** 上次调用后端 tokenize 的时间戳，用于流式节流（防抖在持续流式下永不触发） */
 let lastTokenizeAt = 0
-
-/** 解析单个 SSE data 行为对象，失败返回 null */
-function parseDataLine(line: string): Record<string, unknown> | null {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith('data:')) return null
-  const data = trimmed.slice(5).trim()
-  if (data === '[DONE]') return null
-  try { return JSON.parse(data) as Record<string, unknown> } catch { return null }
-}
-
-/** OpenAI Chat：拼接 choices[].delta.content */
-function extractOpenAIChat(raw: string): string {
-  let out = ''
-  for (const line of raw.split(/\r?\n/)) {
-    const obj = parseDataLine(line)
-    if (!obj) continue
-    const choices = obj.choices as { delta?: { content?: string } }[] | undefined
-    if (Array.isArray(choices)) {
-      for (const c of choices) {
-        if (typeof c?.delta?.content === 'string') out += c.delta.content
-      }
-    }
-  }
-  return out
-}
-
-/** OpenAI Responses：拼接 response.output_text.delta 的 delta 字符串 */
-function extractOpenAIResponses(raw: string): string {
-  let out = ''
-  for (const line of raw.split(/\r?\n/)) {
-    const obj = parseDataLine(line)
-    if (!obj) continue
-    if (typeof obj.type === 'string' && obj.type.endsWith('output_text.delta') && typeof obj.delta === 'string') {
-      out += obj.delta
-    }
-  }
-  return out
-}
-
-/** Anthropic：拼接 content_block_delta 的 delta.text / delta.thinking */
-function extractAnthropic(raw: string): string {
-  let out = ''
-  for (const line of raw.split(/\r?\n/)) {
-    const obj = parseDataLine(line)
-    if (!obj) continue
-    if (obj.type === 'content_block_delta') {
-      const delta = obj.delta as { text?: string; thinking?: string } | undefined
-      if (delta) {
-        if (typeof delta.text === 'string') out += delta.text
-        if (typeof delta.thinking === 'string') out += delta.thinking
-      }
-    }
-  }
-  return out
-}
-
-/** 按响应格式从 SSE 原始文本中提取纯输出文本 */
-function extractOutputText(raw: string): string {
-  switch (props.endpoint) {
-    case 'openai-chat': return extractOpenAIChat(raw)
-    case 'openai-responses': return extractOpenAIResponses(raw)
-    case 'anthropic-messages': return extractAnthropic(raw)
-    default: return extractOpenAIChat(raw) + extractOpenAIResponses(raw) + extractAnthropic(raw)
-  }
-}
+let textExtractor = new IncrementalSseTextExtractor(props.endpoint)
+let extractedText = ''
+let lastRequestedText = ''
 
 /** 完成态精确速度：output_tokens ÷ 耗时秒 */
 const finalSpeed = computed<string>(() => {
@@ -112,15 +54,24 @@ const finalSpeed = computed<string>(() => {
 /** 调后端 tokenizer 计算纯文本 token 数（带缓存） */
 async function refreshTokenCount(text: string) {
   if (!text || !props.model) { currentTokens = 0; return }
-  const cached = tokenCountCache.get(text)
+  lastRequestedText = text
+  const key = `${props.model}\u0000${text}`
+  const cached = tokenCountCache.get(key)
   if (cached !== undefined) { currentTokens = cached; return }
   try {
-    const result = await fetchTokenize(text, props.model)
-    tokenCountCache.set(text, result.count)
-    currentTokens = result.count
-  } catch {
-    // 接口失败时回退到字符估算（约 4 字符/token）
-    currentTokens = Math.ceil(text.length / 4)
+    let pending = pendingTokenCounts.get(key)
+    if (!pending) {
+      pending = fetchTokenize(text, props.model).then(result => result.count)
+      pendingTokenCounts.set(key, pending)
+    }
+    const count = await pending
+    cacheTokenCount(key, count)
+    if (lastRequestedText === text) currentTokens = count
+  } catch (error) {
+    console.warn(`[TokenSpeed] token 计算失败，使用字符估算: ${formatErrorChain(error)}`)
+    if (lastRequestedText === text) currentTokens = Math.ceil(text.length / 4)
+  } finally {
+    pendingTokenCounts.delete(key)
   }
 }
 
@@ -140,7 +91,7 @@ function updateSpeed() {
   }
   // 流式中：提取纯文本，节流调 tokenize 接口（用最新文本），定时刷新显示
   if (!props.text) { speedText.value = '…'; return }
-  const text = extractOutputText(props.text)
+  const text = extractedText
   // 节流：距上次刷新超过间隔才真正调后端，否则用已有 currentTokens 渲染。
   // 注意：流式 props.text 每 ~200ms 变化一次，用 debounce(停止才触发) 会导致后端调用永不触发、速度恒为 0。
   if (Date.now() - lastTokenizeAt >= TOKENIZE_INTERVAL) {
@@ -151,7 +102,14 @@ function updateSpeed() {
 }
 
 // 流式中文本变化即时刷新
-watch(() => props.text, updateSpeed)
+watch([() => props.text, () => props.endpoint], ([raw, endpoint], previous) => {
+  if (!previous || endpoint !== previous[1]) {
+    textExtractor = new IncrementalSseTextExtractor(endpoint)
+    extractedText = ''
+  }
+  extractedText = textExtractor.accept(raw ?? '')
+  updateSpeed()
+}, { immediate: true })
 // 状态变化（streaming→done）切换到完成值
 watch(() => props.state, () => {
   if (speedTimer) { clearInterval(speedTimer); speedTimer = null }
@@ -164,6 +122,13 @@ watch(() => props.state, () => {
 onUnmounted(() => {
   if (speedTimer) clearInterval(speedTimer)
 })
+
+function cacheTokenCount(key: string, count: number) {
+  tokenCountCache.set(key, count)
+  if (tokenCountCache.size <= MAX_TOKEN_CACHE_ENTRIES) return
+  const oldest = tokenCountCache.keys().next().value
+  if (oldest !== undefined) tokenCountCache.delete(oldest)
+}
 </script>
 
 <template>

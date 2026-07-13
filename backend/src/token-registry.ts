@@ -130,10 +130,26 @@ async function loadFromHF(repo: string): Promise<{ encode: (text: string) => num
       return { encode: (text: string) => tokenizer.encode(text) };
     } catch (err) {
       lastErr = err as Error;
+      console.warn(`[token-registry] tokenizer 镜像加载失败: repo=${repo}, mirror=${mirror}, error=${formatErrorChain(err)}`);
     }
   }
-  console.error(`[token-registry] 加载 tokenizer 失败: ${repo} — ${lastErr?.message}`);
+  console.error(`[token-registry] 加载 tokenizer 失败: ${repo} — ${formatErrorChain(lastErr)}`);
   return null;
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
+  }
+  return messages.join(' -> ');
 }
 
 async function getHFTokenizer(modelLower: string): Promise<{ encoder: Encoder; repo: string } | null> {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import JsonViewer from './JsonViewer.vue'
+import { formatErrorChain } from '../error'
 
 const props = withDefaults(defineProps<{
   title?: string
@@ -10,8 +11,13 @@ const props = withDefaults(defineProps<{
 
 function format(value: unknown): string {
   if (typeof value === 'string') {
+    const trimmed = value.trimStart()
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value
     try { return JSON.stringify(JSON.parse(value), null, 2) }
-    catch { return value }
+    catch (error) {
+      console.warn(`[RawJsonCard] 字符串不是合法 JSON: ${formatErrorChain(error)}`)
+      return value
+    }
   }
   return JSON.stringify(value, null, 2)
 }

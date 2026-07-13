@@ -2,10 +2,10 @@
  * 中央运行时配置容器。
  *
  * 由 CLI 入口（bin/sse-inspector.js）在启动时通过 setConfig() 填充，
- * 随后被 index.ts / proxy.ts / db/index.ts 读取。
+ * 主线程由 index.ts / proxy.ts 读取；Recorder Worker 收到同一配置后再加载 db/index.ts。
  *
- * 关键时序约束：db/index.ts 的 AppDataSource 在模块顶层求值，
- * 因此 bin 入口必须先 setConfig 再 require dist/index.js。
+ * 关键时序约束：主线程必须先配置再启动 index；Worker 必须先 setConfig，
+ * 再通过同一 CJS 模块缓存延迟加载 db/index.ts。
  */
 
 export interface SseInspectorConfig {

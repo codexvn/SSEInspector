@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
 import Pagination from '../components/Pagination.vue'
 import TokenSpeed from '../components/TokenSpeed.vue'
-import { detectApiEndpoint } from '../composables/useApiEndpoint'
 
 const store = useRequestsStore()
 const router = useRouter()
@@ -159,7 +158,7 @@ function sessionLabel(sid?: string, key?: string): string {
               </template>
               <template v-else>-</template>
             </td>
-            <td class="cell-speed"><TokenSpeed :text="r.streamText" :start-time="new Date(r.timestamp).getTime()" :endpoint="detectApiEndpoint(r.path, r.apiType)" :state="r.state" :output-tokens="r.outputTokens" :duration-ms="r.durationMs" :model="r.model" /></td>
+            <td class="cell-speed"><TokenSpeed :text="r.streamText" :start-time="new Date(r.timestamp).getTime()" :endpoint="r.apiEndpoint" :state="r.state" :output-tokens="r.outputTokens" :duration-ms="r.durationMs" :model="r.model" /></td>
           </tr>
         </tbody>
       </table>

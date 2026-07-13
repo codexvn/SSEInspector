@@ -10,9 +10,9 @@ import MessageMetaCard from './MessageMetaCard.vue'
 import ToolsListCard from './ToolsListCard.vue'
 import RawJsonCard from './RawJsonCard.vue'
 import type { ApiEndpoint } from '../types'
-import { detectApiEndpoint } from '../composables/useApiEndpoint'
+import { stableStringify } from '../stable-value'
 
-type MessageFlowFormat = ApiEndpoint | 'unknown'
+type MessageFlowFormat = ApiEndpoint
 type MessageFlowCardType =
   | 'system_message'
   | 'user_message'
@@ -43,11 +43,10 @@ interface MessageFlowGroupDescriptor {
 const props = defineProps<{
   body: Record<string, unknown>
   previousBody?: Record<string, unknown>
-  apiType: 'openai' | 'anthropic'
-  path?: string
+  apiEndpoint: ApiEndpoint
 }>()
 
-const format = computed(() => detectApiEndpoint(props.path, props.apiType))
+const format = computed(() => props.apiEndpoint)
 const groups = computed<MessageFlowGroupDescriptor[]>(() => buildGroups(props.body, format.value, props.previousBody))
 const newGroupCount = computed(() => groups.value.filter(group => group.isNew).length)
 const totalGroupCount = computed(() => groups.value.length)
@@ -179,18 +178,8 @@ function buildGroups(body: Record<string, unknown>, fmt: MessageFlowFormat, prev
       return [...groups, ...buildOpenAIResponsesGroups(body, markNewGroup)]
     case 'anthropic-messages':
       return [...groups, ...buildAnthropicGroups(body, markNewGroup)]
-    default:
-      return [
-        ...groups,
-        {
-          id: 'unknown-body-group',
-          title: '未知请求体',
-          badges: ['原始数据'],
-          isNew: false,
-          cards: [rawCard('unknown-body', '未知请求体', body)],
-        },
-      ]
   }
+  return assertNever(fmt)
 }
 
 function buildMetaCards(body: Record<string, unknown>, fmt: MessageFlowFormat): MessageFlowCardDescriptor[] {
@@ -222,7 +211,7 @@ function buildOpenAIChatGroups(body: Record<string, unknown>, markNewGroup: (ite
   messages.forEach((message, index) => {
     const cards: MessageFlowCardDescriptor[] = []
     const role = String(message.role ?? 'unknown')
-    if (role === 'system') {
+    if (role === 'system' || role === 'developer') {
       cards.push(textCard(`chat-system-${index}`, 'system_message', stringifyContent(message.content)))
     } else if (role === 'user') {
       pushContentCards(cards, `chat-user-${index}`, 'user_message', message.content)
@@ -283,14 +272,14 @@ function buildOpenAIResponsesGroups(body: Record<string, unknown>, markNewGroup:
     const role = String(item.role ?? '')
     if (type === 'message' || role) {
       const targetRole = role || 'user'
-      if (targetRole === 'system') pushContentCards(cards, `responses-system-${index}`, 'system_message', item.content)
+      if (targetRole === 'system' || targetRole === 'developer') pushContentCards(cards, `responses-system-${index}`, 'system_message', item.content)
       else if (targetRole === 'assistant') pushContentCards(cards, `responses-assistant-${index}`, 'assistant_text', item.content)
       else pushContentCards(cards, `responses-user-${index}`, 'user_message', item.content)
       result.push(messageGroup(`responses-item-${index}`, `input[${index}]`, targetRole, item, cards, markNewGroup(item)))
       return
     }
     if (type === 'function_call' || type === 'custom_tool_call') cards.push(toolRequestCard(`responses-tool-request-${index}`, item))
-    else if (type === 'function_call_output') cards.push(toolResultCard(`responses-tool-result-${index}`, item))
+    else if (type === 'function_call_output' || type === 'custom_tool_call_output' || type === 'tool_search_output') cards.push(toolResultCard(`responses-tool-result-${index}`, item))
     else if (typeof item.text === 'string') cards.push(textCard(`responses-text-${index}`, 'assistant_text', item.text))
     else if (typeof item.thinking === 'string') cards.push(textCard(`responses-thinking-${index}`, 'assistant_thinking', item.thinking))
     else cards.push(rawCard(`responses-raw-${index}`, `未知 Responses 项: ${type || 'unknown'}`, item))
@@ -402,6 +391,7 @@ function groupBadges(role: string, cards: MessageFlowCardDescriptor[]): string[]
 function roleLabel(role: string): string {
   return {
     system: '系统',
+    developer: '开发者',
     user: '用户',
     assistant: '助手',
     tool: '工具',
@@ -467,20 +457,8 @@ function comparableItems(body: Record<string, unknown>, fmt: MessageFlowFormat):
         ...(body.instructions !== undefined ? [body.instructions] : []),
         ...(Array.isArray(body.input) ? body.input : body.input !== undefined ? [body.input] : []),
       ]
-    default:
-      return []
   }
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
-  if (isRecord(value)) {
-    return `{${Object.keys(value)
-      .sort()
-      .map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-      .join(',')}}`
-  }
-  return JSON.stringify(value)
+  return assertNever(fmt)
 }
 
 function textCard(id: string, type: MessageFlowCardType, text: string): MessageFlowCardDescriptor {
@@ -489,7 +467,7 @@ function textCard(id: string, type: MessageFlowCardType, text: string): MessageF
 
 function toolRequestCard(id: string, source: Record<string, unknown>): MessageFlowCardDescriptor {
   const fn = isRecord(source.function) ? source.function : undefined
-  const toolCallId = stringValue(source.id ?? source.call_id ?? source.tool_call_id) ?? id
+  const toolCallId = stringValue(source.call_id ?? source.id ?? source.tool_call_id) ?? id
   const toolName = stringValue(source.name ?? fn?.name ?? source.tool_name) ?? 'tool'
   const rawArgs = source.arguments ?? source.input ?? fn?.arguments ?? source
   return {
@@ -500,8 +478,6 @@ function toolRequestCard(id: string, source: Record<string, unknown>): MessageFl
       toolCallId,
       toolName,
       toolArgs: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs, null, 2),
-      requestId: '',
-      side: 'request',
     },
   }
 }
@@ -523,6 +499,10 @@ function toolResultCard(id: string, source: Record<string, unknown>): MessageFlo
 
 function rawCard(id: string, title: string, value: unknown): MessageFlowCardDescriptor {
   return { id, type: 'raw_json', props: { title, value } }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`未实现的 endpoint: ${String(value)}`)
 }
 
 function componentFor(type: MessageFlowCardType) {

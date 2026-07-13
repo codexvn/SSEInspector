@@ -167,7 +167,7 @@ export class AnthropicAccumulator implements StreamAccumulator<AnthropicMergedRe
     try {
       block.input = JSON.parse(raw);
     } catch (err) {
-      console.warn(`[AnthropicAccumulator] 工具输入 JSON 解析失败: ${formatErrorChain(err)} raw=${raw.slice(0, 500)}`);
+      console.warn(`[AnthropicAccumulator] 工具输入 JSON 解析失败: ${formatErrorChain(err)}`);
       block.input = raw;
     }
   }

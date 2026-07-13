@@ -1,0 +1,106 @@
+import assert from 'node:assert/strict'
+import http from 'node:http'
+import express from 'express'
+import { once } from 'node:events'
+import { setConfig } from '../src/config'
+import { getEndpointDefinition } from '../src/endpoints'
+import { handleProxy } from '../src/proxy'
+
+async function main(): Promise<void> {
+const receivedBody: Buffer[] = []
+let firstUpstreamChunkAt = 0
+let upstreamRequestEndedAt = 0
+const responseBody = Buffer.from([0, 1, 2, 127, 128, 255])
+
+const upstream = http.createServer((req, res) => {
+  req.on('data', (chunk: Buffer) => {
+    if (!firstUpstreamChunkAt) firstUpstreamChunkAt = Date.now()
+    receivedBody.push(chunk)
+  })
+  req.on('end', () => {
+    upstreamRequestEndedAt = Date.now()
+    res.writeHead(201, {
+      'content-type': 'application/octet-stream',
+      'content-length': String(responseBody.length),
+      'x-byte-test': 'preserved',
+    })
+    res.end(responseBody)
+  })
+})
+upstream.listen(0, '127.0.0.1')
+await once(upstream, 'listening')
+const upstreamPort = (upstream.address() as { port: number }).port
+
+setConfig({
+  upstreamUrl: `http://127.0.0.1:${upstreamPort}`,
+  port: 0,
+  dbPath: 'unused.db',
+})
+
+const app = express()
+app.post('/v1/responses', (req, res) => {
+  void handleProxy(req, res, getEndpointDefinition('openai-responses'))
+})
+const proxy = app.listen(0, '127.0.0.1')
+await once(proxy, 'listening')
+const proxyPort = (proxy.address() as { port: number }).port
+
+const uploadStartedAt = Date.now()
+const result = await new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }>((resolve, reject) => {
+  const request = http.request({
+    host: '127.0.0.1',
+    port: proxyPort,
+    path: '/v1/responses?trace=raw',
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'content-length': '10',
+    },
+  }, response => {
+    const chunks: Buffer[] = []
+    response.on('data', (chunk: Buffer) => chunks.push(chunk))
+    response.on('end', () => resolve({
+      status: response.statusCode ?? 0,
+      headers: response.headers,
+      body: Buffer.concat(chunks),
+    }))
+  })
+  request.on('error', reject)
+  request.write('12345')
+  setTimeout(() => request.end('67890'), 100)
+})
+
+assert.ok(firstUpstreamChunkAt >= uploadStartedAt, '上游应在请求体上传期间收到首个 chunk')
+assert.ok(firstUpstreamChunkAt < upstreamRequestEndedAt, '代理不应等待完整请求体后再连接上游')
+assert.equal(Buffer.concat(receivedBody).toString(), '1234567890')
+assert.equal(result.status, 201)
+assert.equal(result.headers['x-byte-test'], 'preserved')
+assert.deepEqual(result.body, responseBody, '非流式响应不得 JSON 重编码或改变字节')
+
+await Promise.all([
+  new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())),
+  new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve())),
+])
+
+console.log('proxy data plane tests passed')
+}
+
+main().catch(error => {
+  console.error(formatErrorChain(error))
+  process.exitCode = 1
+})
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = []
+  let current: unknown = error
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`)
+      current = current.cause
+    } else {
+      messages.push(String(current))
+      break
+    }
+  }
+  return messages.join(' -> ')
+}

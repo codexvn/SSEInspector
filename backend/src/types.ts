@@ -164,6 +164,7 @@ export interface RecordedRequest {
   streaming: boolean;
   durationMs: number;
   apiType: ApiType;
+  apiEndpoint: ApiEndpoint;
   error?: string;
   state: RecordState;
   /** 'pending'|'ok'|'client_close'|'startup_fallback'，store 写入 */
@@ -192,8 +193,9 @@ export interface RecordSummary {
   durationMs: number;
   state: RecordState;
   apiType: ApiType;
-  /** 请求路径，供前端按 /chat/completions、/responses、/messages 判定响应格式 */
-  path?: string;
+  apiEndpoint: ApiEndpoint;
+  /** 请求路径仅用于展示，不承担协议分发职责。 */
+  path: string;
   streamText?: string;
   /** 缓存命中 token 数（来自 apiUsage 解析） */
   cacheRead?: number;

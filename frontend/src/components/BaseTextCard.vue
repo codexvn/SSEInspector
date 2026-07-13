@@ -5,11 +5,12 @@ import markdownItKatex from 'markdown-it-katex'
 import DOMPurify from 'dompurify'
 import mermaid from 'mermaid'
 import 'katex/dist/katex.min.css'
+import { formatErrorChain } from '../error'
 
 const props = withDefaults(defineProps<{
   title: string
   text?: string
-  tone?: 'system' | 'user' | 'assistant' | 'thinking'
+  tone?: 'system' | 'user' | 'assistant' | 'thinking' | 'refusal'
   markdown?: boolean
   defaultRaw?: boolean
 }>(), {
@@ -63,6 +64,7 @@ async function renderMermaidBlocks() {
       })
       pre.replaceWith(wrapper)
     } catch (err) {
+      console.warn(`[BaseTextCard] Mermaid 渲染失败: ${formatErrorChain(err)}`)
       pre.classList.add('mermaid-error')
       pre.setAttribute('title', `Mermaid 渲染失败: ${(err as Error).message}`)
     }
@@ -152,6 +154,8 @@ watch(() => [props.text, props.markdown, showRaw.value], renderMermaidBlocks, { 
 .tone-assistant .text-card-title { color: #2e7d32; }
 .tone-thinking { border-left-color: #42a5f5; }
 .tone-thinking .text-card-title { color: #1565c0; }
+.tone-refusal { border-left-color: #ef5350; }
+.tone-refusal .text-card-title { color: #c62828; }
 
 .markdown-body :deep(p) {
   margin: 0 0 0.75em;

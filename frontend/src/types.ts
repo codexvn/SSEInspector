@@ -12,9 +12,10 @@ export interface RecordSummary {
   streaming: boolean
   durationMs: number
   state: 'streaming' | 'done' | 'error'
-  apiType: 'openai' | 'anthropic'
-  /** 请求路径，供按 /chat/completions、/responses、/messages 判定响应格式 */
-  path?: string
+  apiType: ApiProvider
+  apiEndpoint: ApiEndpoint
+  /** 请求路径仅用于展示。 */
+  path: string
   streamText?: string
   cacheRead?: number
   apiReportedInput?: number
@@ -37,7 +38,8 @@ export interface RecordedRequest {
   responseContent: unknown
   streaming: boolean
   durationMs: number
-  apiType: 'openai' | 'anthropic'
+  apiType: ApiProvider
+  apiEndpoint: ApiEndpoint
   error?: string
   state: 'streaming' | 'done' | 'error'
   finished?: string

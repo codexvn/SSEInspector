@@ -13,9 +13,8 @@
  * - 开发模式（--dev）：同进程 tsx 加载 backend/src TS 源码，前端 HMR 由 vite-express 提供。
  *   tsx 是 devDependency，惰性 require 在 --dev 分支内，prod 路径不会执行。
  *
- * 关键顺序：先 setConfig，再 require 入口。
- * dist/index.js（或 backend/src/index.ts）顶层 import './db' 会立即触发
- * new DataSource(database: config.dbPath)，因此 config.dbPath 必须在加载入口前就绪。
+ * 关键顺序：先 setConfig，再 require 主线程入口。数据库只由 Recorder Worker 加载，
+ * Worker 通过 workerData 接收同一运行时配置，设置完成后才加载 DataSource。
  */
 
 const path = require('path');
@@ -68,12 +67,12 @@ if (opts.dev) {
   register();
   const { setConfig } = tsxRequire('../backend/src/config.ts', __filename);
   setConfig(cfg);
-  // 至此配置就绪，触发 AppDataSource 求值并启动服务
+  // 至此主线程配置就绪，启动服务并由其创建 Recorder Worker
   tsxRequire('../backend/src/index.ts', __filename);
 } else {
   // 生产模式：加载 dist 构建产物（不依赖 tsx）
   const { setConfig } = require('../dist/config');
   setConfig(cfg);
-  // 至此配置就绪，触发 AppDataSource 求值并启动服务
+  // 至此主线程配置就绪，启动服务并由其创建 Recorder Worker
   require('../dist/index.js');
 }

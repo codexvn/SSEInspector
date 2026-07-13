@@ -1,9 +1,12 @@
 import { EventEmitter } from 'events';
-import { RecordedRequest, RecordSummary, ApiType, MergedContent, TokenBreakdown, RecordState, RequestListFilter } from './types';
+import { RecordedRequest, RecordSummary, MergedContent, TokenBreakdown, RecordState, RequestListFilter } from './types';
 import { AppDataSource } from './db';
 import { RequestEntity } from './entity/RequestEntity';
 import { ToolCall } from './entity/ToolCall';
 import { Not, IsNull, Repository, FindManyOptions, FindOptionsWhere } from 'typeorm';
+import { assertEndpointProvider } from './endpoints';
+import { findLatestMessage } from './protocol-content';
+import { parseOutputTokens } from './api-usage';
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(500);
@@ -38,6 +41,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     durationMs: r.durationMs,
     state: r.state,
     apiType: r.apiType,
+    apiEndpoint: r.apiEndpoint,
     path: r.path,
     streamText: r.streamText,
     ...buildTokenSummary(r.tokenBreakdown, r.apiUsage),
@@ -48,56 +52,25 @@ function toSummary(r: RecordedRequest): RecordSummary {
 
 function buildPreview(record: RecordedRequest): string {
   const body = isRecord(record.requestBody) ? record.requestBody : undefined;
-  const userInput = latestUserInput(body);
-  if (userInput) return userInput;
+  const message = findLatestMessage(body, record.apiEndpoint);
+  if (message) return message;
   return record.error ?? '';
 }
 
-function latestUserInput(body?: Record<string, unknown>): string {
-  if (!body) return '';
-
-  const messages = arrayOfRecords(body.messages);
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (message.role === 'user') return extractText(message.content);
+/** 仅发布流式内存快照，不访问 SQLite。数据库由开始/完成记录负责持久化。 */
+export function publishStreamingRecord(r: RecordedRequest): void {
+  if (r.state !== 'streaming') {
+    throw new Error(`publishStreamingRecord 只接受 streaming 状态: id=${r.id}, state=${r.state}`);
   }
-
-  const input = body.input;
-  if (typeof input === 'string') return input;
-  if (!Array.isArray(input)) return '';
-
-  for (let index = input.length - 1; index >= 0; index--) {
-    const item = input[index];
-    if (!isRecord(item)) continue;
-    const type = String(item.type ?? '');
-    const role = String(item.role ?? '');
-    if (role === 'user' || type === 'message') {
-      return extractText(item.content) || extractText(item);
-    }
-  }
-  return '';
-}
-
-function extractText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(extractText).filter(Boolean).join('\n');
-  if (!isRecord(value)) return '';
-  return stringValue(value.text ?? value.input_text ?? value.output_text ?? value.thinking)
-    ?? extractText(value.content);
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value : undefined;
+  if (r.streamText != null) streamBuf.set(r.id, r.streamText);
+  emitter.emit('update', toSummary(r));
 }
 
 /** 从原始 usage JSON 提取输出 token 数（兼容 OpenAI completion_tokens 与 Anthropic/DeepSeek/Responses output_tokens） */
 function extractOutputTokens(apiUsage?: string | null): number | undefined {
   if (!apiUsage) return undefined;
   try {
-    const usage = JSON.parse(apiUsage) as Record<string, unknown>;
-    const out = (usage as { completion_tokens?: number; output_tokens?: number }).completion_tokens
-      ?? (usage as { output_tokens?: number }).output_tokens;
-    return typeof out === 'number' ? out : undefined;
+    return parseOutputTokens(apiUsage);
   } catch (err) {
     console.warn(`[store] 解析 apiUsage 提取输出 token 失败: ${formatErrorChain(err)}`);
     return undefined;
@@ -113,13 +86,15 @@ function buildTokenSummary(tb?: TokenBreakdown | null, apiUsage?: string | null)
 }
 
 function entityToRecord(row: RequestEntity): RecordedRequest {
+  const endpointDefinition = assertEndpointProvider(row.path, row.api_type);
   return {
     id: row.id,
     timestamp: row.timestamp,
     method: row.method,
     path: row.path,
     upstreamUrl: row.upstream_url,
-    apiType: row.api_type as ApiType,
+    apiType: endpointDefinition.provider,
+    apiEndpoint: endpointDefinition.endpoint,
     requestHeaders: (safeJsonParse(row.request_headers ?? null) as Record<string, string>) ?? {},
     // requestBody 可达 MB 级 ——透传 raw string，前端按需 parse
     requestBody: row.request_body ?? null,
@@ -143,6 +118,7 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
 }
 
 function entityToSummary(row: RequestEntity): RecordSummary {
+  const endpointDefinition = assertEndpointProvider(row.path, row.api_type);
   // 从 computed_tokens JSON 字段提取缓存命中数和 API 报告的输入 token
   let tokenBreakdown: TokenBreakdown | null = null
   if (row.computed_tokens) {
@@ -162,8 +138,9 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     streaming: row.streaming === 1,
     durationMs: row.duration_ms,
     state: deriveState(row.finished, row.error ?? null),
-    apiType: row.api_type as ApiType,
-    path: row.path ?? undefined,
+    apiType: endpointDefinition.provider,
+    apiEndpoint: endpointDefinition.endpoint,
+    path: row.path,
     streamText: streamBuf.get(row.id),
     ...buildTokenSummary(tokenBreakdown, row.api_usage),
     sessionId: row.session_id ?? undefined,
@@ -198,10 +175,6 @@ function formatErrorChain(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function arrayOfRecords(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
 function deriveState(finished: string, error: string | null): RecordState {
@@ -252,6 +225,12 @@ const SUMMARY_SELECT = {
 
 /** 新增或更新请求记录 */
 export async function upsertRecord(r: RecordedRequest): Promise<void> {
+  const endpointDefinition = assertEndpointProvider(r.path, r.apiType);
+  if (endpointDefinition.endpoint !== r.apiEndpoint) {
+    throw new Error(
+      `写入记录的 apiEndpoint 与 path 不一致: path=${r.path}, actual=${r.apiEndpoint}, expected=${endpointDefinition.endpoint}`,
+    );
+  }
   // 流式文本缓冲
   if (r.state === 'streaming' && r.streamText != null) {
     streamBuf.set(r.id, r.streamText);

@@ -39,6 +39,13 @@ npm run test:sse
 
 # 请求体解码（gzip/deflate/br/zstd）纯函数测试
 npm run test:decode
+
+# 代理数据面字节透传与 Recorder Worker dev/prod 测试
+npm run test:proxy
+npm run test:worker
+
+# endpoint、preview、工具配对和前端响应映射全量测试
+npm run test:all
 ```
 
 ## 运行方式
@@ -92,9 +99,20 @@ git push origin v1.0.0
 backend/src/proxy.ts
 ```
 
-代理入口，负责上游转发、流式原文缓存、非流式响应记录。修改时必须避免破坏透明代理语义。
+代理数据面入口，只负责上游字节流转发和 Recorder 旁路复制。修改时必须避免破坏透明代理语义。
 
-请求体按原始字节透传上游（保留 content-encoding）：代理路由不走全局 body-parser（`express.json` 仅挂载于 `/api`），`readRawBody` 自行读取 raw body 字节透传，`decodeRequestBody`（见 `body-decode.ts`）解码一份副本仅供检查器（记录 / token 统计 / 工具回填），解码失败只降级、不阻塞透传。
+请求体不再完整缓存后才发送：主线程使用原生 HTTP(S) 请求按 chunk 写入上游，并在写入后将字节副本发给 Worker。响应 chunk 先写客户端，再发送捕获副本；主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应同样保持原始状态码、headers 和 body 字节，不经过 `res.json()` 重编码。代理路由不走 body-parser，响应也不经过内部 API 的 compression 中间件。
+
+```text
+backend/src/recorder/client.ts
+backend/src/recorder/protocol.ts
+backend/src/recorder/worker.ts
+bin/recorder-worker.js
+```
+
+Recorder 观察面：`client.ts` 管理 Worker 生命周期、RPC、UI 事件和 64 MiB 捕获积压上限；`protocol.ts` 定义强类型消息；`worker.ts` 是 TypeORM、SQLite、SSE 合并、token、preview 和工具配对的唯一运行时所有者。Worker 异常退出时代理继续透传，内部数据库 API 返回 503，并按 1 秒、2 秒、5 秒退避自动恢复。dev 使用 tsx CJS bootstrap，prod 加载 `dist/recorder/worker.js`；两者必须使用同一 CJS 模块缓存，禁止在设置 config 后用另一套 ESM loader 加载 DataSource。
+
+进程关闭时先停止 HTTP Server 接收新连接，并立即停止向 Recorder 投递新捕获和 RPC。Worker 获得最多 4 秒优雅收尾时间，随后最多 1 秒强制终止；从收到 SIGINT/SIGTERM 起总退出时间严格不超过 5 秒。
 
 ```text
 backend/src/body-decode.ts
@@ -127,10 +145,16 @@ backend/src/sse-parser.ts
 底层 SSE 解析，只负责把 raw SSE 文本解析成 `SSEChunk[]`，不处理 OpenAI / Anthropic 业务语义。
 
 ```text
+backend/src/endpoints.ts
+```
+
+AI endpoint 唯一注册表。路由、provider、accumulator factory、数据库 path 分类都从这里派生。当前只注册 `openai-chat`、`openai-responses`、`anthropic-messages`；未知 path 不得默认回退 Chat。
+
+```text
 backend/src/sse-merger.ts
 ```
 
-流式合并门面，保留 `parseSSE` 和 `mergeChunks` 对外 API，内部委托给具体 provider accumulator。
+流式合并门面。公共接口固定为 `parseSSE(rawText)` 与 `mergeChunks(chunks, endpoint)`；endpoint 必填并使用穷尽分支，禁止通过 SSE 内容猜测协议。
 
 ```text
 backend/src/stream-accumulators/
@@ -147,13 +171,28 @@ backend/src/stream-accumulators/
 backend/src/store.ts
 ```
 
-请求记录持久化、列表摘要、实时更新事件、工具调用查询。
+请求记录持久化、列表摘要、实时更新事件、工具调用查询。生产运行时仅允许 Recorder Worker 导入；Express 主线程通过 Worker RPC 查询，不得直接调用 store。
+
+```text
+backend/src/protocol-content.ts
+backend/src/tool-calls.ts
+```
+
+无数据库依赖的协议内容 helper：统一提取多文本块、最新可读 message、最新 user message，以及按 endpoint 提取工具调用和下一轮工具结果。Responses 工具配对优先使用 `call_id`，`id` 仅作为明确标记的非标准 fallback。
+
+SQLite 数据仅作为一次性检查记录，不维护 schema migration。TypeORM 通过 entity 与 `synchronize: true` 创建或同步当前 schema；实体结构发生不兼容变化时直接删除旧 DB 重建，不承诺历史数据迁移。启动阶段不扫描历史 requests 数据；endpoint/provider 一致性只在新记录写入和读取时通过 Endpoint Registry 校验。
 
 ```text
 backend/src/token-counter.ts
 ```
 
 输入 token 拆分、缓存命中统计、API usage 解析。
+
+```text
+backend/src/api-usage.ts
+```
+
+API usage 写入与输出 token 提取。只有非 null 对象允许序列化入库；`usage: null` 表示尚无 usage，必须写为 SQL NULL，禁止生成字符串 `"null"`。历史数据库不做兼容，schema 或数据不符合当前约束时直接删除重建。
 
 ```text
 backend/test/sse-merger.test.ts
@@ -171,7 +210,7 @@ backend/test/body-decode.test.ts
 frontend/src/
 ```
 
-前端页面、组件、store、API 调用和详情展示逻辑。
+前端页面、组件、store、API 调用和详情展示逻辑。API 返回的 `apiEndpoint` 为必填字段，前端不得再从 path 或 provider 推断协议。`response-flow.ts` 将规范化响应转换为卡片 descriptor，模型工具调用卡片不内联 result，结果仅通过 hover 使用现有工具配对接口加载。完整工具历史只在 `MessageFlow` 展示；`DetailView` 对每条 request body 只解析一次，会话前后记录只在导航、diff 或 MessageFlow 操作时加载，请求体和响应体 Monaco 只在对应折叠区及 tab 打开时挂载。
 
 ## 流式合并维护规则
 
@@ -240,7 +279,7 @@ frontend/src/
    content_filter_results
    ```
 
-6. Responses API 应优先维护完整 `response.output[]` snapshot，同时保留 UI 便捷字段：
+6. Responses API 以完整 `response.output[]` snapshot 为唯一输出事实源，并在 finalize 时派生 UI 便捷字段：
 
    ```ts
    output_text
@@ -251,9 +290,11 @@ frontend/src/
    incomplete_details
    ```
 
-   `response.completed` 是最终权威快照；`response.output_text.done` 应覆盖 delta 文本，不要用长度启发式判断。
+   lifecycle response 的所有非 `undefined` 顶层字段都必须保留（包括 `null` 与供应商扩展字段）。terminal `output` 为数组时是最终权威快照；为 `null`、缺失或非法结构时不得清空已累计 item。content、reasoning summary、tool input 的 done 状态必须按具体 index 维护，不得使用 response 级全局布尔值。
 
-7. SSEInspector 是检查器，不是官方 SDK 客户端。面对第三方兼容流时应尽量保留数据，不要因为缺少某个官方字段就丢弃整条响应。
+7. `response.metadata` 是已观察到的私有 auxiliary 事件，不合并进官方 `Response.metadata`，不生成普通消息卡；原始内容仅保存在 raw SSE。其他没有 snapshot 语义的未知事件同样不污染合并响应。
+
+8. SSEInspector 是检查器，不是官方 SDK 客户端。面对第三方兼容流时应保留未知 response 字段和未知 output item，并在 UI 使用 Raw JSON 卡展示；未知事件不得用于 endpoint 推断。
 
 ## 官方 SDK 对照原则
 

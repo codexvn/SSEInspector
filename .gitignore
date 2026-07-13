@@ -16,4 +16,6 @@ yarn-error.log*
 /.db/
 /data.db*
 /.playwright-mcp
+/.agents/
+/.claude/settings.local.json
 /dist/

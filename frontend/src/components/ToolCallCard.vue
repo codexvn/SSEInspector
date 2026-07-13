@@ -1,38 +1,64 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { fetchToolCallPair } from '../api'
 import JsonViewer from './JsonViewer.vue'
+import { formatErrorChain } from '../error'
 
 const props = defineProps<{
   toolCallId: string
   toolName: string
   toolArgs?: string
-  result?: string
-  requestId: string
-  side: 'request' | 'result'
 }>()
 
 const hoverData = ref<string | null>(null)
+const hoverVisible = ref(false)
+const hoverLoaded = ref(false)
 const loading = ref(false)
+let loadGeneration = 0
+
+watch(
+  () => [props.toolCallId, props.toolName],
+  () => {
+    loadGeneration += 1
+    hoverData.value = null
+    hoverVisible.value = false
+    hoverLoaded.value = false
+    loading.value = false
+  },
+)
 
 async function onEnter() {
-  if (hoverData.value || loading.value) return
+  hoverVisible.value = true
+  if (hoverLoaded.value || loading.value) return
+  const generation = loadGeneration
   loading.value = true
   try {
     const pair = await fetchToolCallPair(props.toolName, props.toolCallId)
-    hoverData.value = (props.side === 'request' ? pair.prevResult : pair.nextRequest) ?? null
-  } catch { /* ignore */ }
-  finally { loading.value = false }
+    if (generation !== loadGeneration) return
+    hoverData.value = pair.prevResult ?? null
+    hoverLoaded.value = true
+  } catch (error) {
+    if (generation !== loadGeneration) return
+    console.warn(`[ToolCallCard] 加载工具配对失败: ${formatErrorChain(error)}`)
+  }
+  finally {
+    if (generation === loadGeneration) loading.value = false
+  }
 }
 
 function onLeave() {
-  hoverData.value = null
+  hoverVisible.value = false
 }
 
 function fmtArgs(args?: string): string {
   if (!args) return '(无参数)'
+  const trimmed = args.trimStart()
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return args
   try { return JSON.stringify(JSON.parse(args), null, 2) }
-  catch { return args }
+  catch (error) {
+    console.warn(`[ToolCallCard] 工具参数不是合法 JSON: ${formatErrorChain(error)}`)
+    return args
+  }
 }
 </script>
 
@@ -41,9 +67,11 @@ function fmtArgs(args?: string): string {
     <div class="tool-header">
       <span class="tool-name">{{ toolName }}</span>
       <span class="tool-id">{{ toolCallId }}</span>
-      <div v-if="hoverData" class="tool-tip-popup">
+      <div v-if="hoverVisible" class="tool-tip-popup">
         <div class="tool-tip-name">{{ toolName }}</div>
-        <JsonViewer :value="side === 'request' ? hoverData : fmtArgs(hoverData)" />
+        <div v-if="loading" class="tool-tip-none">加载工具结果…</div>
+        <JsonViewer v-else-if="hoverData" :value="hoverData" />
+        <div v-else class="tool-tip-none">暂无工具结果</div>
       </div>
     </div>
     <pre v-if="toolArgs" class="args-pre">{{ fmtArgs(toolArgs) }}</pre>
@@ -53,7 +81,7 @@ function fmtArgs(args?: string): string {
 <style scoped>
 .tool-call {
   background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm);
-  overflow: hidden; margin-bottom: 10px;
+  overflow: visible; margin-bottom: 10px;
 }
 .tool-call + .tool-call { margin-top: 0; }
 
@@ -85,6 +113,7 @@ function fmtArgs(args?: string): string {
   border-radius: var(--radius); box-shadow: var(--shadow-lg);
   padding: 12px 16px; min-width: 320px; max-width: 480px;
 }
+.tool-tip-popup :deep(.monaco-box) { min-width: 300px; min-height: 60px; max-height: 300px; }
 .tool-tip-name {
   display: inline-block; font-family: var(--font-mono); font-size: 0.78rem;
   font-weight: 700; color: #4338ca; background: #eef2ff; padding: 4px 10px;

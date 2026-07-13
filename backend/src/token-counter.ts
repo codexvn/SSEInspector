@@ -111,7 +111,8 @@ async function breakDownOpenAIChat(
         })),
         'gpt-4',
       ).length;
-    } catch {
+    } catch (err) {
+      console.warn(`[token-counter] encodeChat 失败，回退逐消息编码: ${formatErrorChain(err)}`);
       for (const msg of chatMessages) {
         messages += encode(JSON.stringify(msg));
       }
@@ -281,9 +282,28 @@ export async function computeTokenBreakdown(
       }
     }
 
-    return null;
+    return assertNever(apiEndpoint);
   } catch (err) {
-    console.error(`[token-counter] 计算失败: ${(err as Error).message}`);
+    console.error(`[token-counter] 计算失败: ${formatErrorChain(err)}`);
     return null;
   }
+}
+
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
+    }
+    messages.push(String(current));
+    break;
+  }
+  return messages.join(' -> ');
+}
+
+function assertNever(value: never): never {
+  throw new Error(`未实现的 endpoint: ${String(value)}`);
 }

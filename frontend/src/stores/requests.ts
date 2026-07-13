@@ -46,22 +46,26 @@ export const useRequestsStore = defineStore('requests', () => {
   /** 外部注册的 streaming→done 回调，供 DetailView 绑定刷新。
    *  使用 ref 以便 Pinia 正确代理 store 上的赋值。 */
   const onStreamDone = ref<((id: string) => void) | null>(null)
-  /** 外部注册的“列表有更新”回调：每次 SSE 推送后触发，
-   *  供 ListView 重查统计、DetailView 重查全局/会话导航。 */
+  /** 外部注册的列表结构变化回调：仅新增、移除或状态变化时触发，
+   *  纯 streamText 快照更新不得触发统计和导航查询。 */
   const onListUpdate = ref<(() => void) | null>(null)
+  const sseStates = new Map<string, RecordSummary['state']>()
 
   function startSSE() {
     if (sseCleanup) sseCleanup()
     sseCleanup = connectSSE((summary) => {
       const idx = items.value.findIndex(r => r.id === summary.id)
-      const wasStreaming = idx >= 0 && items.value[idx].state === 'streaming'
+      const previousState = sseStates.get(summary.id)
+      const wasStreaming = previousState === 'streaming'
+      const structuralChange = previousState === undefined || previousState !== summary.state
+      rememberSseState(summary)
       const matchesFilter = matchesActiveFilter(summary)
       if (!matchesFilter) {
         if (idx >= 0) {
           items.value.splice(idx, 1)
           total.value = Math.max(0, total.value - 1)
         }
-        onListUpdate.value?.()
+        if (structuralChange) onListUpdate.value?.()
         if (wasStreaming && summary.state === 'done') {
           onStreamDone.value?.(summary.id)
         }
@@ -76,10 +80,7 @@ export const useRequestsStore = defineStore('requests', () => {
           if (items.value.length > pageSize) items.value.pop()
         }
       }
-      // 按时间降序排序
-      items.value.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      // 统计改由接口实时查询，此处不再增量维护 counts
-      onListUpdate.value?.()
+      if (structuralChange) onListUpdate.value?.()
       // streaming → done 转换：通知详情页刷新
       if (wasStreaming && summary.state === 'done') {
         onStreamDone.value?.(summary.id)
@@ -93,6 +94,7 @@ export const useRequestsStore = defineStore('requests', () => {
     try {
       const data = await fetchList(p, pageSize, activeFilter.value, sessionFilter.value ?? undefined)
       items.value = data.items
+      for (const item of data.items) rememberSseState(item)
       total.value = data.total
       page.value = data.page
       // 统一通过 /api/stats 实时查询统计，避免增量维护偏差
@@ -100,6 +102,13 @@ export const useRequestsStore = defineStore('requests', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  function rememberSseState(record: RecordSummary) {
+    sseStates.set(record.id, record.state)
+    if (sseStates.size <= 2048) return
+    const oldest = sseStates.keys().next().value
+    if (oldest !== undefined) sseStates.delete(oldest)
   }
 
   /** 实时查询统计并更新 counts（供 ListView 与 SSE 推送后刷新） */

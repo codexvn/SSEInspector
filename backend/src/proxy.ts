@@ -1,31 +1,22 @@
 import { Request, Response } from 'express';
-import { upsertRecord, writeToolCalls, updateToolCallResults, ToolCallEntry } from './store';
-import { parseSSE, mergeChunks } from './sse-merger';
-import { computeTokenBreakdown } from './token-counter';
+import crypto from 'crypto';
+import http, { IncomingHttpHeaders } from 'http';
+import https from 'https';
 import { config } from './config';
-import { RecordedRequest, ApiType, ApiEndpoint, MergedContent } from './types';
-import { decodeRequestBody } from './body-decode';
+import { EndpointDefinition } from './endpoints';
+import {
+  beginCapture,
+  beginCaptureResponse,
+  captureRequestChunk,
+  captureResponseChunk,
+  completeCapture,
+  endCaptureRequest,
+  failCapture,
+} from './recorder/client';
 
-/**
- * 读取上游 URL。生产模式（CLI 启动）用 config.upstreamUrl；
- * 开发模式（tsx 直跑）回退 UPSTREAM_URL 环境变量以保持向后兼容。
- */
+/** 读取 CLI 写入的唯一上游 URL 配置。 */
 function getUpstreamUrl(): string {
-  return config.upstreamUrl || process.env.UPSTREAM_URL || '';
-}
-
-/**
- * 读取请求原始字节。代理路径不走 body-parser（仅 /api 挂载 express.json），需自行消费 req 流
- * 拿到完整 body：用于原样字节透传上游，并供 decodeRequestBody 解码副本给检查器。
- * 不设大小上限：SSEInspector 是本地 / 内网检查器，非公网服务，原 body-parser 的 10mb 限制是副作用而非安全边界。
- * 流错误 / 客户端中断时抛错，由 handleProxy / handlePassthrough 兜底响应。
- */
-async function readRawBody(req: Request): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks);
+  return config.upstreamUrl;
 }
 
 const HOP_HEADERS = [
@@ -67,340 +58,181 @@ function extractSessionId(req: Request): { value: string; key: string } | null {
   return null;
 }
 
-function filterHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
-  const result: Record<string, string> = {};
+type ForwardHeaders = Record<string, string | string[]>;
+
+function filterHeaders(headers: Record<string, string | string[] | undefined>): ForwardHeaders {
+  const result: ForwardHeaders = {};
   for (const [key, value] of Object.entries(headers)) {
     if (HOP_HEADERS.includes(key.toLowerCase())) continue;
-    if (value !== undefined) {
-      result[key] = Array.isArray(value) ? value.join(', ') : value;
-    }
+    if (value !== undefined) result[key] = value;
   }
   return result;
 }
 
-function baseRecord(
-  id: string, req: Request, status: number, streaming: boolean, apiType: ApiType,
-  startTime: number, parsedBody: unknown, error?: string,
-): RecordedRequest {
-  const targetUrl = getUpstreamUrl().replace(/\/$/, '') + req.path;
-  const sid = extractSessionId(req);
-  return {
-    id,
-    timestamp: new Date().toISOString(),
-    method: req.method,
-    path: req.path,
-    upstreamUrl: targetUrl,
-    requestHeaders: filterHeaders(req.headers as Record<string, string | string[] | undefined>),
-    requestBody: parsedBody,
-    responseStatus: status,
-    responseContent: null,
-    streaming,
-    durationMs: Date.now() - startTime,
-    apiType,
-    error,
-    state: error ? 'error' : streaming ? 'streaming' : 'done',
-    sessionId: sid?.value,
-    sessionIdKey: sid?.key,
-  };
-}
-
-/** 从 requestBody 提取 tool_result（上一轮工具调用的返回结果），
- *  更新之前已写入的 tool_calls 行的 result 列。
- *  工具调用的 result 在下一次请求的 requestBody 中携带，
- *  因此必须在 proxy 开始时检查，不能在请求完成时。 */
-async function backfillToolResults(requestBody: unknown, apiType: ApiType): Promise<void> {
-  const updates: { tool_call_id: string; result: string }[] = [];
-  const body = requestBody as Record<string, unknown> | undefined;
-  if (!body) return;
-
-  // messages[] 格式（OpenAI Chat / Anthropic）
-  const msgList = body.messages as Record<string, unknown>[] | undefined;
-  const extractMsgs = (msgs: Record<string, unknown>[]) => {
-    for (const msg of msgs) {
-      if (apiType === 'openai' && msg.role === 'tool' && msg.tool_call_id) {
-        const c = msg.content;
-        updates.push({ tool_call_id: String(msg.tool_call_id), result: typeof c === 'string' ? c : JSON.stringify(c) });
-      }
-      if (apiType === 'anthropic' && Array.isArray(msg.content)) {
-        for (const block of msg.content as Record<string, unknown>[]) {
-          if (block.type === 'tool_result' && block.tool_use_id) {
-            const c = block.content;
-            updates.push({ tool_call_id: String(block.tool_use_id), result: typeof c === 'string' ? c : JSON.stringify(c) });
-          }
-        }
-      }
-    }
-  };
-  if (msgList) extractMsgs(msgList);
-
-  // input[] 格式（Anthropic 新格式 / OpenAI Responses）
-  const input = body.input as Record<string, unknown>[] | undefined;
-  if (input) extractMsgs(input);
-
-  if (updates.length > 0) await updateToolCallResults(updates);
-}
-
-/** 从 responseContent 提取 tool_use（本轮模型发出的工具调用请求），
- *  不配对 result——result 在下一次请求中才会出现。 */
-function extractToolCalls(
-  responseContent: MergedContent | null,
-  apiType: ApiType,
-): ToolCallEntry[] {
-  const entries: ToolCallEntry[] = [];
-  if (apiType === 'openai') {
-    const rc = responseContent as unknown as Record<string, unknown> | null;
-    const choices = rc?.choices as Record<string, unknown>[] | undefined;
-    const tcs = choices?.[0]?.message as Record<string, unknown> | undefined;
-    for (const tc of (tcs?.tool_calls as Record<string, unknown>[]) ?? []) {
-      entries.push({
-        tool_call_id: String(tc.id),
-        tool_name: (tc.function as Record<string, string>)?.name ?? '',
-        arguments: (tc.function as Record<string, string>)?.arguments,
-      });
-    }
-  } else if (apiType === 'anthropic') {
-    const rc = responseContent as unknown as Record<string, unknown> | null;
-    for (const block of rc?.content as Record<string, unknown>[] ?? []) {
-      if (block.type !== 'tool_use' || !block.id) continue;
-      entries.push({
-        tool_call_id: String(block.id),
-        tool_name: String(block.name ?? ''),
-        arguments: typeof block.input === 'string' ? block.input as string : JSON.stringify(block.input),
-      });
-    }
-  }
-  return entries;
-}
-
 export async function handlePassthrough(req: Request, res: Response): Promise<void> {
+  await forward(req, res);
+}
+
+export async function handleProxy(req: Request, res: Response, endpointDefinition: EndpointDefinition): Promise<void> {
+  await forward(req, res, endpointDefinition);
+}
+
+async function forward(req: Request, res: Response, endpointDefinition?: EndpointDefinition): Promise<void> {
   const upstreamUrl = getUpstreamUrl();
   if (!upstreamUrl) {
     res.status(500).json({ error: 'UPSTREAM_URL not configured' });
     return;
   }
 
-  const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
+  const targetUrl = upstreamUrl.replace(/\/$/, '') + req.originalUrl;
+  const target = new URL(targetUrl);
+  const targetLog = `${target.origin}${target.pathname}`;
+  const label = endpointDefinition ? 'proxy' : 'passthrough';
+  console.log(`[${label}] ${req.method} ${req.path} -> ${targetLog}`);
 
-  console.log(`[passthrough] ${req.method} ${req.path} -> ${targetUrl}`);
-
-  // 读取原始请求体原样字节透传（catch-all 不做检查器解码，仅透传）。
-  // 读取失败（流错误 / 客户端中断）兜底 400，避免 unhandled promise rejection 导致请求挂死。
-  let rawBody: Buffer;
-  try {
-    rawBody = await readRawBody(req);
-  } catch (e) {
-    const err = e as Error & { code?: string };
-    console.error(`[passthrough] ${req.method} ${req.path} 读取请求体失败: ${err.message} (code=${err.code})`);
-    if (!res.headersSent) res.status(400).json({ error: '读取请求体失败', detail: err.message });
-    return;
+  const id = endpointDefinition ? crypto.randomUUID() : null;
+  if (id) {
+    const session = extractSessionId(req);
+    const contentEncoding = firstHeader(req.headers['content-encoding']);
+    beginCapture({
+      id,
+      startedAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      path: req.path,
+      upstreamUrl: targetUrl,
+      requestHeaders: flattenHeaders(filterHeaders(req.headers)),
+      contentEncoding,
+      apiType: endpointDefinition!.provider,
+      apiEndpoint: endpointDefinition!.endpoint,
+      sessionId: session?.value,
+      sessionIdKey: session?.key,
+    });
   }
 
-  const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
-  delete upstreamHeaders['host'];
-  delete upstreamHeaders['content-length'];
+  const upstreamHeaders = filterHeaders(req.headers);
+  delete upstreamHeaders.host;
+  const transport = target.protocol === 'https:' ? https : http;
 
-  const fetchInit: RequestInit = {
-    method: req.method,
-    headers: upstreamHeaders,
-  };
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let responseStatus = 502;
+    let responseCompleted = false;
 
-  // 原样字节透传：content-encoding 头由 filterHeaders 透传，content-length 让 undici 按 Buffer 长度重算。
-  // 不再凭空补 content-type——透明代理原样透传客户端头。
-  if (req.method !== 'GET' && req.method !== 'HEAD' && rawBody.length > 0) {
-    fetchInit.body = rawBody;
-  }
+    const finishError = (error: unknown, status = responseStatus) => {
+      if (settled) return;
+      settled = true;
+      const detail = formatErrorChain(error);
+      console.error(`[${label}] 转发失败: ${detail} target=${targetLog}`);
+      if (id) failCapture(id, status, detail);
+      if (!res.headersSent) res.status(502).json({ error: 'Upstream unreachable' });
+      else if (!res.writableEnded) res.destroy(error instanceof Error ? error : new Error(detail));
+      resolve();
+    };
 
-  try {
-    const upstreamRes = await fetch(targetUrl, fetchInit);
-    const responseHeaders = filterHeaders(Object.fromEntries(upstreamRes.headers.entries()));
+    const upstreamReq = transport.request(target, {
+      method: req.method,
+      headers: upstreamHeaders,
+    }, upstreamRes => {
+      responseStatus = upstreamRes.statusCode ?? 502;
+      const responseHeaders = filterHeaders(upstreamRes.headers as IncomingHttpHeaders);
+      res.statusCode = responseStatus;
+      for (const [name, value] of Object.entries(responseHeaders)) res.setHeader(name, value);
+      res.flushHeaders();
 
-    res.status(upstreamRes.status);
-    for (const [key, value] of Object.entries(responseHeaders)) {
-      res.setHeader(key, value);
-    }
+      const contentType = firstHeader(upstreamRes.headers['content-type']) ?? '';
+      const streaming = contentType.toLowerCase().includes('text/event-stream');
+      if (id) beginCaptureResponse(id, responseStatus, flattenHeaders(responseHeaders), streaming);
 
-    if (upstreamRes.body) {
-      const reader = upstreamRes.body.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-      } finally {
+      void forwardResponseBody(upstreamRes, res, chunk => {
+        if (id) captureResponseChunk(id, chunk);
+      }).then(() => {
+        if (settled) return;
+        responseCompleted = true;
+        settled = true;
         res.end();
-        try { reader.releaseLock(); } catch { /* already released */ }
+        if (id) completeCapture(id);
+        resolve();
+      }).catch(finishError);
+    });
+
+    upstreamReq.on('error', finishError);
+    req.on('aborted', () => finishError(new Error('客户端在请求上传完成前断开'), 499));
+    req.on('error', finishError);
+    res.on('close', () => {
+      if (responseCompleted || settled || res.writableFinished) return;
+      upstreamReq.destroy();
+      finishError(new Error('客户端在响应完成前断开'), responseStatus === 502 ? 499 : responseStatus);
+    });
+
+    req.on('data', (value: Buffer | string) => {
+      if (settled) return;
+      const chunk = typeof value === 'string' ? Buffer.from(value) : value;
+      const writable = upstreamReq.write(chunk);
+      if (id) captureRequestChunk(id, chunk);
+      if (!writable) {
+        req.pause();
+        upstreamReq.once('drain', () => req.resume());
       }
-    } else {
-      res.end();
-    }
-  } catch (err) {
-    const e = err as Error & { cause?: Error; code?: string };
-    console.error(`[passthrough] error: ${e.message} (code=${e.code}) targetUrl=${targetUrl} cause=${e.cause?.message ?? e.cause ?? '-'}`);
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
-    }
+    });
+    req.on('end', () => {
+      if (settled) return;
+      if (id) endCaptureRequest(id);
+      upstreamReq.end();
+    });
+  });
+}
+
+async function forwardResponseBody(
+  upstreamRes: http.IncomingMessage,
+  res: Response,
+  capture: (chunk: Buffer) => void,
+): Promise<void> {
+  for await (const value of upstreamRes) {
+    const chunk = typeof value === 'string' ? Buffer.from(value) : value;
+    const writable = res.write(chunk);
+    capture(chunk);
+    if (!writable) await waitForDrain(res);
   }
 }
 
-export async function handleProxy(req: Request, res: Response, apiType: ApiType, apiEndpoint: ApiEndpoint): Promise<void> {
-  const upstreamUrl = getUpstreamUrl();
-  if (!upstreamUrl) {
-    res.status(500).json({ error: 'UPSTREAM_URL not configured' });
-    return;
-  }
+function waitForDrain(res: Response): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      res.off('error', onError);
+    };
+    const onDrain = () => { cleanup(); resolve(); };
+    const onClose = () => { cleanup(); reject(new Error('客户端在响应背压期间断开')); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+    res.once('error', onError);
+  });
+}
 
-  const id = crypto.randomUUID();
-  const startTime = Date.now();
-  const targetUrl = upstreamUrl.replace(/\/$/, '') + req.path;
+function flattenHeaders(headers: ForwardHeaders): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : value]),
+  );
+}
 
-  console.log(`[proxy] ${req.method} ${req.path} -> ${targetUrl}`);
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
 
-  // 读取原始请求体：原样字节透传上游 + 解码副本供检查器。
-  // 读取失败（流错误 / 客户端中断）兜底 400，避免 unhandled promise rejection 导致请求挂死。
-  let rawBody: Buffer;
-  try {
-    rawBody = await readRawBody(req);
-  } catch (e) {
-    const err = e as Error & { code?: string };
-    const msg = `读取请求体失败: ${err.message}`;
-    console.error(`[proxy] ${req.method} ${req.path} ${msg} (code=${err.code})`);
-    if (!res.headersSent) res.status(400).json({ error: msg });
-    await upsertRecord(baseRecord(id, req, 400, false, apiType, startTime, undefined, msg));
-    return;
-  }
-
-  // 解码副本供检查器（记录 / token / 工具回填）。解码失败只降级，绝不阻塞透传。
-  const contentEncodingHeader = req.headers['content-encoding'];
-  const contentEncoding = typeof contentEncodingHeader === 'string' ? contentEncodingHeader : undefined;
-  const decoded = decodeRequestBody(rawBody, contentEncoding);
-  if (decoded.error) {
-    console.warn(`[proxy] ${req.method} ${req.path} 请求体解码降级（透传不受影响）: ${decoded.error}`);
-  }
-  const parsedBody = decoded.parsed;
-
-  // isStreaming：优先请求体 stream 字段；decode 失败（parsedBody 未知）时用 accept 头兜底，
-  // 避免非流式分支对 SSE 响应 await text() 阻塞到上游流结束。
-  const acceptHeader = req.headers['accept'];
-  const acceptSse = typeof acceptHeader === 'string' && acceptHeader.includes('text/event-stream');
-  const isStreaming = (parsedBody as Record<string, unknown> | undefined)?.stream === true
-    || (parsedBody === undefined && acceptSse);
-
-  const upstreamHeaders = filterHeaders(req.headers as Record<string, string | string[] | undefined>);
-  delete upstreamHeaders['host'];
-  delete upstreamHeaders['content-length'];
-  // Anthropic requires x-api-key header
-  if (apiType === 'anthropic' && req.headers['x-api-key']) {
-    upstreamHeaders['x-api-key'] = req.headers['x-api-key'] as string;
-  }
-
-  const fetchInit: RequestInit = {
-    method: req.method,
-    headers: upstreamHeaders,
-  };
-
-  // 原样字节透传：content-encoding 头由 filterHeaders 透传，content-length 让 undici 按 Buffer 长度重算。
-  if (req.method !== 'GET' && req.method !== 'HEAD' && rawBody.length > 0) {
-    fetchInit.body = rawBody;
-  }
-
-  // 回填上一轮工具调用的返回结果（result 在下一次请求的 requestBody 中）
-  await backfillToolResults(parsedBody, apiType);
-
-  try {
-    const upstreamRes = await fetch(targetUrl, fetchInit);
-    const responseStatus = upstreamRes.status;
-    const responseHeaders = filterHeaders(Object.fromEntries(upstreamRes.headers.entries()));
-
-    res.status(responseStatus);
-    for (const [key, value] of Object.entries(responseHeaders)) {
-      res.setHeader(key, value);
+function formatErrorChain(error: unknown): string {
+  const messages: string[] = [];
+  let current: unknown = error;
+  while (current) {
+    if (current instanceof Error) {
+      messages.push(`${current.name}: ${current.message}`);
+      current = current.cause;
+      continue;
     }
-
-    if (!isStreaming || !upstreamRes.body) {
-      // --- Non-streaming ---
-      const rawText = await upstreamRes.text();
-      console.error(`[proxy] response status=${responseStatus} contentType=${responseHeaders['content-type']} body=${rawText.slice(0, 2000)}`);
-      let json: unknown;
-      try {
-        json = JSON.parse(rawText);
-      } catch (parseErr) {
-        console.error(`[proxy] JSON parse failed:`, (parseErr as Error).message);
-        res.status(responseStatus).send(rawText);
-        await upsertRecord(baseRecord(id, req, responseStatus, false, apiType, startTime, parsedBody,
-          `JSON parse error: ${(parseErr as Error).message}, raw=${rawText}`));
-        return;
-      }
-      res.json(json);
-
-      const record = baseRecord(id, req, responseStatus, false, apiType, startTime, parsedBody);
-      record.responseContent = json as MergedContent;
-      record.responseHeaders = responseHeaders;
-      record.responseBody = JSON.stringify(json);
-      record.state = 'done';
-      record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(parsedBody, json as MergedContent, apiEndpoint) ?? undefined;
-      record.apiUsage = JSON.stringify((json as any)?.usage);
-      await upsertRecord(record);
-      await writeToolCalls(id, extractToolCalls(json as MergedContent, apiType));
-    } else {
-      // --- Streaming ---
-      const record = baseRecord(id, req, responseStatus, true, apiType, startTime, parsedBody);
-      record.responseHeaders = responseHeaders;
-      await upsertRecord(record);
-
-      // 客户端断开监听
-      req.on('close', async () => {
-        if (record.state === 'streaming') {
-          record.finished = 'client_close';
-          record.error = '客户端断开连接';
-          record.state = 'error';
-          await upsertRecord(record);
-        }
-      });
-
-      const reader = upstreamRes.body.getReader();
-      const rawChunks: Uint8Array[] = [];
-      let lastPush = 0;
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-          rawChunks.push(new Uint8Array(value));
-          const now = Date.now();
-          if (now - lastPush > 200) {
-            record.streamText = Buffer.concat(rawChunks).toString('utf-8');
-            await upsertRecord(record);
-            lastPush = now;
-          }
-        }
-      } finally {
-        res.end();
-        try { reader.releaseLock(); } catch { /* already released */ }
-      }
-
-      // Parse SSE, merge, record
-      const fullText = Buffer.concat(rawChunks).toString('utf-8');
-      const merged = mergeChunks(parseSSE(fullText, apiType), apiType);
-
-      record.responseContent = merged;
-      record.responseBody = fullText;
-      record.state = 'done';
-      record.finished = 'ok';
-      record.tokenBreakdown = await computeTokenBreakdown(parsedBody, merged, apiEndpoint) ?? undefined;
-      record.apiUsage = JSON.stringify((merged as any)?.usage);
-      delete record.streamText;
-      await upsertRecord(record);
-      await writeToolCalls(id, extractToolCalls(merged, apiType));
-    }
-  } catch (err) {
-    const e = err as Error & { cause?: Error; code?: string };
-    console.error(`[proxy] error: ${e.message} (code=${e.code}) targetUrl=${targetUrl} cause=${e.cause?.message ?? e.cause ?? '-'}`);
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'Upstream unreachable', detail: String(err) });
-    }
-    await upsertRecord(baseRecord(id, req, res.headersSent ? 200 : 502, isStreaming, apiType, startTime, parsedBody, String(err)));
+    messages.push(String(current));
+    break;
   }
+  return messages.join(' -> ');
 }
