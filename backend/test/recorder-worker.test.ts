@@ -10,6 +10,8 @@ async function runWorker(dev: boolean): Promise<void> {
   const mode = dev ? 'dev' : 'prod'
   const dbPath = path.join(os.tmpdir(), `sse-inspector-recorder-${mode}-${process.pid}-${Date.now()}.db`)
   const worker = new Worker(path.join(rootDir, 'bin', 'recorder-worker.js'), {
+    stdout: true,
+    stderr: true,
     workerData: {
       dev,
       rootDir,
@@ -21,6 +23,9 @@ async function runWorker(dev: boolean): Promise<void> {
       },
     },
   })
+  const workerStderr: string[] = []
+  worker.stdout?.resume()
+  worker.stderr?.on('data', chunk => workerStderr.push(String(chunk)))
 
   await waitForMessage(worker, message => message.type === 'ready')
   worker.postMessage({
@@ -75,23 +80,137 @@ async function runWorker(dev: boolean): Promise<void> {
       apiEndpoint: string
       requestBody: string
       responseBody: string
+      tokenBreakdown?: unknown
     }
     assert.equal(detail.state, 'done')
     assert.equal(detail.apiEndpoint, 'openai-responses')
     assert.deepEqual(JSON.parse(detail.requestBody), { model: 'unknown', input: 'hello' })
     assert.equal(detail.responseBody, responseBody.toString())
+    assert.equal(detail.tokenBreakdown, undefined)
   }
+
+  await assertClientCloseCapture(worker, mode, true, 3)
+  await assertClientCloseCapture(worker, mode, false, 4)
+  await assertClientCloseCapture(worker, mode, false, 5, true)
+  await assertRequestAbortedCapture(worker, mode, 6)
 
   worker.postMessage({ type: 'shutdown' })
   await new Promise<void>((resolve, reject) => {
     worker.once('exit', code => code === 0 ? resolve() : reject(new Error(`Recorder Worker 退出码异常: ${code}`)))
     worker.once('error', reject)
   })
+  assert.doesNotMatch(workerStderr.join(''), /请求体解码失败|非流式响应 JSON 解析失败/)
   await Promise.all([
     fs.rm(dbPath, { force: true }),
     fs.rm(`${dbPath}-wal`, { force: true }),
     fs.rm(`${dbPath}-shm`, { force: true }),
   ])
+}
+
+async function assertRequestAbortedCapture(worker: Worker, mode: string, correlationId: number): Promise<void> {
+  const captureId = `${mode}-request-aborted`
+  worker.postMessage({
+    type: 'capture.start',
+    metadata: {
+      id: captureId,
+      startedAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      method: 'POST',
+      path: '/v1/responses',
+      upstreamUrl: 'http://127.0.0.1:1/v1/responses',
+      requestHeaders: { 'content-type': 'application/json' },
+      apiType: 'openai',
+      apiEndpoint: 'openai-responses',
+    },
+  })
+  worker.postMessage({
+    type: 'capture.request_chunk',
+    id: captureId,
+    chunk: Uint8Array.from(Buffer.from('{"model":')),
+  })
+  worker.postMessage({ type: 'capture.closed', id: captureId, status: 499, reason: 'request_aborted' })
+  worker.postMessage({ type: 'rpc', correlationId, method: 'requests.detail', args: [captureId] })
+
+  const result = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === correlationId,
+  )
+  assert.equal(result.type, 'rpc.result')
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  const detail = result.value as {
+    state: string
+    finished: string
+    error: string
+    requestBody: string | null
+    responseBody?: string
+    responseContent: unknown
+  }
+  assert.equal(detail.state, 'error')
+  assert.equal(detail.finished, 'client_close')
+  assert.equal(detail.error, '客户端在请求上传完成前断开')
+  assert.equal(detail.requestBody, null)
+  assert.equal(detail.responseBody, undefined)
+  assert.equal(detail.responseContent, null)
+}
+
+async function assertClientCloseCapture(
+  worker: Worker,
+  mode: string,
+  terminal: boolean,
+  correlationId: number,
+  truncated = false,
+): Promise<void> {
+  const captureId = `${mode}-client-close-${terminal ? 'terminal' : truncated ? 'truncated' : 'partial'}`
+  const requestBody = Buffer.from(JSON.stringify({ model: 'gpt-test', input: 'hello', stream: true }))
+  const responseText = terminal
+    ? `data: ${JSON.stringify({ type: 'response.completed', response: { id: captureId, status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1 } } })}\n\n`
+    : `data: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'partial' })}\n\n`
+
+  worker.postMessage({
+    type: 'capture.start',
+    metadata: {
+      id: captureId,
+      startedAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      method: 'POST',
+      path: '/v1/responses',
+      upstreamUrl: 'http://127.0.0.1:1/v1/responses',
+      requestHeaders: { 'content-type': 'application/json' },
+      apiType: 'openai',
+      apiEndpoint: 'openai-responses',
+    },
+  })
+  worker.postMessage({ type: 'capture.request_chunk', id: captureId, chunk: Uint8Array.from(requestBody) })
+  worker.postMessage({ type: 'capture.request_end', id: captureId })
+  worker.postMessage({
+    type: 'capture.response_start',
+    id: captureId,
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+    streaming: true,
+  })
+  worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(Buffer.from(responseText)) })
+  if (truncated) worker.postMessage({ type: 'capture.truncated', id: captureId, pendingBytes: responseText.length })
+  worker.postMessage({ type: 'capture.closed', id: captureId, status: 200, reason: 'downstream_closed' })
+  worker.postMessage({ type: 'rpc', correlationId, method: 'requests.detail', args: [captureId] })
+
+  const result = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === correlationId,
+  )
+  assert.equal(result.type, 'rpc.result')
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  const detail = result.value as { state: string; finished: string; error?: string; responseBody: string }
+  assert.equal(detail.state, terminal ? 'done' : 'error')
+  assert.equal(detail.finished, truncated ? 'capture_truncated' : 'client_close')
+  assert.equal(detail.error, terminal
+    ? undefined
+    : truncated
+      ? '检查数据因 Recorder 积压被截断'
+      : '客户端在响应完成前断开')
+  assert.equal(detail.responseBody, responseText)
 }
 
 function waitForMessage(

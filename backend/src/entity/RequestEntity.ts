@@ -75,10 +75,6 @@ export class RequestEntity {
   @Column('text', { nullable: true })
   response_body?: string | null;
 
-  /** JSON {messages,tools,systemPrompt,totalInput}，tokenizer 计算结果 */
-  @Column('text', { nullable: true })
-  computed_tokens?: string | null;
-
   /** JSON 接口原始 usage 对象，字段因供应商而异 */
   @Column('text', { nullable: true })
   api_usage?: string | null;

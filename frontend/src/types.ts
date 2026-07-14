@@ -45,21 +45,10 @@ export interface RecordedRequest {
   finished?: string
   streamText?: string
   responseBody?: string
-  tokenBreakdown?: TokenBreakdown
   /** API 报告输出 token 数（completion_tokens / output_tokens） */
   outputTokens?: number
   sessionId?: string
   sessionIdKey?: string
-}
-
-export interface TokenBreakdown {
-  messages: number
-  tools: number
-  systemPrompt: number
-  cacheRead: number
-  totalInput: number
-  apiReportedInput: number
-  tokenizerSource?: string
 }
 
 export interface ToolCallEntry {
@@ -90,12 +79,6 @@ export interface GlobalNeighbors {
   nextId: string | null
   index: number
   total: number
-}
-
-/** 后端 tokenize 接口返回：token 数与所用 tokenizer 来源 */
-export interface TokenizeResult {
-  count: number
-  source: string | null
 }
 
 export interface SSEEvent {

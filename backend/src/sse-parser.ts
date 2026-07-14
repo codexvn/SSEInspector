@@ -1,6 +1,11 @@
 import { createParser } from 'eventsource-parser';
 import { SSEChunk } from './types';
 
+export interface SSEParseResult {
+  chunks: SSEChunk[];
+  done: boolean;
+}
+
 function formatErrorChain(error: unknown): string {
   const messages: string[] = [];
   let current: unknown = error;
@@ -17,11 +22,20 @@ function formatErrorChain(error: unknown): string {
 }
 
 export function parseSSEText(rawText: string): SSEChunk[] {
+  return parseSSETextWithMetadata(rawText).chunks;
+}
+
+export function parseSSETextWithMetadata(rawText: string): SSEParseResult {
   const chunks: SSEChunk[] = [];
+  let done = false;
   const parser = createParser({
     onEvent(event) {
       const data = event.data.trim();
-      if (!data || data === '[DONE]') return;
+      if (!data) return;
+      if (data === '[DONE]') {
+        done = true;
+        return;
+      }
 
       try {
         chunks.push({ event: event.event, data: JSON.parse(data) });
@@ -37,5 +51,5 @@ export function parseSSEText(rawText: string): SSEChunk[] {
   parser.feed(rawText);
   parser.reset({ consume: true });
 
-  return chunks;
+  return { chunks, done };
 }

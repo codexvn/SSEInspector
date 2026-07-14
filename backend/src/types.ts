@@ -109,8 +109,6 @@ export interface AnthropicMergedResponse {
   usage?: AnthropicUsage;
 }
 
-// ---- Token breakdown ----
-
 export interface OpenAIResponsesUsage {
   input_tokens?: number;
   cache_creation_input_tokens?: number;
@@ -125,16 +123,6 @@ export interface OpenAIResponsesUsage {
   };
   service_tier?: string;
   [key: string]: unknown;
-}
-
-export interface TokenBreakdown {
-  messages: number;           // 消息内容（不含 system）
-  tools: number;              // 工具定义
-  systemPrompt: number;       // 系统提示
-  cacheRead: number;          // 缓存命中（OpenAI: input_tokens_details.cached_tokens；Anthropic: cache_read_input_tokens）
-  totalInput: number;         // messages + tools + systemPrompt（我们算的）
-  apiReportedInput: number;   // API 报告输入（OpenAI: prompt_tokens/input_tokens；Anthropic: input_tokens + cache_read）
-  tokenizerSource?: string;   // 使用的 tokenizer（如 "gpt-tokenizer"、"@anthropic-ai/tokenizer"、"hf-download"）
 }
 
 // ---- Shared ----
@@ -171,8 +159,6 @@ export interface RecordedRequest {
   finished?: string;
   streamText?: string;
   responseBody?: string;
-  /** Tokenizer 计算的输入分解（JSON TEXT 列 computed_tokens） */
-  tokenBreakdown?: TokenBreakdown;
   /** 接口原始 usage 对象（JSON TEXT 列 api_usage），字段因供应商而异 */
   apiUsage?: string;
   /** API 报告输出 token 数（从 apiUsage 解析：completion_tokens / output_tokens） */

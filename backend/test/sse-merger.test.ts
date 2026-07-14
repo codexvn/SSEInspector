@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mergeChunks, parseSSE } from '../src/sse-merger';
+import { isTerminalSSE, mergeChunks, parseSSE, parseSSEWithMetadata } from '../src/sse-merger';
 import { AnthropicMergedResponse, MergedResponse, OpenAIResponsesMergedResponse } from '../src/types';
 
 function dataLine(data: unknown): string {
@@ -407,6 +407,32 @@ function testSSEParserEventAndDone(): void {
   assert.deepEqual(chunks[0].data, { type: 'message_delta', usage: { output_tokens: 1 } });
 }
 
+function testSSETerminalDetection(): void {
+  const chatDone = parseSSEWithMetadata([
+    dataLine({ choices: [{ index: 0, delta: { content: 'ok' } }] }),
+    'data: [DONE]\n\n',
+  ].join(''));
+  const chatFinishReason = parseSSEWithMetadata(
+    dataLine({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+  );
+  const responsesDone = parseSSEWithMetadata(
+    dataLine({ type: 'response.completed', response: { status: 'completed' } }),
+  );
+  const anthropicDone = parseSSEWithMetadata(
+    eventBlock('message_stop', { type: 'message_stop' }),
+  );
+  const partial = parseSSEWithMetadata(
+    dataLine({ type: 'response.output_text.delta', delta: 'partial' }),
+  );
+
+  assert.equal(chatDone.done, true);
+  assert.equal(isTerminalSSE(chatDone, 'openai-chat'), true);
+  assert.equal(isTerminalSSE(chatFinishReason, 'openai-chat'), true);
+  assert.equal(isTerminalSSE(responsesDone, 'openai-responses'), true);
+  assert.equal(isTerminalSSE(anthropicDone, 'anthropic-messages'), true);
+  assert.equal(isTerminalSSE(partial, 'openai-responses'), false);
+}
+
 function testOpenAIResponsesPreservesEnvelopeAndAuxiliaryBoundary(): void {
   const raw = [
     dataLine({ type: 'response.created', response: {
@@ -507,6 +533,7 @@ testEmptyAndPingStreams();
 testAnthropicMessageStartOnly();
 testOpenAIResponsesDonePriorityOverLaterDelta();
 testSSEParserEventAndDone();
+testSSETerminalDetection();
 testOpenAIResponsesPreservesEnvelopeAndAuxiliaryBoundary();
 testOpenAIResponsesOutputNullKeepsAccumulatedItems();
 testOpenAIResponsesMultipleContentAndReasoningIndexes();

@@ -14,10 +14,11 @@ SSEInspector 是 OpenAI / Anthropic API 透明代理检查器，用于记录、�
 ## 技术栈
 
 - 后端：TypeScript + Express
+- 代理传输：`httpxy`
 - 数据：TypeORM / SQLite
 - SSE 解析：`eventsource-parser`
 - 前端：Vite / Vue / Monaco Editor
-- Token 统计：`gpt-tokenizer`、`@anthropic-ai/tokenizer` 等
+- Token 统计：仅使用上游 API usage，不做本地 tokenizer 重算
 
 ## 常用命令
 
@@ -99,9 +100,11 @@ git push origin v1.0.0
 backend/src/proxy.ts
 ```
 
-代理数据面入口，只负责上游字节流转发和 Recorder 旁路复制。修改时必须避免破坏透明代理语义。
+代理数据面入口。`httpxy` 是 request/response pipe、HTTP 背压、headers、keep-alive 和双向 socket 销毁的唯一所有者；禁止重新引入手写 `http.request`、`res.write` 循环或 `selfHandleResponse`。
 
-请求体不再完整缓存后才发送：主线程使用原生 HTTP(S) 请求按 chunk 写入上游，并在写入后将字节副本发给 Worker。响应 chunk 先写客户端，再发送捕获副本；主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应同样保持原始状态码、headers 和 body 字节，不经过 `res.json()` 重编码。代理路由不走 body-parser，响应也不经过内部 API 的 compression 中间件。
+被记录请求通过原生 `Transform` tee 传给 `httpxy.buffer`，确保首个已缓冲请求 chunk 不会被观察监听器提前消费。请求/响应 chunk 与生命周期控制消息进入同一个有序延迟队列，实际 Buffer 复制和 Worker `postMessage` 在后续事件循环执行，每轮最多复制 1 MiB；队列与 Worker 未 ACK 字节共用 64 MiB 上限。主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应保持原始状态码、headers 和 body 字节，不经过 JSON 重编码。
+
+客户端先关闭时只记录 `downstream_closed` / `request_aborted`，由 `httpxy` 负责终止上游连接；上游异常才打印转发失败。Recorder 根据 endpoint terminal SSE 判断 `client_close` 是完整结果还是部分错误；`request_aborted` 只持久化中断状态和已捕获原始响应字节，不解析未完成请求或空响应。
 
 ```text
 backend/src/recorder/client.ts
@@ -110,7 +113,7 @@ backend/src/recorder/worker.ts
 bin/recorder-worker.js
 ```
 
-Recorder 观察面：`client.ts` 管理 Worker 生命周期、RPC、UI 事件和 64 MiB 捕获积压上限；`protocol.ts` 定义强类型消息；`worker.ts` 是 TypeORM、SQLite、SSE 合并、token、preview 和工具配对的唯一运行时所有者。Worker 异常退出时代理继续透传，内部数据库 API 返回 503，并按 1 秒、2 秒、5 秒退避自动恢复。dev 使用 tsx CJS bootstrap，prod 加载 `dist/recorder/worker.js`；两者必须使用同一 CJS 模块缓存，禁止在设置 config 后用另一套 ESM loader 加载 DataSource。
+Recorder 观察面：`client.ts` 管理 Worker 生命周期、RPC、UI 事件、延迟 capture 队列和 64 MiB 积压上限；`protocol.ts` 定义强类型消息；`worker.ts` 是 TypeORM、SQLite、SSE 合并、usage、preview 和工具配对的唯一运行时所有者。Worker 异常退出时代理继续透传，内部数据库 API 返回 503，并按 1 秒、2 秒、5 秒退避自动恢复。dev 使用 tsx CJS bootstrap，prod 加载 `dist/recorder/worker.js`。
 
 进程关闭时先停止 HTTP Server 接收新连接，并立即停止向 Recorder 投递新捕获和 RPC。Worker 获得最多 4 秒优雅收尾时间，随后最多 1 秒强制终止；从收到 SIGINT/SIGTERM 起总退出时间严格不超过 5 秒。
 
@@ -130,7 +133,7 @@ backend/src/config.ts
 tsconfig.json
 ```
 
-后端 TS 编译配置。`lib` 显式为 `["es2022"]`（不含 DOM）：本项目是 Node 后端，fetch / RequestInit / BodyInit 类型应来自 `@types/node`（undici），其 BodyInit 含 Buffer；若带上 DOM lib，`@types/node` 22 的泛型 `Buffer<ArrayBufferLike>` 会与 DOM 的 BodyInit 不匹配，导致透传 Buffer 请求体时 tsc 报错。
+后端 TS 编译配置。`module` / `moduleResolution` 使用 `node16`，使 CommonJS 项目能够保留原生动态 `import()` 加载 ESM-only 的 `httpxy`；其余后端输出仍是 CommonJS。`lib` 显式为 `["es2022"]`（不含 DOM）。
 
 ```text
 bin/sse-inspector.js
@@ -182,17 +185,20 @@ backend/src/tool-calls.ts
 
 SQLite 数据仅作为一次性检查记录，不维护 schema migration。TypeORM 通过 entity 与 `synchronize: true` 创建或同步当前 schema；实体结构发生不兼容变化时直接删除旧 DB 重建，不承诺历史数据迁移。启动阶段不扫描历史 requests 数据；endpoint/provider 一致性只在新记录写入和读取时通过 Endpoint Registry 校验。
 
-```text
-backend/src/token-counter.ts
-```
-
-输入 token 拆分、缓存命中统计、API usage 解析。
+`backend/src/db/slow-query-logger.ts` 负责慢 SQL 日志。执行时间超过 200ms 时只输出耗时和 SQL 文本，不输出绑定参数或查询结果，避免大型请求/响应字段的日志序列化阻塞 Recorder Worker。
 
 ```text
 backend/src/api-usage.ts
 ```
 
-API usage 写入与输出 token 提取。只有非 null 对象允许序列化入库；`usage: null` 表示尚无 usage，必须写为 SQL NULL，禁止生成字符串 `"null"`。历史数据库不做兼容，schema 或数据不符合当前约束时直接删除重建。
+API usage 写入及 endpoint 专属 input/output/cache token 提取。只有非 null 对象允许序列化入库；`usage: null` 表示尚无 usage，必须写为 SQL NULL。禁止为未知模型回退本地 tokenizer；完成后的 tok/s 只使用上游 `output_tokens / duration`。
+
+```text
+frontend/src/context-composition.ts
+frontend/src/workers/request-analysis.worker.ts
+```
+
+详情页上下文组成分析。Worker 解析原始 request body，提取最新用户消息和请求摘要，并按 Instructions、User、Assistant、工具定义、工具交互、附件、其他计算 UTF-8 字节占比。该比例不代表模型 token；正常进入详情页时禁止在主线程同步解析大型请求体。
 
 ```text
 backend/test/sse-merger.test.ts

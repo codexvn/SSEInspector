@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import http, { IncomingHttpHeaders } from 'http';
-import https from 'https';
+import type { IncomingHttpHeaders, IncomingMessage } from 'http';
+import type { ProxyServer } from 'httpxy' with { 'resolution-mode': 'import' };
+import { Transform } from 'stream';
 import { config } from './config';
 import { EndpointDefinition } from './endpoints';
 import {
@@ -9,10 +10,25 @@ import {
   beginCaptureResponse,
   captureRequestChunk,
   captureResponseChunk,
+  closeCapture,
   completeCapture,
   endCaptureRequest,
   failCapture,
 } from './recorder/client';
+
+interface ProxyContext {
+  id: string | null;
+  label: 'proxy' | 'passthrough';
+  targetLog: string;
+  responseStatus: number;
+  responseStarted: boolean;
+  downstreamClosed: boolean;
+  finalized: boolean;
+  requestTap?: Transform;
+}
+
+let proxyServerPromise: Promise<ProxyServer> | null = null;
+const proxyContexts = new WeakMap<IncomingMessage, ProxyContext>();
 
 /** 读取 CLI 写入的唯一上游 URL 配置。 */
 function getUpstreamUrl(): string {
@@ -77,12 +93,17 @@ export async function handleProxy(req: Request, res: Response, endpointDefinitio
   await forward(req, res, endpointDefinition);
 }
 
+export async function initializeProxy(): Promise<void> {
+  await getProxyServer();
+}
+
 async function forward(req: Request, res: Response, endpointDefinition?: EndpointDefinition): Promise<void> {
   const upstreamUrl = getUpstreamUrl();
   if (!upstreamUrl) {
     res.status(500).json({ error: 'UPSTREAM_URL not configured' });
     return;
   }
+  const proxy = await getProxyServer();
 
   const targetUrl = upstreamUrl.replace(/\/$/, '') + req.originalUrl;
   const target = new URL(targetUrl);
@@ -110,106 +131,143 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
     });
   }
 
-  const upstreamHeaders = filterHeaders(req.headers);
-  delete upstreamHeaders.host;
-  const transport = target.protocol === 'https:' ? https : http;
+  const context: ProxyContext = {
+    id,
+    label,
+    targetLog,
+    responseStatus: 502,
+    responseStarted: false,
+    downstreamClosed: false,
+    finalized: false,
+  };
+  proxyContexts.set(req, context);
 
-  await new Promise<void>((resolve) => {
-    let settled = false;
-    let responseStatus = 502;
-    let responseCompleted = false;
+  const requestTap = id ? createRequestCaptureTap(id, context) : undefined;
+  context.requestTap = requestTap;
+  if (requestTap) req.pipe(requestTap);
+  req.once('aborted', () => {
+    finalizeClosed(context, 499, 'request_aborted');
+  });
+  res.once('close', () => {
+    if (res.writableFinished || context.finalized) return;
+    context.downstreamClosed = true;
+    finalizeClosed(context, context.responseStarted ? context.responseStatus : 499, 'downstream_closed');
+  });
 
-    const finishError = (error: unknown, status = responseStatus) => {
-      if (settled) return;
-      settled = true;
-      const detail = formatErrorChain(error);
-      console.error(`[${label}] 转发失败: ${detail} target=${targetLog}`);
-      if (id) failCapture(id, status, detail);
-      if (!res.headersSent) res.status(502).json({ error: 'Upstream unreachable' });
-      else if (!res.writableEnded) res.destroy(error instanceof Error ? error : new Error(detail));
-      resolve();
-    };
+  await proxy.web(req, res, {
+    target: upstreamUrl,
+    changeOrigin: true,
+    xfwd: false,
+    followRedirects: false,
+    selfHandleResponse: false,
+    proxyTimeout: 0,
+    buffer: requestTap,
+  });
+}
 
-    const upstreamReq = transport.request(target, {
-      method: req.method,
-      headers: upstreamHeaders,
-    }, upstreamRes => {
-      responseStatus = upstreamRes.statusCode ?? 502;
-      const responseHeaders = filterHeaders(upstreamRes.headers as IncomingHttpHeaders);
-      res.statusCode = responseStatus;
-      for (const [name, value] of Object.entries(responseHeaders)) res.setHeader(name, value);
-      res.flushHeaders();
-
-      const contentType = firstHeader(upstreamRes.headers['content-type']) ?? '';
-      const streaming = contentType.toLowerCase().includes('text/event-stream');
-      if (id) beginCaptureResponse(id, responseStatus, flattenHeaders(responseHeaders), streaming);
-
-      void forwardResponseBody(upstreamRes, res, chunk => {
-        if (id) captureResponseChunk(id, chunk);
-      }).then(() => {
-        if (settled) return;
-        responseCompleted = true;
-        settled = true;
-        res.end();
-        if (id) completeCapture(id);
-        resolve();
-      }).catch(finishError);
-    });
-
-    upstreamReq.on('error', finishError);
-    req.on('aborted', () => finishError(new Error('客户端在请求上传完成前断开'), 499));
-    req.on('error', finishError);
-    res.on('close', () => {
-      if (responseCompleted || settled || res.writableFinished) return;
-      upstreamReq.destroy();
-      finishError(new Error('客户端在响应完成前断开'), responseStatus === 502 ? 499 : responseStatus);
-    });
-
-    req.on('data', (value: Buffer | string) => {
-      if (settled) return;
+function createRequestCaptureTap(id: string, context: ProxyContext): Transform {
+  const tap = new Transform({
+    transform(value: Buffer | string, _encoding, callback) {
       const chunk = typeof value === 'string' ? Buffer.from(value) : value;
-      const writable = upstreamReq.write(chunk);
-      if (id) captureRequestChunk(id, chunk);
-      if (!writable) {
-        req.pause();
-        upstreamReq.once('drain', () => req.resume());
+      if (!context.finalized) captureRequestChunk(id, chunk);
+      callback(null, chunk);
+    },
+  });
+  tap.once('finish', () => {
+    if (!context.finalized) endCaptureRequest(id);
+  });
+  return tap;
+}
+
+async function getProxyServer(): Promise<ProxyServer> {
+  proxyServerPromise ??= import('httpxy').then(({ createProxyServer }) => {
+    const proxy = createProxyServer({
+      changeOrigin: true,
+      xfwd: false,
+      followRedirects: false,
+      selfHandleResponse: false,
+      proxyTimeout: 0,
+    });
+    registerProxyEvents(proxy);
+    return proxy;
+  });
+  return proxyServerPromise;
+}
+
+function registerProxyEvents(proxy: ProxyServer): void {
+  proxy.on('proxyRes', (proxyRes, req) => {
+    const context = proxyContexts.get(req);
+    if (!context || context.finalized) return;
+    context.responseStarted = true;
+    context.responseStatus = proxyRes.statusCode ?? 502;
+    const responseHeaders = filterHeaders(proxyRes.headers as IncomingHttpHeaders);
+    const contentType = firstHeader(proxyRes.headers['content-type']) ?? '';
+    const streaming = contentType.toLowerCase().includes('text/event-stream');
+    if (context.id) {
+      beginCaptureResponse(context.id, context.responseStatus, flattenHeaders(responseHeaders), streaming);
+      proxyRes.on('data', (value: Buffer | string) => {
+        if (!context.id || context.finalized) return;
+        captureResponseChunk(context.id, typeof value === 'string' ? Buffer.from(value) : value);
+      });
+    }
+    proxyRes.once('aborted', () => {
+      if (!context.downstreamClosed) finalizeFailure(context, new Error('上游响应异常中断'), 'upstream_aborted');
+    });
+    proxyRes.once('close', () => {
+      if (!proxyRes.complete && !context.downstreamClosed) {
+        finalizeFailure(context, new Error('上游响应在完成前关闭'), 'upstream_aborted');
       }
     });
-    req.on('end', () => {
-      if (settled) return;
-      if (id) endCaptureRequest(id);
-      upstreamReq.end();
-    });
+  });
+  proxy.on('end', (req) => {
+    const context = proxyContexts.get(req);
+    if (!context || context.finalized) return;
+    context.finalized = true;
+    if (context.id) completeCapture(context.id);
+  });
+  proxy.on('econnreset', (_error, req) => {
+    const context = proxyContexts.get(req);
+    if (!context || context.finalized) return;
+    context.downstreamClosed = true;
+    finalizeClosed(context, context.responseStarted ? context.responseStatus : 499, 'downstream_closed');
+  });
+  proxy.on('error', (error, req, res) => {
+    const context = req ? proxyContexts.get(req) : undefined;
+    if (context?.downstreamClosed) return;
+    if (context) finalizeFailure(context, error, 'upstream_error');
+    if (res && 'headersSent' in res && !res.headersSent) {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Upstream unreachable' }));
+    } else if (res && 'destroyed' in res && !res.destroyed) {
+      res.destroy(error);
+    }
   });
 }
 
-async function forwardResponseBody(
-  upstreamRes: http.IncomingMessage,
-  res: Response,
-  capture: (chunk: Buffer) => void,
-): Promise<void> {
-  for await (const value of upstreamRes) {
-    const chunk = typeof value === 'string' ? Buffer.from(value) : value;
-    const writable = res.write(chunk);
-    capture(chunk);
-    if (!writable) await waitForDrain(res);
-  }
+function finalizeClosed(
+  context: ProxyContext,
+  status: number,
+  reason: 'downstream_closed' | 'request_aborted',
+): void {
+  if (context.finalized) return;
+  context.downstreamClosed = true;
+  context.finalized = true;
+  context.requestTap?.destroy();
+  if (context.id) closeCapture(context.id, status, reason);
+  console.log(`[${context.label}] 客户端连接关闭: reason=${reason} target=${context.targetLog}`);
 }
 
-function waitForDrain(res: Response): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      res.off('drain', onDrain);
-      res.off('close', onClose);
-      res.off('error', onError);
-    };
-    const onDrain = () => { cleanup(); resolve(); };
-    const onClose = () => { cleanup(); reject(new Error('客户端在响应背压期间断开')); };
-    const onError = (error: Error) => { cleanup(); reject(error); };
-    res.once('drain', onDrain);
-    res.once('close', onClose);
-    res.once('error', onError);
-  });
+function finalizeFailure(
+  context: ProxyContext,
+  error: unknown,
+  reason: 'upstream_aborted' | 'upstream_error',
+): void {
+  if (context.finalized) return;
+  context.finalized = true;
+  context.requestTap?.destroy();
+  const detail = `${reason}: ${formatErrorChain(error)}`;
+  console.error(`[${context.label}] 转发失败: ${detail} target=${context.targetLog}`);
+  if (context.id) failCapture(context.id, context.responseStatus, detail);
 }
 
 function flattenHeaders(headers: ForwardHeaders): Record<string, string> {

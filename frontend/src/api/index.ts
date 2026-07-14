@@ -1,4 +1,4 @@
-import type { ApiEndpoint, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, TokenizeResult, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
+import type { ApiEndpoint, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
 
 const BASE = '/api'
 
@@ -53,17 +53,6 @@ export async function fetchNeighbors(id: string): Promise<GlobalNeighbors> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
-/** 调用后端 tokenizer 计算 token 数（复用后端模型路由） */
-export async function fetchTokenize(text: string, model: string): Promise<TokenizeResult> {
-  const res = await fetch(`${BASE}/tokenize`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, model }),
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
-}
-
 export async function fetchToolCalls(requestId: string): Promise<{ toolCalls: ToolCallEntry[] }> {
   const res = await fetch(`${BASE}/tool-calls?requestId=${requestId}`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)

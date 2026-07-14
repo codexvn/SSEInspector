@@ -4,9 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
 import type { RecordedRequest, GlobalNeighbors } from '../types'
 import { fetchPrev, fetchNext, fetchNeighbors } from '../api'
-import { findLatestUserMessage } from '../protocol-content'
+import type { RequestContextAnalysis } from '../context-composition'
 import { buildResponseCards } from '../response-flow'
-import TokenBreakdown from '../components/TokenBreakdown.vue'
 import HeadersViewer from '../components/HeadersViewer.vue'
 import JsonViewer from '../components/JsonViewer.vue'
 import ToolCallCard from '../components/ToolCallCard.vue'
@@ -19,6 +18,7 @@ import AssistantTextCard from '../components/AssistantTextCard.vue'
 import AssistantThinkingCard from '../components/AssistantThinkingCard.vue'
 import AssistantRefusalCard from '../components/AssistantRefusalCard.vue'
 import RawJsonCard from '../components/RawJsonCard.vue'
+import ContextComposition from '../components/ContextComposition.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,17 +30,11 @@ const loading = ref(false)
 const error = ref('')
 const parsedBody = shallowRef<Record<string, unknown>>()
 const parsedBodyCache = new Map<string, Record<string, unknown> | undefined>()
+const contextAnalysis = shallowRef<RequestContextAnalysis>()
+let requestAnalysisWorker: Worker | null = null
 
 const id = computed(() => route.params.id as string)
 const isStreaming = computed(() => record.value?.state === 'streaming')
-/** 模型名：优先取响应体 model，回退请求体 model，供 tokenizer 路由 */
-const model = computed(() => {
-  const response = isRecord(record.value?.responseContent) ? record.value.responseContent : undefined
-  const respModel = response?.model
-  if (typeof respModel === 'string' && respModel) return respModel
-  const bodyModel = parsedBody.value?.model
-  return typeof bodyModel === 'string' && bodyModel ? bodyModel : 'unknown'
-})
 const isOpenAI = computed(() => record.value?.apiType === 'openai')
 function parseBody(body: unknown, label: string): Record<string, unknown> | undefined {
   if (!body) return undefined
@@ -62,9 +56,7 @@ function parseRecordBody(target: RecordedRequest, label: string): Record<string,
   return parsed
 }
 
-const latestUserMessage = computed(() => record.value
-  ? findLatestUserMessage(parsedBody.value, record.value.apiEndpoint)
-  : '')
+const latestUserMessage = computed(() => contextAnalysis.value?.latestUserMessage ?? '')
 const responseCards = computed(() => record.value
   ? buildResponseCards(record.value.responseContent, record.value.apiEndpoint)
   : [])
@@ -103,18 +95,7 @@ const hasNext = computed(() => hasSession.value && (!nextResolved.value || !!nex
 const diffViewerRef = ref<InstanceType<typeof DiffViewer> | null>(null)
 
 /** 请求体标题摘要 */
-const requestBodySummary = computed(() => {
-  const body = parsedBody.value
-  if (!body) return ''
-  const parts: string[] = []
-  if (body.model) parts.push(`model: ${String(body.model)}`)
-  if (typeof body.stream === 'boolean') parts.push(`stream: ${body.stream ? 'true' : 'false'}`)
-  if (body.max_tokens !== undefined) parts.push(`max_tokens: ${String(body.max_tokens)}`)
-  if (body.max_output_tokens !== undefined) parts.push(`max_output_tokens: ${String(body.max_output_tokens)}`)
-  const tools = Array.isArray(body.tools) ? body.tools.length : 0
-  if (tools) parts.push(`tools: ${tools}`)
-  return parts.join('  ')
-})
+const requestBodySummary = computed(() => contextAnalysis.value?.summary ?? '')
 
 /** diff 对比的目标记录 */
 const diffTarget = computed(() =>
@@ -245,9 +226,11 @@ async function openDiff(dir: 'prev' | 'next') {
 }
 
 async function openMessageFlow() {
-  if (!parsedBody.value || flowLoading.value) return
+  if (flowLoading.value || !record.value) return
   flowLoading.value = true
   try {
+    parsedBody.value ??= parseRecordBody(record.value, '当前请求体')
+    if (!parsedBody.value) return
     if (!previousBodyResolved.value) {
       const previous = await ensureSessionNeighbor('prev')
       if (!hasSession.value || prevResolved.value) {
@@ -292,6 +275,7 @@ async function load(detailId: string) {
   respBodyTab.value = 'raw'
   globalNeighbors.value = null
   parsedBody.value = undefined
+  contextAnalysis.value = undefined
   parsedBodyCache.clear()
   resetSessionNeighbors()
   try {
@@ -299,7 +283,7 @@ async function load(detailId: string) {
     if (generation !== detailGeneration) return
     if (!r) { error.value = '请求未找到'; return }
     record.value = r
-    parsedBody.value = parseRecordBody(r, '当前请求体')
+    analyzeRequestBody(r, generation)
     loadGlobalNeighbors(detailId, generation)
   } catch (e) {
     if (generation !== detailGeneration) return
@@ -327,6 +311,8 @@ onUnmounted(() => {
   store.onStreamDone = null
   store.onListUpdate = null
   document.removeEventListener('keydown', onKeydown)
+  requestAnalysisWorker?.terminate()
+  requestAnalysisWorker = null
 })
 watch(() => route.params.id as string, load)
 
@@ -397,6 +383,40 @@ async function doExport() {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
+
+function analyzeRequestBody(target: RecordedRequest, generation: number) {
+  if (!target.requestBody || (typeof target.requestBody !== 'string' && !isRecord(target.requestBody))) return
+  requestAnalysisWorker ??= createRequestAnalysisWorker()
+  requestAnalysisWorker.postMessage({
+    generation,
+    recordId: target.id,
+    body: target.requestBody,
+    endpoint: target.apiEndpoint,
+  })
+}
+
+function createRequestAnalysisWorker(): Worker {
+  const worker = new Worker(new URL('../workers/request-analysis.worker.ts', import.meta.url), { type: 'module' })
+  worker.onmessage = (event: MessageEvent<{
+    generation: number
+    recordId: string
+    ok: boolean
+    analysis?: RequestContextAnalysis
+    error?: string
+  }>) => {
+    const result = event.data
+    if (result.generation !== detailGeneration || result.recordId !== record.value?.id) return
+    if (result.ok && result.analysis) {
+      contextAnalysis.value = result.analysis
+      return
+    }
+    console.warn(`[DetailView] 请求上下文分析失败: ${result.error ?? '未知错误'}`)
+  }
+  worker.onerror = event => {
+    console.warn(`[DetailView] 请求分析 Worker 失败: ${event.message}`)
+  }
+  return worker
+}
 </script>
 
 <template>
@@ -449,12 +469,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
         <span>流式: {{ record.streaming ? '是' : '否' }}</span>
         <span>耗时: {{ isStreaming ? '…' : record.durationMs + 'ms' }}</span>
         <span>状态: <span :class="`badge ${record.responseStatus < 300 ? 'badge-ok' : record.responseStatus < 500 ? 'badge-warn' : 'badge-err'}`">{{ record.responseStatus }}</span></span>
-        <span>速度: <TokenSpeed :text="streamText" :start-time="record ? new Date(record.timestamp).getTime() : undefined" :endpoint="record.apiEndpoint" :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" :model="model" /></span>
+        <span>速度: <TokenSpeed :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" /></span>
         <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
 
-      <TokenBreakdown :record="record" />
 
       <!-- Diff 弹窗 -->
       <Teleport to="body">
@@ -531,6 +550,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
       </div>
 
       <HeadersViewer title="请求头" :headers="record.requestHeaders" />
+
+      <ContextComposition v-if="contextAnalysis" :analysis="contextAnalysis" />
 
       <!-- 请求体 -->
       <details class="headers-box" v-if="record.requestBody" :open="requestBodyOpen" @toggle="onRequestBodyToggle">

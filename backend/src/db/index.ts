@@ -3,6 +3,7 @@ import { DataSource } from 'typeorm';
 import { RequestEntity } from '../entity/RequestEntity';
 import { ToolCall } from '../entity/ToolCall';
 import { config } from '../config';
+import { SlowQueryLogger } from './slow-query-logger';
 
 /**
  * 解析数据库路径。
@@ -18,6 +19,8 @@ export const AppDataSource = new DataSource({
   type: 'better-sqlite3',
   database: resolveDbPath(),
   synchronize: true,
+  logger: new SlowQueryLogger(),
+  maxQueryExecutionTime: 200,
   entities: [RequestEntity, ToolCall],
 });
 

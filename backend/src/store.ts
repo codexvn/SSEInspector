@@ -1,12 +1,12 @@
 import { EventEmitter } from 'events';
-import { RecordedRequest, RecordSummary, MergedContent, TokenBreakdown, RecordState, RequestListFilter } from './types';
+import { RecordedRequest, RecordSummary, MergedContent, RecordState, RequestListFilter, ApiEndpoint } from './types';
 import { AppDataSource } from './db';
 import { RequestEntity } from './entity/RequestEntity';
 import { ToolCall } from './entity/ToolCall';
 import { Not, IsNull, Repository, FindManyOptions, FindOptionsWhere } from 'typeorm';
 import { assertEndpointProvider } from './endpoints';
 import { findLatestMessage } from './protocol-content';
-import { parseOutputTokens } from './api-usage';
+import { parseUsageSummary } from './api-usage';
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(500);
@@ -44,7 +44,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     apiEndpoint: r.apiEndpoint,
     path: r.path,
     streamText: r.streamText,
-    ...buildTokenSummary(r.tokenBreakdown, r.apiUsage),
+    ...buildTokenSummary(r.apiEndpoint, r.apiUsage),
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
   };
@@ -66,23 +66,18 @@ export function publishStreamingRecord(r: RecordedRequest): void {
   emitter.emit('update', toSummary(r));
 }
 
-/** 从原始 usage JSON 提取输出 token 数（兼容 OpenAI completion_tokens 与 Anthropic/DeepSeek/Responses output_tokens） */
-function extractOutputTokens(apiUsage?: string | null): number | undefined {
-  if (!apiUsage) return undefined;
+function buildTokenSummary(endpoint: ApiEndpoint, apiUsage?: string | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput' | 'outputTokens'> {
   try {
-    return parseOutputTokens(apiUsage);
+    const usage = parseUsageSummary(apiUsage, endpoint);
+    return {
+      cacheRead: usage.cacheRead,
+      apiReportedInput: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+    };
   } catch (err) {
-    console.warn(`[store] 解析 apiUsage 提取输出 token 失败: ${formatErrorChain(err)}`);
-    return undefined;
+    console.warn(`[store] 解析 apiUsage 失败: ${formatErrorChain(err)}`);
+    return {};
   }
-}
-
-function buildTokenSummary(tb?: TokenBreakdown | null, apiUsage?: string | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput' | 'outputTokens'> {
-  return {
-    cacheRead: tb?.cacheRead,
-    apiReportedInput: tb?.apiReportedInput,
-    outputTokens: extractOutputTokens(apiUsage),
-  };
 }
 
 function entityToRecord(row: RequestEntity): RecordedRequest {
@@ -109,9 +104,8 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     durationMs: row.duration_ms,
     error: row.error ?? undefined,
     finished: row.finished,
-    tokenBreakdown: (safeJsonParse(row.computed_tokens ?? null) as TokenBreakdown) ?? undefined,
     apiUsage: row.api_usage ?? undefined,
-    outputTokens: extractOutputTokens(row.api_usage),
+    outputTokens: buildTokenSummary(endpointDefinition.endpoint, row.api_usage).outputTokens,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -119,16 +113,6 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
 
 function entityToSummary(row: RequestEntity): RecordSummary {
   const endpointDefinition = assertEndpointProvider(row.path, row.api_type);
-  // 从 computed_tokens JSON 字段提取缓存命中数和 API 报告的输入 token
-  let tokenBreakdown: TokenBreakdown | null = null
-  if (row.computed_tokens) {
-    try {
-      tokenBreakdown = JSON.parse(row.computed_tokens) as TokenBreakdown
-    } catch (err) {
-      console.warn(`[store] 解析 computed_tokens JSON 失败: ${formatErrorChain(err)}`);
-    }
-  }
-
   return {
     id: row.id,
     timestamp: row.timestamp,
@@ -142,7 +126,7 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     apiEndpoint: endpointDefinition.endpoint,
     path: row.path,
     streamText: streamBuf.get(row.id),
-    ...buildTokenSummary(tokenBreakdown, row.api_usage),
+    ...buildTokenSummary(endpointDefinition.endpoint, row.api_usage),
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -217,7 +201,7 @@ function buildSummaryWhere(
 const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
-  computed_tokens: true, session_id: true, session_id_key: true,
+  session_id: true, session_id_key: true,
   path: true, api_usage: true,
 };
 
@@ -272,7 +256,6 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       response_headers: r.responseHeaders ? JSON.stringify(r.responseHeaders) : undefined,
       response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
       response_body: r.responseBody ?? undefined,
-      computed_tokens: r.tokenBreakdown ? JSON.stringify(r.tokenBreakdown) : undefined,
       api_usage: r.apiUsage ?? null,
       session_id: r.sessionId ?? null,
       session_id_key: r.sessionIdKey ?? null,

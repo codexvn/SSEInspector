@@ -158,7 +158,7 @@ function sessionLabel(sid?: string, key?: string): string {
               </template>
               <template v-else>-</template>
             </td>
-            <td class="cell-speed"><TokenSpeed :text="r.streamText" :start-time="new Date(r.timestamp).getTime()" :endpoint="r.apiEndpoint" :state="r.state" :output-tokens="r.outputTokens" :duration-ms="r.durationMs" :model="r.model" /></td>
+            <td class="cell-speed"><TokenSpeed :state="r.state" :output-tokens="r.outputTokens" :duration-ms="r.durationMs" /></td>
           </tr>
         </tbody>
       </table>

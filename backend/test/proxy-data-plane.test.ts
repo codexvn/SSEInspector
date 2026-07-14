@@ -11,8 +11,29 @@ const receivedBody: Buffer[] = []
 let firstUpstreamChunkAt = 0
 let upstreamRequestEndedAt = 0
 const responseBody = Buffer.from([0, 1, 2, 127, 128, 255])
+let resolveCancelledUpstream!: () => void
+const cancelledUpstream = new Promise<void>(resolve => { resolveCancelledUpstream = resolve })
+let resolveAbortedUpload!: () => void
+const abortedUpload = new Promise<void>(resolve => { resolveAbortedUpload = resolve })
 
 const upstream = http.createServer((req, res) => {
+  if (req.url?.includes('mode=upload-abort')) {
+    req.once('aborted', resolveAbortedUpload)
+    req.once('close', () => {
+      if (!req.complete) resolveAbortedUpload()
+    })
+    req.resume()
+    return
+  }
+  if (req.url?.includes('mode=client-close')) {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [] } })}\n\n`)
+      res.once('close', resolveCancelledUpstream)
+    })
+    return
+  }
   req.on('data', (chunk: Buffer) => {
     if (!firstUpstreamChunkAt) firstUpstreamChunkAt = Date.now()
     receivedBody.push(chunk)
@@ -77,12 +98,60 @@ assert.equal(result.status, 201)
 assert.equal(result.headers['x-byte-test'], 'preserved')
 assert.deepEqual(result.body, responseBody, '非流式响应不得 JSON 重编码或改变字节')
 
+await cancelStreamingResponse(proxyPort)
+await Promise.race([
+  cancelledUpstream,
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('客户端关闭后上游响应未被终止')), 2000)),
+])
+
+await abortRequestUpload(proxyPort)
+await Promise.race([
+  abortedUpload,
+  new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('客户端中断上传后上游请求未被终止')), 2000)),
+])
+
 await Promise.all([
   new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())),
   new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve())),
 ])
 
 console.log('proxy data plane tests passed')
+}
+
+async function cancelStreamingResponse(proxyPort: number): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: '/v1/responses?mode=client-close',
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': '2' },
+    }, response => {
+      response.once('data', () => response.destroy())
+      response.once('close', resolve)
+      response.once('error', error => error.code === 'ECONNRESET' ? resolve() : reject(error))
+    })
+    request.once('error', reject)
+    request.end('{}')
+  })
+}
+
+async function abortRequestUpload(proxyPort: number): Promise<void> {
+  await new Promise<void>(resolve => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: '/v1/responses?mode=upload-abort',
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': '10' },
+    })
+    request.once('error', () => resolve())
+    request.write('12345')
+    setTimeout(() => {
+      request.destroy()
+      resolve()
+    }, 50)
+  })
 }
 
 main().catch(error => {

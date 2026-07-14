@@ -3,7 +3,7 @@ import express from 'express';
 import compression from 'compression';
 import path from 'path';
 import type { Server } from 'http';
-import { handleProxy, handlePassthrough } from './proxy';
+import { handleProxy, handlePassthrough, initializeProxy } from './proxy';
 import { config } from './config';
 import { RequestListFilter } from './types';
 import { ENDPOINT_DEFINITIONS } from './endpoints';
@@ -75,6 +75,7 @@ function parseRequestListFilter(value: unknown): RequestListFilter {
 }
 
 async function start() {
+  await initializeProxy();
   await startRecorder();
   const app = express();
 
@@ -87,7 +88,7 @@ async function start() {
     },
   }));
 
-  // 仅 /api 路由需要解析 JSON body（如 /api/tokenize 读 req.body）。
+  // 仅 /api 路由需要解析 JSON body。
   // 代理路由（/chat/completions、/responses、/messages）与 catch-all 透传必须保持原始请求体，
   // 不得经过任何 body 消费型中间件——否则压缩请求体（gzip/deflate/br/zstd）会被消费破坏透明性，
   // body-parser 也会对不支持的编码（如 zstd）抛 UnsupportedMediaTypeError；代理请求流由 proxy.ts 直接转发。
@@ -130,16 +131,6 @@ async function start() {
 
   app.get('/api/requests/:id/neighbors', route(async (req, res) => {
     res.json(await recorderRpc('requests.neighbors', req.params.id));
-  }));
-
-  // token 计数：复用 resolveTokenizer 路由（OpenAI/Claude/HF），供前端流式实时速度估算
-  app.post('/api/tokenize', route(async (req, res) => {
-    const { text, model } = req.body as { text?: string; model?: string };
-    if (typeof text !== 'string' || typeof model !== 'string') {
-      res.status(400).json({ error: '需要 text 和 model 字段' });
-      return;
-    }
-    res.json(await recorderRpc('tokenize', text, model));
   }));
 
   // SSE events stream

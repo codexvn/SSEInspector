@@ -23,8 +23,7 @@ export type RecorderRpcMethod =
   | 'requests.stats'
   | 'requests.neighbors'
   | 'tools.list'
-  | 'tools.pair'
-  | 'tokenize';
+  | 'tools.pair';
 
 export interface RecorderRpcArgs {
   'requests.list': [number | undefined, number | undefined, RequestListFilter, string | undefined];
@@ -35,7 +34,6 @@ export interface RecorderRpcArgs {
   'requests.neighbors': [string];
   'tools.list': [string];
   'tools.pair': [string, string];
-  'tokenize': [string, string];
 }
 
 export interface RecorderUiEvent {
@@ -44,6 +42,8 @@ export interface RecorderUiEvent {
   structural: boolean;
 }
 
+export type CaptureCloseReason = 'downstream_closed' | 'request_aborted';
+
 export type MainToRecorderMessage =
   | { type: 'capture.start'; metadata: CaptureMetadata }
   | { type: 'capture.request_chunk'; id: string; chunk: Uint8Array }
@@ -51,6 +51,7 @@ export type MainToRecorderMessage =
   | { type: 'capture.response_start'; id: string; status: number; headers: Record<string, string>; streaming: boolean }
   | { type: 'capture.response_chunk'; id: string; chunk: Uint8Array }
   | { type: 'capture.complete'; id: string }
+  | { type: 'capture.closed'; id: string; status: number; reason: CaptureCloseReason }
   | { type: 'capture.failed'; id: string; status: number; error: string }
   | { type: 'capture.truncated'; id: string; pendingBytes: number }
   | { type: 'rpc'; correlationId: number; method: RecorderRpcMethod; args: unknown[] }

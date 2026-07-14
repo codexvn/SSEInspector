@@ -14,6 +14,7 @@ interface CaptureState {
   responseText: string;
   requestBody?: unknown;
   requestDecodeError?: string;
+  requestEnded: boolean;
   responseHeaders?: Record<string, string>;
   responseStatus?: number;
   streaming: boolean;
@@ -71,6 +72,7 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       captures.set(message.metadata.id, {
         metadata: message.metadata,
         requestChunks: [],
+        requestEnded: false,
         responseDecoder: new TextDecoder('utf-8'),
         responseText: '',
         streaming: false,
@@ -84,9 +86,12 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }
-    case 'capture.request_end':
-      await finishRequestCapture(requireCapture(message.id));
+    case 'capture.request_end': {
+      const state = requireCapture(message.id);
+      state.requestEnded = true;
+      await finishRequestCapture(state);
       return;
+    }
     case 'capture.response_start':
       await startResponseCapture(requireCapture(message.id), message.status, message.headers, message.streaming);
       return;
@@ -102,6 +107,10 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
     }
     case 'capture.complete':
       await completeCapture(requireCapture(message.id));
+      captures.delete(message.id);
+      return;
+    case 'capture.closed':
+      await closeCapture(requireCapture(message.id), message.status, message.reason);
       captures.delete(message.id);
       return;
     case 'capture.failed':
@@ -124,6 +133,7 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
 }
 
 async function finishRequestCapture(state: CaptureState): Promise<void> {
+  if (!state.requestEnded) return;
   if (state.requestBody !== undefined || state.requestDecodeError) return;
   const { decodeRequestBody } = require('../body-decode') as typeof import('../body-decode');
   const rawBody = Buffer.concat(state.requestChunks);
@@ -163,8 +173,32 @@ async function publishLiveSnapshot(state: CaptureState): Promise<void> {
 }
 
 async function completeCapture(state: CaptureState): Promise<void> {
+  await persistCompletedCapture(state, 'ok');
+}
+
+async function closeCapture(
+  state: CaptureState,
+  status: number,
+  reason: 'downstream_closed' | 'request_aborted',
+): Promise<void> {
+  state.responseStatus ??= status;
+  if (reason === 'request_aborted') {
+    await persistAbortedCapture(state, status);
+    return;
+  }
+
+  finishResponseText(state);
+  if (state.streaming && isTerminalCapture(state)) {
+    await persistCompletedCapture(state, 'client_close');
+    return;
+  }
+
+  await persistPartialCapture(state, status, '客户端在响应完成前断开');
+}
+
+async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'client_close'): Promise<void> {
   await finishRequestCapture(state);
-  state.responseText += state.responseDecoder.decode();
+  finishResponseText(state);
   if (!state.record) throw new Error(`响应完成前缺少 response_start: id=${state.metadata.id}`);
   const responseContent = await buildResponseContent(state);
   state.record.responseContent = responseContent;
@@ -174,17 +208,11 @@ async function completeCapture(state: CaptureState): Promise<void> {
   state.record.durationMs = Date.now() - state.metadata.startedAt;
   state.record.streaming = state.streaming;
   state.record.state = state.truncated ? 'error' : 'done';
-  state.record.finished = state.truncated ? 'capture_truncated' : 'ok';
+  state.record.finished = state.truncated ? 'capture_truncated' : finished;
   state.record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : undefined;
   delete state.record.streamText;
 
-  const { computeTokenBreakdown } = require('../token-counter') as typeof import('../token-counter');
   const { serializeApiUsage } = require('../api-usage') as typeof import('../api-usage');
-  state.record.tokenBreakdown = await computeTokenBreakdown(
-    state.requestBody,
-    responseContent,
-    state.metadata.apiEndpoint,
-  ) ?? undefined;
   state.record.apiUsage = serializeApiUsage(responseContent);
 
   const { upsertRecord, writeToolCalls } = require('../store') as typeof import('../store');
@@ -192,9 +220,46 @@ async function completeCapture(state: CaptureState): Promise<void> {
   await upsertRecord(state.record);
 }
 
+async function persistPartialCapture(state: CaptureState, status: number, error: string): Promise<void> {
+  await finishRequestCapture(state);
+  finishResponseText(state);
+  const record = state.record ?? buildRecord(state, 'streaming');
+  const responseContent = await buildResponseContent(state);
+  record.responseStatus = status;
+  record.responseHeaders = state.responseHeaders;
+  record.responseBody = state.responseText || undefined;
+  record.responseContent = responseContent;
+  record.durationMs = Date.now() - state.metadata.startedAt;
+  record.state = 'error';
+  record.finished = state.truncated ? 'capture_truncated' : 'client_close';
+  record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : error;
+  delete record.streamText;
+  const { serializeApiUsage } = require('../api-usage') as typeof import('../api-usage');
+  record.apiUsage = serializeApiUsage(responseContent);
+  const { upsertRecord, writeToolCalls } = require('../store') as typeof import('../store');
+  await writeToolCalls(state.metadata.id, await extractToolCallEntries(responseContent, state.metadata.apiEndpoint));
+  await upsertRecord(record);
+}
+
+async function persistAbortedCapture(state: CaptureState, status: number): Promise<void> {
+  finishResponseText(state);
+  const record = state.record ?? buildRecord(state, 'streaming');
+  record.responseStatus = status;
+  record.responseHeaders = state.responseHeaders;
+  record.responseBody = state.responseText || undefined;
+  record.responseContent = null;
+  record.durationMs = Date.now() - state.metadata.startedAt;
+  record.state = 'error';
+  record.finished = state.truncated ? 'capture_truncated' : 'client_close';
+  record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : '客户端在请求上传完成前断开';
+  delete record.streamText;
+  const { upsertRecord } = require('../store') as typeof import('../store');
+  await upsertRecord(record);
+}
+
 async function failCapture(state: CaptureState, status: number, error: string): Promise<void> {
   await finishRequestCapture(state);
-  state.responseText += state.responseDecoder.decode();
+  finishResponseText(state);
   const record = state.record ?? buildRecord(state, 'streaming');
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
@@ -206,6 +271,15 @@ async function failCapture(state: CaptureState, status: number, error: string): 
   delete record.streamText;
   const { upsertRecord } = require('../store') as typeof import('../store');
   await upsertRecord(record);
+}
+
+function finishResponseText(state: CaptureState): void {
+  state.responseText += state.responseDecoder.decode();
+}
+
+function isTerminalCapture(state: CaptureState): boolean {
+  const { isTerminalSSE, parseSSEWithMetadata } = require('../sse-merger') as typeof import('../sse-merger');
+  return isTerminalSSE(parseSSEWithMetadata(state.responseText), state.metadata.apiEndpoint);
 }
 
 function buildRecord(state: CaptureState, stateName: 'streaming' | 'done'): RecordedRequest {
@@ -305,12 +379,6 @@ async function handleRpc(correlationId: number, method: RecorderRpcMethod, args:
       case 'tools.pair':
         value = await store.getToolCallPair(String(args[0]), String(args[1]));
         break;
-      case 'tokenize': {
-        const { resolveTokenizer } = require('../token-registry') as typeof import('../token-registry');
-        const tokenizer = await resolveTokenizer(String(args[1]));
-        value = { count: tokenizer ? tokenizer.encoder(String(args[0])) : 0, source: tokenizer?.source ?? null };
-        break;
-      }
     }
     send({ type: 'rpc.result', correlationId, ok: true, value });
   } catch (error) {
