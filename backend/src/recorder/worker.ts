@@ -3,9 +3,11 @@ import { TextDecoder } from 'util';
 import { setConfig } from '../config';
 import { MainToRecorderMessage, RecorderRpcMethod, RecorderToMainMessage, CaptureMetadata } from './protocol';
 import { RecordedRequest, MergedContent } from '../types';
+import { formatErrorChain, getLogger, serializeError } from '../logger';
 
 if (!parentPort) throw new Error('Recorder Worker 缺少 parentPort');
 setConfig(workerData.config);
+const logger = getLogger('recorder-worker');
 
 interface CaptureState {
   metadata: CaptureMetadata;
@@ -30,7 +32,7 @@ let messageChain = Promise.resolve();
 
 void initialize().catch(error => {
   const detail = formatErrorChain(error);
-  console.error(`[recorder-worker] 初始化失败: ${detail}`);
+  logger.fatal({ err: serializeError(error) }, 'Recorder Worker initialization failed');
   send({ type: 'fatal', error: detail });
   process.exitCode = 1;
 });
@@ -58,7 +60,7 @@ async function initialize(): Promise<void> {
       .then(() => handleMessage(message))
       .catch(error => {
         const detail = formatErrorChain(error);
-        console.error(`[recorder-worker] 消息处理失败: ${detail}`);
+        logger.fatal({ err: serializeError(error) }, 'Recorder Worker message handling failed');
         send({ type: 'fatal', error: detail });
         process.exit(1);
       });
@@ -141,7 +143,7 @@ async function finishRequestCapture(state: CaptureState): Promise<void> {
   state.requestBody = decoded.parsed;
   state.requestDecodeError = decoded.error;
   if (decoded.error) {
-    console.warn(`[recorder-worker] 请求体解码失败: id=${state.metadata.id}, ${decoded.error}`);
+    logger.warn({ requestId: state.metadata.id, detail: decoded.error }, 'captured request body decoding failed');
   }
   if (decoded.parsed !== undefined) await backfillToolResults(decoded.parsed, state.metadata.apiEndpoint);
 }
@@ -233,6 +235,14 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   record.state = 'error';
   record.finished = state.truncated ? 'capture_truncated' : 'client_close';
   record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : error;
+  if (!state.truncated) {
+    logger.warn({
+      requestId: state.metadata.id,
+      status,
+      durationMs: record.durationMs,
+      reason: 'downstream_closed',
+    }, 'captured response is incomplete');
+  }
   delete record.streamText;
   const { serializeApiUsage } = require('../api-usage') as typeof import('../api-usage');
   record.apiUsage = serializeApiUsage(responseContent);
@@ -315,7 +325,7 @@ async function buildResponseContent(state: CaptureState): Promise<MergedContent 
   try {
     return JSON.parse(state.responseText) as MergedContent;
   } catch (error) {
-    console.warn(`[recorder-worker] 非流式响应 JSON 解析失败: id=${state.metadata.id}, ${formatErrorChain(error)}`);
+    logger.warn({ requestId: state.metadata.id, err: serializeError(error) }, 'non-streaming response JSON parsing failed');
     return null;
   }
 }
@@ -383,7 +393,7 @@ async function handleRpc(correlationId: number, method: RecorderRpcMethod, args:
     send({ type: 'rpc.result', correlationId, ok: true, value });
   } catch (error) {
     const detail = formatErrorChain(error);
-    console.error(`[recorder-worker] RPC ${method} 失败: ${detail}`);
+    logger.error({ method, err: serializeError(error) }, 'Recorder Worker RPC failed');
     send({ type: 'rpc.result', correlationId, ok: false, error: detail });
   }
 }
@@ -403,19 +413,4 @@ function requireCapture(id: string): CaptureState {
 
 function send(message: RecorderToMainMessage): void {
   parentPort!.postMessage(message);
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }

@@ -7,6 +7,9 @@ import { Not, IsNull, Repository, FindManyOptions, FindOptionsWhere } from 'type
 import { assertEndpointProvider } from './endpoints';
 import { findLatestMessage } from './protocol-content';
 import { parseUsageSummary } from './api-usage';
+import { getLogger, serializeError } from './logger';
+
+const logger = getLogger('store');
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(500);
@@ -75,7 +78,7 @@ function buildTokenSummary(endpoint: ApiEndpoint, apiUsage?: string | null): Pic
       outputTokens: usage.outputTokens,
     };
   } catch (err) {
-    console.warn(`[store] 解析 apiUsage 失败: ${formatErrorChain(err)}`);
+    logger.warn({ endpoint, err: serializeError(err) }, 'API usage parsing failed');
     return {};
   }
 }
@@ -137,24 +140,9 @@ function safeJsonParse(s: string | null): unknown {
   try {
     return JSON.parse(s);
   } catch (err) {
-    console.warn(`[store] JSON 解析失败: ${formatErrorChain(err)}`);
+    logger.warn({ err: serializeError(err) }, 'stored JSON parsing failed');
     return null;
   }
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

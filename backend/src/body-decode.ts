@@ -9,6 +9,9 @@
  */
 
 import * as zlib from 'node:zlib';
+import { formatErrorChain, getLogger, serializeError } from './logger';
+
+const logger = getLogger('body-decode');
 
 /** 解压结果：成功返回 buffer，失败返回 error（不抛） */
 export type DecompressResult = { ok: true; buffer: Buffer } | { ok: false; error: string };
@@ -37,7 +40,7 @@ export function decompressBuffer(buf: Buffer, contentEncoding: string | undefine
       case 'br':
         return { ok: true, buffer: zlib.brotliDecompressSync(buf) };
       case 'zstd':
-        // zstd 在 Node 22.15+ / 24+ 可用；低版本（package.json engines 写 >=18）降级，不阻塞透传
+        // zstd 仅在部分 Node 20+ 运行时可用；不支持时降级，不阻塞透传
         if (typeof zlib.zstdDecompressSync !== 'function') {
           return { ok: false, error: `当前 Node 运行时不支持 zstd 解压: ${contentEncoding}` };
         }
@@ -47,7 +50,7 @@ export function decompressBuffer(buf: Buffer, contentEncoding: string | undefine
     }
   } catch (e) {
     const error = `解压失败 (${enc}): ${formatErrorChain(e)}`;
-    console.warn(`[body-decode] ${error}`);
+    logger.warn({ encoding: enc, err: serializeError(e) }, 'request body decompression failed');
     return { ok: false, error };
   }
 }
@@ -67,22 +70,7 @@ export function decodeRequestBody(buf: Buffer, contentEncoding: string | undefin
     return { parsed: JSON.parse(decompressed.buffer.toString('utf-8')) };
   } catch (e) {
     const error = `请求体 JSON 解析失败: ${formatErrorChain(e)}`;
-    console.warn(`[body-decode] ${error}`);
+    logger.warn({ err: serializeError(e) }, 'request body JSON parsing failed');
     return { error };
   }
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }

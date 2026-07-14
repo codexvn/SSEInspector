@@ -19,6 +19,7 @@ SSEInspector 是 OpenAI / Anthropic API 透明代理检查器，用于记录、�
 - SSE 解析：`eventsource-parser`
 - 前端：Vite / Vue / Monaco Editor
 - Token 统计：仅使用上游 API usage，不做本地 tokenizer 重算
+- 日志：Pino / pino-pretty，默认彩色单行输出，可切换为 NDJSON
 
 ## 常用命令
 
@@ -44,6 +45,10 @@ npm run test:decode
 # 代理数据面字节透传与 Recorder Worker dev/prod 测试
 npm run test:proxy
 npm run test:worker
+
+# 日志与 CLI 输出测试
+npm run test:logger
+npm run test:cli-logging
 
 # endpoint、preview、工具配对和前端响应映射全量测试
 npm run test:all
@@ -79,6 +84,16 @@ npm start -- --upstream http://localhost:8000 --db-path ./data.db
 
 `npm start` 等价于 `node bin/sse-inspector.js --dev`：同进程用 tsx 加载 `backend/src` TS 源码，前端 HMR 由 vite-express 提供。配置统一由 CLI 参数经 `setConfig` 填充，不再使用环境变量回退。
 
+运行时要求 Node.js 20.19+ 或 22.12+，与 Vite 8 的 engine 约束一致，不支持 Node.js 21。日志环境变量：
+
+```bash
+LOG_FORMAT=pretty  # 默认，彩色单行终端日志
+LOG_FORMAT=json    # Pino NDJSON，供 Collector/Agent 采集
+LOG_LEVEL=info     # 默认日志级别
+```
+
+非法 `LOG_FORMAT` 或 `LOG_LEVEL` 会在启动阶段失败，不使用静默回退。应用不直接连接 Loki、Elastic 等平台；需要集中采集时使用 JSON stdout，经 OpenTelemetry Collector、Grafana Alloy 或其他 Agent 转发。
+
 ## 打包与发布
 
 项目以 GitHub Release tarball 分发（不发 npm）。打包由 `package.json` 的 `files` 白名单 + `frontend/.npmignore` 控制，最终 tarball 含 `bin/`、`dist/`、`frontend/dist/`、`README.md`、`LICENSE`。
@@ -104,7 +119,7 @@ backend/src/proxy.ts
 
 被记录请求通过原生 `Transform` tee 传给 `httpxy.buffer`，确保首个已缓冲请求 chunk 不会被观察监听器提前消费。请求/响应 chunk 与生命周期控制消息进入同一个有序延迟队列，实际 Buffer 复制和 Worker `postMessage` 在后续事件循环执行，每轮最多复制 1 MiB；队列与 Worker 未 ACK 字节共用 64 MiB 上限。主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应保持原始状态码、headers 和 body 字节，不经过 JSON 重编码。
 
-客户端先关闭时只记录 `downstream_closed` / `request_aborted`，由 `httpxy` 负责终止上游连接；上游异常才打印转发失败。Recorder 根据 endpoint terminal SSE 判断 `client_close` 是完整结果还是部分错误；`request_aborted` 只持久化中断状态和已捕获原始响应字节，不解析未完成请求或空响应。
+客户端先关闭时只记录 `downstream_closed` / `request_aborted`，由 `httpxy` 负责终止上游连接；上游异常才打印转发失败。正常 `upstream_complete` 与 `downstream_closed` 都输出中性的 `proxy request ended` info 日志，`request_aborted` 输出 warning，`upstream_aborted` / `upstream_error` 输出 error。Recorder 根据 endpoint terminal SSE 判断 `client_close` 是完整结果还是部分错误；缺少 terminal 时额外输出一次 `captured response is incomplete` warning；`request_aborted` 只持久化中断状态和已捕获原始响应字节，不解析未完成请求或空响应。开始日志包含 request ID、method、path、target，结束日志包含 request ID、status、duration 和 reason。
 
 ```text
 backend/src/recorder/client.ts
@@ -130,6 +145,12 @@ backend/src/config.ts
 中央运行时配置容器。由 CLI 入口 `bin/sse-inspector.js` 在启动时通过 `setConfig()` 填充，被 `index.ts` / `proxy.ts` / `db/index.ts` 读取。dev / prod 均走 config，不再有环境变量回退。
 
 ```text
+backend/src/logger.ts
+```
+
+Node 运行时唯一日志入口。根 logger 固定包含 `service=sse-inspector`，各模块通过缓存的 component child logger 输出结构化字段。`backend/src` 与 `bin` 禁止直接使用 `console.log/warn/error`；CLI help 属于命令输出，使用 `process.stdout.write()`。异常字段必须通过统一序列化保留 type、message、stack 和递归 cause 链。慢 SQL 只输出耗时与 SQL，不输出参数或查询结果。
+
+```text
 tsconfig.json
 ```
 
@@ -139,7 +160,7 @@ tsconfig.json
 bin/sse-inspector.js
 ```
 
-CLI 入口（CJS，不经 tsc），带 shebang。解析 `--upstream` / `--port` / `--db-path` / `--dev` 参数（`parseArgs` / `showHelp` 抽自 `bin/parse-args.js`），填充 config 后加载入口启动。dev / prod 合一：`--dev` 同进程 tsx 加载 `backend/src` TS 源码（tsx 惰性 require，prod 路径不执行），否则 `require` 编译产物 `dist/`。`npx` 直跑与 `npm start` 共用此入口。
+CLI 入口（CJS，不经 tsc），带 shebang。解析 `--upstream` / `--port` / `--db-path` / `--dev` 参数（`parseArgs` / `getHelpText` 抽自 `bin/parse-args.js`），填充 config 后加载入口启动。参数错误使用同一 Pino logger；help 使用纯 stdout。dev / prod 合一：`--dev` 同进程 tsx 加载 `backend/src` TS 源码（tsx 惰性 require，prod 路径不执行），否则 `require` 编译产物 `dist/`。`npx` 直跑与 `npm start` 共用此入口。
 
 ```text
 backend/src/sse-parser.ts
@@ -335,6 +356,8 @@ frontend/src/
 
 - 所有 UI 文案、注释、文档使用简体中文。
 - 项目代码中的标识符保持英文。
+- 后端与 CLI 统一使用 `backend/src/logger.ts` 的 Pino logger，不保留 console 或第二套 fallback logger。
+- 稳定字段名包括 `component`、`requestId`、`method`、`path`、`target`、`status`、`durationMs`、`reason`、`err`。
 - catch 块不得静默吞异常。
 - 日志应包含异常类型、message、cause 链。
 - 不得残留 `[CCGUI_DEBUG_]` 临时调试日志。
@@ -355,3 +378,8 @@ frontend/src/
 - 新增/修改端口、服务、协议。
 - 修改 SSE 合并架构或 provider accumulator 职责。
 - 新增测试命令、构建命令或开发规范。
+
+## 设计文档
+
+- `docs/superpowers/specs/2026-07-14-proxy-log-semantics-design.md`：结构化日志与代理关闭语义设计。
+- `docs/superpowers/plans/2026-07-14-proxy-log-semantics.md`：Pino 全量迁移实施计划与验证清单。

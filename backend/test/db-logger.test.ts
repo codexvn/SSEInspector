@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { SlowQueryLogger } from '../src/db/slow-query-logger';
+import { getLogger } from '../src/logger';
 
 function testSlowQueryOnlyLogsSqlAndElapsedTime(): void {
-  const messages: string[] = [];
-  const originalWarn = console.warn;
-  console.warn = (...values: unknown[]) => {
-    messages.push(values.map(String).join(' '));
-  };
+  const dbLogger = getLogger('db');
+  const originalWarn = dbLogger.warn;
+  let captured: { fields: Record<string, unknown>; message: string } | undefined;
+  dbLogger.warn = ((fields: Record<string, unknown>, message: string) => {
+    captured = { fields, message };
+  }) as typeof dbLogger.warn;
 
   try {
     const logger = new SlowQueryLogger();
@@ -16,13 +18,17 @@ function testSlowQueryOnlyLogsSqlAndElapsedTime(): void {
       ['large-response-body', 'request-id'],
     );
   } finally {
-    console.warn = originalWarn;
+    dbLogger.warn = originalWarn;
   }
 
-  assert.deepEqual(messages, [
-    '[db] slow query 327ms: UPDATE requests SET response_body = ? WHERE id = ?',
-  ]);
-  assert.doesNotMatch(messages[0] ?? '', /large-response-body|request-id/);
+  assert.deepEqual(captured, {
+    fields: {
+      durationMs: 327,
+      sql: 'UPDATE requests SET response_body = ? WHERE id = ?',
+    },
+    message: 'slow database query',
+  });
+  assert.doesNotMatch(JSON.stringify(captured), /large-response-body|request-id/);
 }
 
 testSlowQueryOnlyLogsSqlAndElapsedTime();

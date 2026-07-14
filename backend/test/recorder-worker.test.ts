@@ -12,6 +12,11 @@ async function runWorker(dev: boolean): Promise<void> {
   const worker = new Worker(path.join(rootDir, 'bin', 'recorder-worker.js'), {
     stdout: true,
     stderr: true,
+    env: {
+      ...process.env,
+      LOG_FORMAT: 'json',
+      LOG_LEVEL: 'info',
+    },
     workerData: {
       dev,
       rootDir,
@@ -23,8 +28,9 @@ async function runWorker(dev: boolean): Promise<void> {
       },
     },
   })
+  const workerStdout: string[] = []
   const workerStderr: string[] = []
-  worker.stdout?.resume()
+  worker.stdout?.on('data', chunk => workerStdout.push(String(chunk)))
   worker.stderr?.on('data', chunk => workerStderr.push(String(chunk)))
 
   await waitForMessage(worker, message => message.type === 'ready')
@@ -99,7 +105,21 @@ async function runWorker(dev: boolean): Promise<void> {
     worker.once('exit', code => code === 0 ? resolve() : reject(new Error(`Recorder Worker 退出码异常: ${code}`)))
     worker.once('error', reject)
   })
-  assert.doesNotMatch(workerStderr.join(''), /请求体解码失败|非流式响应 JSON 解析失败/)
+  const workerLogs = workerStdout
+    .join('')
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('{'))
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+  const incomplete = workerLogs.filter(log => log.msg === 'captured response is incomplete')
+  assert.equal(incomplete.length, 1)
+  assert.equal(incomplete[0].component, 'recorder-worker')
+  assert.equal(incomplete[0].reason, 'downstream_closed')
+  assert.equal(incomplete[0].status, 200)
+  assert.equal(typeof incomplete[0].durationMs, 'number')
+  assert.doesNotMatch(
+    workerStdout.join('') + workerStderr.join(''),
+    /请求体解码失败|非流式响应 JSON 解析失败/,
+  )
   await Promise.all([
     fs.rm(dbPath, { force: true }),
     fs.rm(`${dbPath}-wal`, { force: true }),

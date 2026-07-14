@@ -1,24 +1,12 @@
 import { createParser } from 'eventsource-parser';
 import { SSEChunk } from './types';
+import { getLogger, serializeError } from './logger';
+
+const logger = getLogger('sse-parser');
 
 export interface SSEParseResult {
   chunks: SSEChunk[];
   done: boolean;
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = (current as Error & { cause?: unknown }).cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }
 
 export function parseSSEText(rawText: string): SSEChunk[] {
@@ -40,11 +28,11 @@ export function parseSSETextWithMetadata(rawText: string): SSEParseResult {
       try {
         chunks.push({ event: event.event, data: JSON.parse(data) });
       } catch (err) {
-        console.warn(`[sse-parser] SSE data JSON 解析失败: ${formatErrorChain(err)}`);
+        logger.warn({ err: serializeError(err) }, 'SSE data JSON parsing failed');
       }
     },
     onError(error) {
-      console.warn(`[sse-parser] SSE 解析失败: ${formatErrorChain(error)}`);
+      logger.warn({ err: serializeError(error) }, 'SSE parsing failed');
     },
   });
 

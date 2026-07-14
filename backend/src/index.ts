@@ -16,6 +16,12 @@ import {
 } from './recorder/client';
 import { RecorderUiEventBuffer } from './recorder/ui-event-buffer';
 import { RecorderUiEvent } from './recorder/protocol';
+import { getLogger, serializeError } from './logger';
+
+const serverLogger = getLogger('server');
+const apiLogger = getLogger('api');
+const passthroughLogger = getLogger('passthrough');
+const shutdownLogger = getLogger('shutdown');
 
 /**
  * 运行模式判定。
@@ -33,9 +39,7 @@ let server: Server | null = null;
 let shutdownStarted = false;
 
 if (!UPSTREAM_URL) {
-  console.error('Error: 上游地址未配置。');
-  console.error('  请通过 CLI 启动: sse-inspector --upstream http://localhost:8000 --db-path ./data.db');
-  console.error('  开发模式: npm start -- --upstream http://localhost:8000 --db-path ./data.db');
+  serverLogger.error({ argument: '--upstream' }, 'upstream URL is not configured');
   process.exit(1);
 }
 
@@ -43,7 +47,7 @@ if (!UPSTREAM_URL) {
 function route(fn: (req: express.Request, res: express.Response) => Promise<void>) {
   return (req: express.Request, res: express.Response) => {
     fn(req, res).catch((err) => {
-      console.error(`[api] ${req.method} ${req.path} 失败: ${formatErrorChain(err)}`);
+      apiLogger.error({ method: req.method, path: req.path, err: serializeError(err) }, 'API request failed');
       if (!res.headersSent) {
         const unavailable = !recorderAvailable();
         res.status(unavailable ? 503 : 500).json({
@@ -52,21 +56,6 @@ function route(fn: (req: express.Request, res: express.Response) => Promise<void
       }
     });
   };
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }
 
 function parseRequestListFilter(value: unknown): RequestListFilter {
@@ -109,7 +98,7 @@ async function start() {
   app.get('/api/requests/:id', route(async (req, res) => {
     const record = await recorderRpc('requests.detail', req.params.id);
     if (!record) {
-      console.warn(`[api] request not found: ${req.params.id}`);
+      apiLogger.warn({ requestId: req.params.id }, 'request record not found');
       res.status(404).json({ error: 'Request not found' });
       return;
     }
@@ -218,15 +207,18 @@ async function start() {
     if (req.path.startsWith('/api/') || req.path === '/') return next();
     if (req.method === 'GET' && req.path.includes('.')) return next();
     void handlePassthrough(req, res).catch(error => {
-      console.error(`[passthrough] ${req.method} ${req.path} 失败: ${formatErrorChain(error)}`);
+      passthroughLogger.error({
+        method: req.method,
+        path: req.path,
+        err: serializeError(error),
+      }, 'passthrough request failed');
       next(error);
     });
   });
 
   // ---- 启动 ----
   const onStart = () => {
-    console.log(`SSEInspector running on http://0.0.0.0:${PORT}`);
-    console.log(`Proxying to ${UPSTREAM_URL}`);
+    serverLogger.info({ host: '0.0.0.0', port: PORT, upstream: UPSTREAM_URL }, 'SSEInspector started');
   };
   if (isDev) {
     const ve = require('vite-express');
@@ -240,20 +232,20 @@ async function start() {
 async function shutdown(signal: string): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
-  console.log(`[shutdown] 收到 ${signal}，等待 Recorder Worker 收尾`);
+  shutdownLogger.info({ signal }, 'shutdown started');
   server?.close(error => {
-    if (error) console.error(`[shutdown] HTTP Server 关闭失败: ${formatErrorChain(error)}`);
+    if (error) shutdownLogger.error({ err: serializeError(error) }, 'HTTP server shutdown failed');
   });
   server?.closeIdleConnections?.();
 
   const hardExit = setTimeout(() => {
-    console.warn(`[shutdown] 已达到 ${SHUTDOWN_TIMEOUT_MS}ms 总时限，强制退出`);
+    shutdownLogger.warn({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'shutdown deadline reached');
     process.exit(0);
   }, SHUTDOWN_TIMEOUT_MS);
   try {
     await stopRecorder(SHUTDOWN_TIMEOUT_MS);
   } catch (error) {
-    console.error(`[shutdown] Recorder Worker 关闭失败: ${formatErrorChain(error)}`);
+    shutdownLogger.error({ err: serializeError(error) }, 'Recorder Worker shutdown failed');
   } finally {
     clearTimeout(hardExit);
     process.exit(0);
@@ -264,6 +256,6 @@ process.once('SIGINT', () => { void shutdown('SIGINT'); });
 process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
 
 start().catch((err) => {
-  console.error(`[启动失败] ${formatErrorChain(err)}`);
+  serverLogger.fatal({ err: serializeError(err) }, 'SSEInspector startup failed');
   process.exit(1);
 });

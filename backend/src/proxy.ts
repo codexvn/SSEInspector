@@ -5,6 +5,7 @@ import type { ProxyServer } from 'httpxy' with { 'resolution-mode': 'import' };
 import { Transform } from 'stream';
 import { config } from './config';
 import { EndpointDefinition } from './endpoints';
+import { formatErrorChain, getLogger, serializeError } from './logger';
 import {
   beginCapture,
   beginCaptureResponse,
@@ -18,6 +19,7 @@ import {
 
 interface ProxyContext {
   id: string | null;
+  startedAt: number;
   label: 'proxy' | 'passthrough';
   targetLog: string;
   responseStatus: number;
@@ -109,15 +111,20 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   const target = new URL(targetUrl);
   const targetLog = `${target.origin}${target.pathname}`;
   const label = endpointDefinition ? 'proxy' : 'passthrough';
-  console.log(`[${label}] ${req.method} ${req.path} -> ${targetLog}`);
-
   const id = endpointDefinition ? crypto.randomUUID() : null;
+  const startedAt = Date.now();
+  getLogger(label).info({
+    requestId: id ?? '-',
+    method: req.method,
+    path: req.path,
+    target: targetLog,
+  }, 'proxy request started');
   if (id) {
     const session = extractSessionId(req);
     const contentEncoding = firstHeader(req.headers['content-encoding']);
     beginCapture({
       id,
-      startedAt: Date.now(),
+      startedAt,
       timestamp: new Date().toISOString(),
       method: req.method,
       path: req.path,
@@ -133,6 +140,7 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
 
   const context: ProxyContext = {
     id,
+    startedAt,
     label,
     targetLog,
     responseStatus: 502,
@@ -223,6 +231,10 @@ function registerProxyEvents(proxy: ProxyServer): void {
     const context = proxyContexts.get(req);
     if (!context || context.finalized) return;
     context.finalized = true;
+    getLogger(context.label).info({
+      ...contextLogFields(context),
+      reason: 'upstream_complete',
+    }, 'proxy request ended');
     if (context.id) completeCapture(context.id);
   });
   proxy.on('econnreset', (_error, req) => {
@@ -254,7 +266,10 @@ function finalizeClosed(
   context.finalized = true;
   context.requestTap?.destroy();
   if (context.id) closeCapture(context.id, status, reason);
-  console.log(`[${context.label}] 客户端连接关闭: reason=${reason} target=${context.targetLog}`);
+  const logger = getLogger(context.label);
+  const fields = { ...contextLogFields(context, status), reason };
+  if (reason === 'request_aborted') logger.warn(fields, 'proxy request aborted');
+  else logger.info(fields, 'proxy request ended');
 }
 
 function finalizeFailure(
@@ -266,8 +281,21 @@ function finalizeFailure(
   context.finalized = true;
   context.requestTap?.destroy();
   const detail = `${reason}: ${formatErrorChain(error)}`;
-  console.error(`[${context.label}] 转发失败: ${detail} target=${context.targetLog}`);
+  getLogger(context.label).error({
+    ...contextLogFields(context),
+    reason,
+    err: serializeError(error),
+  }, 'proxy request failed');
   if (context.id) failCapture(context.id, context.responseStatus, detail);
+}
+
+function contextLogFields(context: ProxyContext, status = context.responseStatus) {
+  return {
+    requestId: context.id ?? '-',
+    status,
+    durationMs: Date.now() - context.startedAt,
+    target: context.targetLog,
+  };
 }
 
 function flattenHeaders(headers: ForwardHeaders): Record<string, string> {
@@ -278,19 +306,4 @@ function flattenHeaders(headers: ForwardHeaders): Record<string, string> {
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }

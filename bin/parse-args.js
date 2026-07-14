@@ -15,6 +15,7 @@
 
 function parseArgs(argv) {
   const opts = { upstream: undefined, port: 3000, dbPath: undefined, dev: false, help: false };
+  const errors = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') {
@@ -36,15 +37,15 @@ function parseArgs(argv) {
     } else if (!a.startsWith('-')) {
       // 忽略裸路径（向后兼容旧的位置参数用法）
     } else {
-      console.error(`未知参数: ${a}`);
+      errors.push({ code: 'unknown_argument', message: `未知参数: ${a}`, argument: a });
       opts.help = true;
     }
   }
-  return opts;
+  return { options: opts, errors };
 }
 
-function showHelp() {
-  console.log(`
+function getHelpText() {
+  return `
 sse-inspector - SSE Inspector & API Proxy
 
 用法:
@@ -58,7 +59,7 @@ sse-inspector - SSE Inspector & API Proxy
   --port <n>           监听端口（默认 3000）
   --dev                开发模式：同进程加载 TS 源码，启用前端 HMR（npm start 已内置）
   -h, --help           显示帮助
-`);
+`;
 }
 
-module.exports = { parseArgs, showHelp };
+module.exports = { parseArgs, getHelpText };

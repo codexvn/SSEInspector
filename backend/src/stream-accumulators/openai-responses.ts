@@ -1,5 +1,8 @@
 import { MergedToolCall, OpenAIResponsesMergedResponse, SSEChunk } from '../types';
+import { getLogger } from '../logger';
 import { isRecord, mergeDefinedFields, StreamAccumulator } from './types';
+
+const logger = getLogger('openai-responses-accumulator');
 
 export interface OpenAIResponsesEvent extends Record<string, unknown> {
   type: string;
@@ -378,7 +381,7 @@ export class OpenAIResponsesAccumulator implements StreamAccumulator<OpenAIRespo
   private requireIndex(event: OpenAIResponsesEvent, field: 'output_index' | 'content_index' | 'summary_index' | 'annotation_index'): number | undefined {
     const value = event[field];
     if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
-    console.warn(`[OpenAIResponsesAccumulator] 忽略缺少有效 ${field} 的事件: type=${event.type}`);
+    logger.warn({ eventType: event.type, field }, 'response event is missing a valid index');
     return undefined;
   }
 

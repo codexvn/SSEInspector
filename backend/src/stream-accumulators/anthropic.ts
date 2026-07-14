@@ -1,5 +1,8 @@
 import { AnthropicContentBlock, AnthropicMergedResponse, AnthropicUsage, SSEChunk } from '../types';
-import { formatErrorChain, isRecord, mergeDefinedFields, StreamAccumulator } from './types';
+import { getLogger, serializeError } from '../logger';
+import { isRecord, mergeDefinedFields, StreamAccumulator } from './types';
+
+const logger = getLogger('anthropic-accumulator');
 
 interface AnthropicSSEEvent {
   type: string;
@@ -167,7 +170,7 @@ export class AnthropicAccumulator implements StreamAccumulator<AnthropicMergedRe
     try {
       block.input = JSON.parse(raw);
     } catch (err) {
-      console.warn(`[AnthropicAccumulator] 工具输入 JSON 解析失败: ${formatErrorChain(err)}`);
+      logger.warn({ err: serializeError(err) }, 'tool input JSON parsing failed');
       block.input = raw;
     }
   }

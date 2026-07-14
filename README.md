@@ -17,9 +17,11 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 - 实时更新（Server-Sent Events），动态刷新导航位置
 - 搜索过滤（模型名、内容）
 - 非监控请求自动直通上游（如 `/v1/models`）
-- 控制台打印每次请求的原始路径与代理后上游地址
+- Pino 结构化代理生命周期日志，默认彩色终端输出，也可切换为 NDJSON 接入日志平台
 
 ## 安装
+
+需要 Node.js 20.19+ 或 22.12+；不支持 Node.js 21。
 
 ```bash
 git clone https://github.com/codexvn/SSEInspector.git
@@ -52,6 +54,15 @@ npm start -- --upstream http://your-upstream:8000 --db-path ./data.db
 | `--port <n>` | 否 | `3000` | 监听端口 |
 | `--dev` | 否 | — | 开发模式（同进程 tsx + HMR，`npm start` 已内置） |
 | `-h, --help` | — | — | 显示帮助 |
+
+日志配置：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `LOG_FORMAT` | `pretty` | `pretty` 为彩色单行终端日志；`json` 为可供 Collector/Agent 采集的 Pino NDJSON |
+| `LOG_LEVEL` | `info` | Pino 日志级别，如 `debug`、`info`、`warn`、`error` |
+
+每个代理请求均输出可关联的 `proxy request started` 与结束事件。`upstream_complete` 和 `downstream_closed` 是正常的中性结束原因；请求上传中断使用 warning，上游异常使用 error。若客户端关闭时响应尚未包含 endpoint 的 terminal SSE 事件，Recorder Worker 会额外输出 `captured response is incomplete` warning。
 
 ## 使用
 

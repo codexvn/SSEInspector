@@ -12,9 +12,11 @@ import {
   RecorderUiEvent,
 } from './protocol';
 import { DeferredCaptureItem, DeferredCaptureQueue } from './capture-queue';
+import { getLogger, serializeError } from '../logger';
 
 const MAX_PENDING_CAPTURE_BYTES = 64 * 1024 * 1024;
 const MAX_CAPTURE_DRAIN_BYTES = 1024 * 1024;
+const logger = getLogger('recorder');
 const events = new EventEmitter();
 events.setMaxListeners(500);
 
@@ -137,11 +139,11 @@ async function stopRecorderWithinDeadline(timeoutMs: number): Promise<void> {
   if (await waitForWorkerExit(current, gracefulMs)) return;
   if (worker !== current) return;
 
-  console.warn('[recorder] Worker 未在优雅关闭期限内退出，开始强制终止');
+  logger.warn({ timeoutMs }, 'Recorder Worker graceful shutdown timed out');
   const termination = current.terminate()
     .then(() => undefined)
     .catch(error => {
-      console.error(`[recorder] 强制终止 Worker 失败: ${formatErrorChain(error)}`);
+      logger.error({ err: serializeError(error) }, 'Recorder Worker forced termination failed');
     });
   await waitForPromise(termination, Math.max(0, deadline - Date.now()));
 }
@@ -187,7 +189,7 @@ function truncateCapture(id: string, pendingBytes: number): void {
   if (truncatedCaptures.has(id)) return;
   truncatedCaptures.add(id);
   postQueued({ type: 'capture.truncated', id, pendingBytes });
-  console.error(`[recorder] 捕获积压超过限制，停止记录后续字节: id=${id}, pendingBytes=${pendingBytes}`);
+  logger.error({ requestId: id, pendingBytes }, 'capture backlog limit exceeded');
 }
 
 function finalizeCaptureQueue(id: string, message: MainToRecorderMessage): void {
@@ -245,7 +247,7 @@ async function spawnRecorder(initial: boolean): Promise<void> {
       });
     });
   } catch (error) {
-    console.error(`[recorder] Worker 初始化失败: ${formatErrorChain(error)}`);
+    logger.error({ err: serializeError(error) }, 'Recorder Worker initialization failed');
     ready = false;
     if (worker === instance) worker = null;
     await instance.terminate();
@@ -255,7 +257,7 @@ async function spawnRecorder(initial: boolean): Promise<void> {
   instance.removeAllListeners('message');
   instance.on('message', handleWorkerMessage);
   instance.on('error', error => {
-    console.error(`[recorder] Worker 错误: ${formatErrorChain(error)}`);
+    logger.error({ err: serializeError(error) }, 'Recorder Worker emitted an error');
   });
   instance.on('exit', code => {
     if (worker === instance) worker = null;
@@ -267,7 +269,7 @@ async function spawnRecorder(initial: boolean): Promise<void> {
     if (!stopping) scheduleRestart();
   });
 
-  if (!initial) console.log('[recorder] Worker 已恢复');
+  if (!initial) logger.info('Recorder Worker recovered');
 }
 
 function handleWorkerMessage(message: RecorderToMainMessage): void {
@@ -287,7 +289,7 @@ function handleWorkerMessage(message: RecorderToMainMessage): void {
       break;
     }
     case 'fatal':
-      console.error(`[recorder] Worker fatal: ${message.error}`);
+      logger.fatal({ detail: message.error }, 'Recorder Worker fatal error');
       break;
     case 'ready':
       break;
@@ -298,11 +300,11 @@ function scheduleRestart(): void {
   const delays = [1000, 2000, 5000];
   const delay = delays[Math.min(restartAttempt, delays.length - 1)];
   restartAttempt += 1;
-  console.error(`[recorder] Worker 不可用，${delay}ms 后重启`);
+  logger.warn({ delayMs: delay, restartAttempt }, 'Recorder Worker unavailable; restart scheduled');
   setTimeout(() => {
     if (stopping || worker) return;
     void spawnRecorder(false).catch(error => {
-      console.error(`[recorder] Worker 重启失败: ${formatErrorChain(error)}`);
+      logger.error({ err: serializeError(error) }, 'Recorder Worker restart failed');
       scheduleRestart();
     });
   }, delay);
@@ -311,19 +313,4 @@ function scheduleRestart(): void {
 function rejectPendingRpc(error: Error): void {
   for (const pending of pendingRpc.values()) pending.reject(error);
   pendingRpc.clear();
-}
-
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = [];
-  let current: unknown = error;
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`);
-      current = current.cause;
-      continue;
-    }
-    messages.push(String(current));
-    break;
-  }
-  return messages.join(' -> ');
 }

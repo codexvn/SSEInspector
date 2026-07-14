@@ -19,60 +19,62 @@
 
 const path = require('path');
 const fs = require('fs');
-const { parseArgs, showHelp } = require('./parse-args');
+const { parseArgs, getHelpText } = require('./parse-args');
 
-const opts = parseArgs(process.argv.slice(2));
-
-if (opts.help) {
-  showHelp();
-  process.exit(0);
-}
-
-if (!opts.upstream || Number.isNaN(opts.port)) {
-  if (!opts.upstream) console.error('错误: 缺少必填参数 --upstream');
-  if (Number.isNaN(opts.port)) console.error('错误: --port 不是合法数字');
-  showHelp();
-  process.exit(1);
-}
-
-// dbPath 必填，dev/prod 均无默认值
-let dbPath = opts.dbPath;
-if (!dbPath) {
-  console.error('错误: 缺少必填参数 --db-path');
-  showHelp();
-  process.exit(1);
-}
-
-// 确保目录存在
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-// 转绝对路径（SQLite 相对路径是相对 cwd，不够直观）
-if (!path.isAbsolute(dbPath)) {
-  dbPath = path.resolve(process.cwd(), dbPath);
-}
-
+const parsed = parseArgs(process.argv.slice(2));
+const opts = parsed.options;
 process.env.NODE_ENV = process.env.NODE_ENV || (opts.dev ? 'development' : 'production');
 
-const cfg = {
-  upstreamUrl: opts.upstream.replace(/\/$/, ''), // 去尾斜杠
-  port: opts.port,
-  dbPath: dbPath,
-};
-
+let setConfig;
+let startBackend;
+let getLogger;
 if (opts.dev) {
-  // 开发模式：同进程 tsx 加载 TS 源码（tsx 是 devDependency，惰性 require，prod 不会执行到这里）
   const { register, require: tsxRequire } = require('tsx/cjs/api');
   register();
-  const { setConfig } = tsxRequire('../backend/src/config.ts', __filename);
-  setConfig(cfg);
-  // 至此主线程配置就绪，启动服务并由其创建 Recorder Worker
-  tsxRequire('../backend/src/index.ts', __filename);
+  ({ getLogger } = tsxRequire('../backend/src/logger.ts', __filename));
+  ({ setConfig } = tsxRequire('../backend/src/config.ts', __filename));
+  startBackend = () => tsxRequire('../backend/src/index.ts', __filename);
 } else {
-  // 生产模式：加载 dist 构建产物（不依赖 tsx）
-  const { setConfig } = require('../dist/config');
-  setConfig(cfg);
-  // 至此主线程配置就绪，启动服务并由其创建 Recorder Worker
-  require('../dist/index.js');
+  ({ getLogger } = require('../dist/logger'));
+  ({ setConfig } = require('../dist/config'));
+  startBackend = () => require('../dist/index.js');
+}
+const logger = getLogger('cli');
+
+if (parsed.errors.length > 0) {
+  for (const error of parsed.errors) {
+    logger.error({ code: error.code, argument: error.argument }, 'unknown CLI argument');
+  }
+  process.stderr.write(getHelpText());
+  process.exitCode = 1;
+} else if (opts.help) {
+  process.stdout.write(getHelpText());
+} else if (!opts.upstream || Number.isNaN(opts.port)) {
+  if (!opts.upstream) logger.error({ argument: '--upstream' }, 'required CLI argument is missing');
+  if (Number.isNaN(opts.port)) logger.error({ argument: '--port' }, 'CLI argument is invalid');
+  process.stderr.write(getHelpText());
+  process.exitCode = 1;
+} else if (!opts.dbPath) {
+  logger.error({ argument: '--db-path' }, 'required CLI argument is missing');
+  process.stderr.write(getHelpText());
+  process.exitCode = 1;
+} else {
+  start(opts.dbPath);
+}
+
+function start(dbPath) {
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+  if (!path.isAbsolute(dbPath)) {
+    dbPath = path.resolve(process.cwd(), dbPath);
+  }
+
+  setConfig({
+    upstreamUrl: opts.upstream.replace(/\/$/, ''),
+    port: opts.port,
+    dbPath,
+  });
+  startBackend();
 }

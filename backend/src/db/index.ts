@@ -4,6 +4,9 @@ import { RequestEntity } from '../entity/RequestEntity';
 import { ToolCall } from '../entity/ToolCall';
 import { config } from '../config';
 import { SlowQueryLogger } from './slow-query-logger';
+import { getLogger } from '../logger';
+
+const logger = getLogger('db');
 
 /**
  * 解析数据库路径。
@@ -36,5 +39,5 @@ export async function initDb(): Promise<void> {
     { finished: 'pending' },
     { finished: 'startup_fallback' },
   );
-  console.log(`[db] SQLite 已就绪: ${AppDataSource.options.database}`);
+  logger.info({ database: AppDataSource.options.database }, 'SQLite is ready');
 }
