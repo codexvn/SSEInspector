@@ -16,7 +16,7 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 - 原始/合并响应体双视图切换
 - 实时更新（Server-Sent Events），动态刷新导航位置
 - 搜索过滤（模型名、内容）
-- 非监控请求自动直通上游（如 `/v1/models`）
+- 未注册 AI path 的透传请求同样记录并入库（`apiType/apiEndpoint=passthrough`），可在列表「透传」筛选
 - Pino 结构化代理生命周期日志，默认彩色终端输出，也可切换为 NDJSON 接入日志平台
 
 ## 安装
@@ -55,6 +55,8 @@ npm start -- --upstream http://your-upstream:8000 --db-path ./data.db
 | `--dev` | 否 | — | 开发模式（同进程 tsx + HMR，`npm start` 已内置） |
 | `-h, --help` | — | — | 显示帮助 |
 
+升级说明：实体 schema 发生不兼容变更时（例如新增必填的 `api_endpoint` 列），TypeORM 不会自动迁移历史数据——请直接删除 `--db-path` 指向的旧数据库文件后重启，由应用重建空库。
+
 日志配置：
 
 | 环境变量 | 默认值 | 说明 |
@@ -90,7 +92,7 @@ curl http://localhost:3000/v1/chat/completions \
 | `POST /v1/chat/completions` | 代理 + 记录（OpenAI 格式） |
 | `POST /v1/responses` | 代理 + 记录（OpenAI Responses 格式） |
 | `POST /v1/messages` | 代理 + 记录（Anthropic 格式） |
-| 其他路径 | 透明代理，不记录 |
+| 其他路径 | 透明代理 + 透传记录（原始 headers/body，不做协议合并） |
 
 请求头（`Authorization`、`x-api-key` 等）和响应头均原样透传，客户端感知不到代理存在。
 

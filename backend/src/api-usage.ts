@@ -48,8 +48,9 @@ export function parseUsageSummary(apiUsage: string | null | undefined, endpoint:
         numberValue(usage.cache_read_input_tokens),
       );
     }
+    case 'passthrough':
+      return {};
   }
-  return assertNever(endpoint);
 }
 
 function parseUsageObject(apiUsage: string): Record<string, unknown> | undefined {
@@ -76,10 +77,6 @@ function cachedTokens(value: unknown): number | undefined {
 function sumDefined(...values: Array<number | undefined>): number | undefined {
   const present = values.filter((value): value is number => value !== undefined);
   return present.length > 0 ? present.reduce((total, value) => total + value, 0) : undefined;
-}
-
-function assertNever(value: never): never {
-  throw new Error(`未实现的 endpoint usage: ${String(value)}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

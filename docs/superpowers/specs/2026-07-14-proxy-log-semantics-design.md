@@ -35,14 +35,14 @@
 - `downstream_closed` 输出中性的 `end` info 日志，不使用“客户端连接关闭”或 error 文案。主线程继续通知 Recorder，并立即终止对应上游连接；不改变传输生命周期。
 - `request_aborted` 输出 warning，包含 request ID、status、duration 和 target。
 - `upstream_aborted`、`upstream_error` 输出 error，包含 request ID、status、duration、target 和完整异常链。
-- passthrough 请求没有 Recorder ID，日志使用 `id=-`，不为日志额外创建领域 ID。
+- passthrough 与 AI endpoint 同样生成 UUID 并 capture（见 `docs/superpowers/specs/2026-07-19-passthrough-recording-design.md`）；开始/结束日志必须带真实 `requestId`，不再使用 `id=-`。
 
 ### Recorder 语义日志
 
-- Recorder 收到 `downstream_closed` 后继续使用现有 endpoint terminal SSE 判断。
+- Recorder 收到 `downstream_closed` 后，对 AI endpoint 继续使用现有 terminal SSE 判断；透传不做协议 terminal 判断。
 - 已包含 terminal 事件：正常保存为 `finished=client_close`、`error=null`；控制台只保留主线程的中性 `end` 日志。
-- 缺少 terminal 事件：保留主线程的中性 `end` 日志，保存部分响应并额外输出一条 warning，包含 request ID、status、duration 和 `reason=downstream_closed`。
-- 捕获已因 64 MiB 积压截断时不重复输出 incomplete warning；积压保护已有独立日志。
+- 缺少 terminal 事件（仅 AI endpoint）：保留主线程的中性 `end` 日志，保存部分响应并额外输出一条 warning，包含 request ID、status、duration 和 `reason=downstream_closed`。
+- 已取消 capture 队列 64 MiB 积压截断（无 pending 上限，仅保留每轮 1 MiB drain）；不再存在「因 truncate 跳过 incomplete warning」分支。
 - `request_aborted` 的持久化仍不解析未完成请求或空响应。
 
 ## 非目标

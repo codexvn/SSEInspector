@@ -1,4 +1,4 @@
-import type { ApiEndpoint, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
+import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
 
 const BASE = '/api'
 
@@ -88,17 +88,18 @@ export function connectSSE(onUpdate: (r: RecordSummary) => void): () => void {
   return () => es.close()
 }
 
-const ENDPOINT_PROVIDERS: Readonly<Record<ApiEndpoint, 'openai' | 'anthropic'>> = {
+const ENDPOINT_PROVIDERS: Readonly<Record<ApiEndpoint, ApiType>> = {
   'openai-chat': 'openai',
   'openai-responses': 'openai',
   'anthropic-messages': 'anthropic',
+  passthrough: 'passthrough',
 }
 const API_ENDPOINTS = new Set<ApiEndpoint>(Object.keys(ENDPOINT_PROVIDERS) as ApiEndpoint[])
 
 export function assertApiRecord(
   value: { apiEndpoint?: unknown; apiType?: unknown; path?: unknown },
   label: string,
-): asserts value is { apiEndpoint: ApiEndpoint; apiType: 'openai' | 'anthropic'; path: string } {
+): asserts value is { apiEndpoint: ApiEndpoint; apiType: ApiType; path: string } {
   if (typeof value.apiEndpoint !== 'string' || !API_ENDPOINTS.has(value.apiEndpoint as ApiEndpoint)) {
     throw new Error(`${label} 缺少合法 apiEndpoint: ${String(value.apiEndpoint)}`)
   }

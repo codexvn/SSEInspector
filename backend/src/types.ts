@@ -127,11 +127,33 @@ export interface OpenAIResponsesUsage {
 
 // ---- Shared ----
 
-export type ApiType = 'openai' | 'anthropic';
-export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+export const ApiType = {
+  OpenAI: 'openai',
+  Anthropic: 'anthropic',
+  Passthrough: 'passthrough',
+} as const;
+export type ApiType = (typeof ApiType)[keyof typeof ApiType];
+
+export const ApiEndpoint = {
+  OpenAIChat: 'openai-chat',
+  OpenAIResponses: 'openai-responses',
+  AnthropicMessages: 'anthropic-messages',
+  Passthrough: 'passthrough',
+} as const;
+export type ApiEndpoint = (typeof ApiEndpoint)[keyof typeof ApiEndpoint];
+
 export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
 export type RecordState = 'streaming' | 'done' | 'error';
-export type RequestListFilter = 'all' | 'openai' | 'anthropic' | 'streaming' | 'error';
+
+export const RequestListFilter = {
+  All: 'all',
+  OpenAI: 'openai',
+  Anthropic: 'anthropic',
+  Passthrough: 'passthrough',
+  Streaming: 'streaming',
+  Error: 'error',
+} as const;
+export type RequestListFilter = (typeof RequestListFilter)[keyof typeof RequestListFilter];
 
 export interface SSEChunk {
   event?: string;

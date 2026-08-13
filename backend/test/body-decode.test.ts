@@ -75,9 +75,26 @@ function testCorruptedNotThrow(): void {
 }
 
 function testValidCompressionButNonJson(): void {
+  // gzip 解压后是合法 UTF-8 纯文本：JSON 失败时回退为文本
   const c = zlib.gzipSync(Buffer.from('plain text not json', 'utf-8'));
   const r = decodeRequestBody(c, 'gzip');
+  assert.equal(r.parsed, 'plain text not json');
+  assert.equal(r.error, undefined);
+}
+
+function testPlainTextFallback(): void {
+  const text = Buffer.from('not-json-plain-text', 'utf8');
+  const r = decodeRequestBody(text, undefined);
+  assert.equal(r.parsed, 'not-json-plain-text');
+  assert.equal(r.error, undefined);
+}
+
+function testInvalidUtf8Binary(): void {
+  // 含非法 UTF-8 字节：round-trip 不一致，视为二进制失败
+  const binary = Buffer.from([0xff, 0xfe, 0xfd]);
+  const r = decodeRequestBody(binary, undefined);
   assert.equal(r.parsed, undefined);
+  assert.ok(r.error);
   assert.match(r.error ?? '', /JSON/);
 }
 
@@ -124,6 +141,8 @@ testBrotli();
 testZstd();
 testCorruptedNotThrow();
 testValidCompressionButNonJson();
+testPlainTextFallback();
+testInvalidUtf8Binary();
 testUnknownEncoding();
 testMultiValueEncodingDegrades();
 testCaseAndWhitespace();

@@ -39,6 +39,7 @@ function onScroll() {
 .stream-card pre {
   font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.5;
   white-space: pre-wrap; word-break: break-word; max-height: 500px;
+  min-height: 3em;
   overflow-y: auto; color: var(--text-primary);
 }
 </style>

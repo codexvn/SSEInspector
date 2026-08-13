@@ -5,6 +5,8 @@ import { Entity, PrimaryColumn, Column, Index } from 'typeorm';
 @Index('idx_requests_api_type_ts', ['api_type', 'timestamp'])
 @Index('idx_requests_finished_ts', ['finished', 'timestamp'])
 @Index('idx_requests_error_ts', ['error', 'timestamp'])
+/** 会话内邻条与会话列表：session_id 过滤 + timestamp 排序/范围（prev/next） */
+@Index('idx_requests_session_ts', ['session_id', 'timestamp'])
 export class RequestEntity {
   /** UUID v4，proxy.ts 中 crypto.randomUUID() 生成 */
   @PrimaryColumn('text')
@@ -28,9 +30,16 @@ export class RequestEntity {
   @Column('text')
   upstream_url!: string;
 
-  /** 'openai' | 'anthropic' */
+  /** 'openai' | 'anthropic' | 'passthrough' */
   @Column('text')
   api_type!: string;
+
+  /**
+   * 协议 endpoint 事实源：'openai-chat' | 'openai-responses' | 'anthropic-messages' | 'passthrough'。
+   * 读路径必须以本列为准，不得用 path 反推 endpoint（透传 path 任意）。
+   */
+  @Column('text')
+  api_endpoint!: string;
 
   @Column('integer', { default: 0 })
   status!: number;
@@ -79,7 +88,10 @@ export class RequestEntity {
   @Column('text', { nullable: true })
   api_usage?: string | null;
 
-  /** 会话标识（从已知请求头提取），加索引以支持按会话聚合查询 */
+  /**
+   * 会话标识（从已知请求头提取）。
+   * 单列 idx_requests_session_id 供会话过滤；复合 idx_requests_session_ts 供会话内时间排序与 prev/next。
+   */
   @Column('text', { nullable: true })
   @Index('idx_requests_session_id')
   session_id?: string | null;

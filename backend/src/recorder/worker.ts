@@ -1,6 +1,7 @@
 import { parentPort, workerData } from 'worker_threads';
 import { TextDecoder } from 'util';
 import { setConfig } from '../config';
+import { isPassthroughEndpoint } from '../record-identity';
 import { MainToRecorderMessage, RecorderRpcMethod, RecorderToMainMessage, CaptureMetadata } from './protocol';
 import { RecordedRequest, MergedContent } from '../types';
 import { formatErrorChain, getLogger, serializeError } from '../logger';
@@ -20,7 +21,6 @@ interface CaptureState {
   responseHeaders?: Record<string, string>;
   responseStatus?: number;
   streaming: boolean;
-  truncated: boolean;
   record?: RecordedRequest;
   lastPublishedAt: number;
 }
@@ -78,13 +78,12 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
         responseDecoder: new TextDecoder('utf-8'),
         responseText: '',
         streaming: false,
-        truncated: false,
         lastPublishedAt: 0,
       });
       return;
     case 'capture.request_chunk': {
       const state = captures.get(message.id);
-      if (state && !state.truncated) state.requestChunks.push(Buffer.from(message.chunk));
+      if (state) state.requestChunks.push(Buffer.from(message.chunk));
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }
@@ -99,11 +98,9 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       return;
     case 'capture.response_chunk': {
       const state = requireCapture(message.id);
-      if (!state.truncated) {
-        const chunk = Buffer.from(message.chunk);
-        state.responseText += state.responseDecoder.decode(chunk, { stream: true });
-        await publishLiveSnapshot(state);
-      }
+      const chunk = Buffer.from(message.chunk);
+      state.responseText += state.responseDecoder.decode(chunk, { stream: true });
+      await publishLiveSnapshot(state);
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }
@@ -119,11 +116,6 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       await failCapture(requireCapture(message.id), message.status, message.error);
       captures.delete(message.id);
       return;
-    case 'capture.truncated': {
-      const state = captures.get(message.id);
-      if (state) state.truncated = true;
-      return;
-    }
     case 'rpc':
       await handleRpc(message.correlationId, message.method, message.args);
       return;
@@ -145,7 +137,12 @@ async function finishRequestCapture(state: CaptureState): Promise<void> {
   if (decoded.error) {
     logger.warn({ requestId: state.metadata.id, detail: decoded.error }, 'captured request body decoding failed');
   }
-  if (decoded.parsed !== undefined) await backfillToolResults(decoded.parsed, state.metadata.apiEndpoint);
+  if (
+    decoded.parsed !== undefined
+    && !isPassthroughEndpoint(state.metadata.apiEndpoint)
+  ) {
+    await backfillToolResults(decoded.parsed, state.metadata.apiEndpoint);
+  }
 }
 
 async function startResponseCapture(
@@ -190,6 +187,16 @@ async function closeCapture(
   }
 
   finishResponseText(state);
+  if (isPassthroughEndpoint(state.metadata.apiEndpoint)) {
+    // 透传不做 terminal SSE 判断；有 response_start 则记为完成，否则 partial
+    if (state.record) {
+      await persistCompletedCapture(state, 'client_close');
+      return;
+    }
+    await persistPartialCapture(state, status, '客户端在响应完成前断开');
+    return;
+  }
+
   if (state.streaming && isTerminalCapture(state)) {
     await persistCompletedCapture(state, 'client_close');
     return;
@@ -209,10 +216,16 @@ async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'cl
   state.record.responseStatus = state.responseStatus ?? 0;
   state.record.durationMs = Date.now() - state.metadata.startedAt;
   state.record.streaming = state.streaming;
-  state.record.state = state.truncated ? 'error' : 'done';
-  state.record.finished = state.truncated ? 'capture_truncated' : finished;
-  state.record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : undefined;
+  state.record.state = 'done';
+  state.record.finished = finished;
   delete state.record.streamText;
+
+  if (isPassthroughEndpoint(state.metadata.apiEndpoint)) {
+    state.record.apiUsage = undefined;
+    const { upsertRecord } = require('../store') as typeof import('../store');
+    await upsertRecord(state.record);
+    return;
+  }
 
   const { serializeApiUsage } = require('../api-usage') as typeof import('../api-usage');
   state.record.apiUsage = serializeApiUsage(responseContent);
@@ -233,9 +246,9 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   record.responseContent = responseContent;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
-  record.finished = state.truncated ? 'capture_truncated' : 'client_close';
-  record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : error;
-  if (!state.truncated) {
+  record.finished = 'client_close';
+  record.error = error;
+  if (!isPassthroughEndpoint(state.metadata.apiEndpoint)) {
     logger.warn({
       requestId: state.metadata.id,
       status,
@@ -244,6 +257,12 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
     }, 'captured response is incomplete');
   }
   delete record.streamText;
+  if (isPassthroughEndpoint(state.metadata.apiEndpoint)) {
+    record.apiUsage = undefined;
+    const { upsertRecord } = require('../store') as typeof import('../store');
+    await upsertRecord(record);
+    return;
+  }
   const { serializeApiUsage } = require('../api-usage') as typeof import('../api-usage');
   record.apiUsage = serializeApiUsage(responseContent);
   const { upsertRecord, writeToolCalls } = require('../store') as typeof import('../store');
@@ -260,8 +279,8 @@ async function persistAbortedCapture(state: CaptureState, status: number): Promi
   record.responseContent = null;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
-  record.finished = state.truncated ? 'capture_truncated' : 'client_close';
-  record.error = state.truncated ? '检查数据因 Recorder 积压被截断' : '客户端在请求上传完成前断开';
+  record.finished = 'client_close';
+  record.error = '客户端在请求上传完成前断开';
   delete record.streamText;
   const { upsertRecord } = require('../store') as typeof import('../store');
   await upsertRecord(record);
@@ -317,7 +336,14 @@ function buildRecord(state: CaptureState, stateName: 'streaming' | 'done'): Reco
 }
 
 async function buildResponseContent(state: CaptureState): Promise<MergedContent | null> {
-  if (state.truncated) return null;
+  if (isPassthroughEndpoint(state.metadata.apiEndpoint)) {
+    if (state.streaming) return null;
+    try {
+      return JSON.parse(state.responseText) as MergedContent;
+    } catch {
+      return null;
+    }
+  }
   if (state.streaming) {
     const { parseSSE, mergeChunks } = require('../sse-merger') as typeof import('../sse-merger');
     return mergeChunks(parseSSE(state.responseText), state.metadata.apiEndpoint);

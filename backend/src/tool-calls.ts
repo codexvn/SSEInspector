@@ -23,8 +23,9 @@ export function extractToolCalls(response: MergedContent | null, endpoint: ApiEn
       return extractResponsesToolCalls(response);
     case 'anthropic-messages':
       return extractAnthropicToolCalls(response);
+    case 'passthrough':
+      return [];
   }
-  return assertNever(endpoint);
 }
 
 export function extractToolOutputs(requestBody: unknown, endpoint: ApiEndpoint): ToolOutputCandidate[] {
@@ -36,8 +37,9 @@ export function extractToolOutputs(requestBody: unknown, endpoint: ApiEndpoint):
       return extractResponsesToolOutputs(requestBody.input);
     case 'anthropic-messages':
       return extractAnthropicToolOutputs(requestBody.messages ?? requestBody.input);
+    case 'passthrough':
+      return [];
   }
-  return assertNever(endpoint);
 }
 
 function extractChatToolCalls(response: Record<string, unknown>): ToolCallCandidate[] {
@@ -153,8 +155,4 @@ function serializeOptional(value: unknown): string | undefined {
 function serialize(value: unknown): string {
   if (typeof value === 'string') return value;
   return value === undefined ? 'null' : JSON.stringify(value);
-}
-
-function assertNever(value: never): never {
-  throw new Error(`未实现的 endpoint: ${String(value)}`);
 }

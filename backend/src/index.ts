@@ -59,7 +59,7 @@ function route(fn: (req: express.Request, res: express.Response) => Promise<void
 }
 
 function parseRequestListFilter(value: unknown): RequestListFilter {
-  const allowedFilters: RequestListFilter[] = ['all', 'openai', 'anthropic', 'streaming', 'error'];
+  const allowedFilters = Object.values(RequestListFilter);
   return allowedFilters.includes(value as RequestListFilter) ? value as RequestListFilter : 'all';
 }
 

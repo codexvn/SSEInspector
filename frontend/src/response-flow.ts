@@ -22,6 +22,8 @@ export function buildResponseCards(
       return buildResponsesCards(response)
     case 'anthropic-messages':
       return buildAnthropicCards(response)
+    case 'passthrough':
+      return [rawCard('passthrough-response', '透传响应', response)]
   }
   return assertNever(endpoint)
 }

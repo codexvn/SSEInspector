@@ -11,7 +11,10 @@ export interface EndpointDefinition {
   createAccumulator(): StreamAccumulator<MergedContent>;
 }
 
-const ENDPOINT_REGISTRY: Readonly<Record<ApiEndpoint, EndpointDefinition>> = Object.freeze({
+/** AI 端点键（不含 passthrough，passthrough 无 accumulator 或路由模式）。 */
+type EndpointKey = Exclude<ApiEndpoint, typeof ApiEndpoint.Passthrough>;
+
+const ENDPOINT_REGISTRY: Readonly<Record<EndpointKey, EndpointDefinition>> = Object.freeze({
   'openai-chat': {
     endpoint: 'openai-chat',
     provider: 'openai',
@@ -37,7 +40,9 @@ export const ENDPOINT_DEFINITIONS: readonly EndpointDefinition[] = Object.freeze
 );
 
 export function getEndpointDefinition(endpoint: ApiEndpoint): EndpointDefinition {
-  return ENDPOINT_REGISTRY[endpoint];
+  const def = ENDPOINT_REGISTRY[endpoint as EndpointKey];
+  if (!def) throw new Error(`passthrough endpoint 无定义: ${endpoint}`);
+  return def;
 }
 
 export function resolveEndpoint(path: string): EndpointDefinition {

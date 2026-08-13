@@ -60,6 +60,7 @@ export type DecodeResult = { parsed?: unknown; error?: string };
 
 /**
  * 解码请求体供检查器使用：先按 content-encoding 解压，再 JSON.parse。
+ * JSON 失败且 buffer 为有效 UTF-8 时回退为文本字符串；二进制仍 { error }。
  * 任一步失败返回 { error }，不抛。空 body 返回 {}（无 parsed 无 error）。
  */
 export function decodeRequestBody(buf: Buffer, contentEncoding: string | undefined): DecodeResult {
@@ -69,6 +70,11 @@ export function decodeRequestBody(buf: Buffer, contentEncoding: string | undefin
   try {
     return { parsed: JSON.parse(decompressed.buffer.toString('utf-8')) };
   } catch (e) {
+    const text = decompressed.buffer.toString('utf8');
+    // Buffer 与 utf8 round-trip 一致则视为文本
+    if (Buffer.from(text, 'utf8').equals(decompressed.buffer)) {
+      return { parsed: text };
+    }
     const error = `请求体 JSON 解析失败: ${formatErrorChain(e)}`;
     logger.warn({ err: serializeError(e) }, 'request body JSON parsing failed');
     return { error };

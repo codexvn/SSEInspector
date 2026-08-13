@@ -55,6 +55,11 @@ body {
 .badge-streaming { background: #e0e7ff; color: #3730a3; animation: pulse 1.5s ease-in-out infinite; }
 .badge-openai { background: #e8f5e9; color: #2e7d32; }
 .badge-anthropic { background: #fce4ec; color: #c62828; }
+.badge-passthrough {
+  background: #e5e7eb;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
 
 @keyframes pulse {
   0%,100% { opacity: 1; }

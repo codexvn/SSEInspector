@@ -178,6 +178,17 @@ function buildGroups(body: Record<string, unknown>, fmt: MessageFlowFormat, prev
       return [...groups, ...buildOpenAIResponsesGroups(body, markNewGroup)]
     case 'anthropic-messages':
       return [...groups, ...buildAnthropicGroups(body, markNewGroup)]
+    case 'passthrough':
+      return [
+        ...groups,
+        {
+          id: 'passthrough-body',
+          title: '透传请求体',
+          badges: ['透传'],
+          isNew: false,
+          cards: [{ id: 'passthrough-raw', type: 'raw_json', props: { title: '请求体', value: body } }],
+        },
+      ]
   }
   return assertNever(fmt)
 }
@@ -457,6 +468,8 @@ function comparableItems(body: Record<string, unknown>, fmt: MessageFlowFormat):
         ...(body.instructions !== undefined ? [body.instructions] : []),
         ...(Array.isArray(body.input) ? body.input : body.input !== undefined ? [body.input] : []),
       ]
+    case 'passthrough':
+      return [body]
   }
   return assertNever(fmt)
 }

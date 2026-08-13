@@ -1,10 +1,10 @@
 import { EventEmitter } from 'events';
-import { RecordedRequest, RecordSummary, MergedContent, RecordState, RequestListFilter, ApiEndpoint } from './types';
+import { RecordedRequest, RecordSummary, MergedContent, RecordState, RequestListFilter, ApiEndpoint, ApiType } from './types';
 import { AppDataSource } from './db';
 import { RequestEntity } from './entity/RequestEntity';
 import { ToolCall } from './entity/ToolCall';
 import { Not, IsNull, Repository, FindManyOptions, FindOptionsWhere } from 'typeorm';
-import { assertEndpointProvider } from './endpoints';
+import { resolveRecordIdentity, isPassthroughEndpoint } from './record-identity';
 import { findLatestMessage } from './protocol-content';
 import { parseUsageSummary } from './api-usage';
 import { getLogger, serializeError } from './logger';
@@ -54,6 +54,9 @@ function toSummary(r: RecordedRequest): RecordSummary {
 }
 
 function buildPreview(record: RecordedRequest): string {
+  if (isPassthroughEndpoint(record.apiEndpoint)) {
+    return `${record.method} ${record.path}`;
+  }
   const body = isRecord(record.requestBody) ? record.requestBody : undefined;
   const message = findLatestMessage(body, record.apiEndpoint);
   if (message) return message;
@@ -70,6 +73,7 @@ export function publishStreamingRecord(r: RecordedRequest): void {
 }
 
 function buildTokenSummary(endpoint: ApiEndpoint, apiUsage?: string | null): Pick<RecordSummary, 'cacheRead' | 'apiReportedInput' | 'outputTokens'> {
+  if (isPassthroughEndpoint(endpoint)) return {};
   try {
     const usage = parseUsageSummary(apiUsage, endpoint);
     return {
@@ -83,16 +87,28 @@ function buildTokenSummary(endpoint: ApiEndpoint, apiUsage?: string | null): Pic
   }
 }
 
+/** 从 DB 行解析身份：必须以 api_endpoint 列为事实源，禁止 path 反推。 */
+function identityFromRow(row: RequestEntity) {
+  if (row.api_endpoint == null || row.api_endpoint === '') {
+    throw new Error(`request row missing api_endpoint: id=${row.id}, path=${row.path}`);
+  }
+  return resolveRecordIdentity({
+    path: row.path,
+    apiType: row.api_type as ApiType,
+    apiEndpoint: row.api_endpoint as ApiEndpoint,
+  });
+}
+
 function entityToRecord(row: RequestEntity): RecordedRequest {
-  const endpointDefinition = assertEndpointProvider(row.path, row.api_type);
+  const identity = identityFromRow(row);
   return {
     id: row.id,
     timestamp: row.timestamp,
     method: row.method,
     path: row.path,
     upstreamUrl: row.upstream_url,
-    apiType: endpointDefinition.provider,
-    apiEndpoint: endpointDefinition.endpoint,
+    apiType: identity.provider,
+    apiEndpoint: identity.endpoint,
     requestHeaders: (safeJsonParse(row.request_headers ?? null) as Record<string, string>) ?? {},
     // requestBody 可达 MB 级 ——透传 raw string，前端按需 parse
     requestBody: row.request_body ?? null,
@@ -108,14 +124,14 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     error: row.error ?? undefined,
     finished: row.finished,
     apiUsage: row.api_usage ?? undefined,
-    outputTokens: buildTokenSummary(endpointDefinition.endpoint, row.api_usage).outputTokens,
+    outputTokens: buildTokenSummary(identity.endpoint, row.api_usage).outputTokens,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
 }
 
 function entityToSummary(row: RequestEntity): RecordSummary {
-  const endpointDefinition = assertEndpointProvider(row.path, row.api_type);
+  const identity = identityFromRow(row);
   return {
     id: row.id,
     timestamp: row.timestamp,
@@ -125,11 +141,11 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     streaming: row.streaming === 1,
     durationMs: row.duration_ms,
     state: deriveState(row.finished, row.error ?? null),
-    apiType: endpointDefinition.provider,
-    apiEndpoint: endpointDefinition.endpoint,
+    apiType: identity.provider,
+    apiEndpoint: identity.endpoint,
     path: row.path,
     streamText: streamBuf.get(row.id),
-    ...buildTokenSummary(endpointDefinition.endpoint, row.api_usage),
+    ...buildTokenSummary(identity.endpoint, row.api_usage),
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -167,6 +183,9 @@ function buildSummaryWhere(
     case 'anthropic':
       where = { api_type: 'anthropic' };
       break;
+    case 'passthrough':
+      where = { api_type: 'passthrough' };
+      break;
     case 'streaming':
       where = { finished: 'pending' };
       break;
@@ -189,20 +208,39 @@ function buildSummaryWhere(
 const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
+  api_endpoint: true,
   session_id: true, session_id_key: true,
   path: true, api_usage: true,
 };
+
+type ListCounts = {
+  openai: number;
+  anthropic: number;
+  passthrough: number;
+  streaming: number;
+  error: number;
+};
+
+async function countListBuckets(repo: Repository<RequestEntity>): Promise<ListCounts> {
+  const [openai, anthropic, passthrough, streaming, error] = await Promise.all([
+    repo.count({ where: { api_type: 'openai' } }),
+    repo.count({ where: { api_type: 'anthropic' } }),
+    repo.count({ where: { api_type: 'passthrough' } }),
+    repo.count({ where: { finished: 'pending' } }),
+    repo.count({ where: { error: Not(IsNull()) } }),
+  ]);
+  return { openai, anthropic, passthrough, streaming, error };
+}
 
 // ---- 公开 API ----
 
 /** 新增或更新请求记录 */
 export async function upsertRecord(r: RecordedRequest): Promise<void> {
-  const endpointDefinition = assertEndpointProvider(r.path, r.apiType);
-  if (endpointDefinition.endpoint !== r.apiEndpoint) {
-    throw new Error(
-      `写入记录的 apiEndpoint 与 path 不一致: path=${r.path}, actual=${r.apiEndpoint}, expected=${endpointDefinition.endpoint}`,
-    );
-  }
+  const identity = resolveRecordIdentity({
+    path: r.path,
+    apiType: r.apiType,
+    apiEndpoint: r.apiEndpoint,
+  });
   // 流式文本缓冲
   if (r.state === 'streaming' && r.streamText != null) {
     streamBuf.set(r.id, r.streamText);
@@ -232,7 +270,8 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       method: r.method,
       path: r.path,
       upstream_url: r.upstreamUrl,
-      api_type: r.apiType,
+      api_type: identity.provider,
+      api_endpoint: identity.endpoint,
       status: r.responseStatus,
       streaming: r.streaming ? 1 : 0,
       finished: r.finished ?? (r.state === 'done' || r.state === 'error' ? 'ok' : 'pending'),
@@ -240,7 +279,8 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       duration_ms: r.durationMs,
       preview: summary.preview || null,
       request_headers: r.requestHeaders ? JSON.stringify(r.requestHeaders) : undefined,
-      request_body: r.requestBody ? JSON.stringify(r.requestBody) : undefined,
+      // null/undefined 不写；其余（含空字符串）JSON.stringify，便于 safeJsonParse 还原
+      request_body: r.requestBody == null ? undefined : JSON.stringify(r.requestBody),
       response_headers: r.responseHeaders ? JSON.stringify(r.responseHeaders) : undefined,
       response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
       response_body: r.responseBody ?? undefined,
@@ -254,7 +294,7 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
 }
 
 /** 分页列表 */
-export async function getAll(page?: number, pageSize?: number, filter: RequestListFilter = 'all', sessionId?: string): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: { openai: number; anthropic: number; streaming: number; error: number } }> {
+export async function getAll(page?: number, pageSize?: number, filter: RequestListFilter = 'all', sessionId?: string): Promise<RecordSummary[] | { items: RecordSummary[]; total: number; page: number; pageSize: number; counts?: ListCounts }> {
   const repo = reqRepo();
   const where = buildSummaryWhere(filter, sessionId);
   if (page && pageSize) {
@@ -267,11 +307,8 @@ export async function getAll(page?: number, pageSize?: number, filter: RequestLi
     if (where) options.where = where;
     const [rows, total] = await repo.findAndCount(options);
     // 全量统计（不受分页影响）
-    const openaiCount = await repo.count({ where: { api_type: 'openai' } });
-    const anthropicCount = await repo.count({ where: { api_type: 'anthropic' } });
-    const streamingCount = await repo.count({ where: { finished: 'pending' } });
-    const errorCount = await repo.count({ where: { error: Not(IsNull()) } });
-    return { items: rows.map(entityToSummary), total, page, pageSize, counts: { openai: openaiCount, anthropic: anthropicCount, streaming: streamingCount, error: errorCount } };
+    const counts = await countListBuckets(repo);
+    return { items: rows.map(entityToSummary), total, page, pageSize, counts };
   }
   const options: FindManyOptions<RequestEntity> = {
     select: SUMMARY_SELECT,
@@ -316,14 +353,11 @@ export async function getNextInSession(id: string, sessionId: string): Promise<R
 }
 
 /** 全量统计（实时查询 DB，供列表页顶部统计直接刷新） */
-export async function getStats(): Promise<{ total: number; openai: number; anthropic: number; streaming: number; error: number }> {
+export async function getStats(): Promise<{ total: number } & ListCounts> {
   const repo = reqRepo();
   const total = await repo.count();
-  const openai = await repo.count({ where: { api_type: 'openai' } });
-  const anthropic = await repo.count({ where: { api_type: 'anthropic' } });
-  const streaming = await repo.count({ where: { finished: 'pending' } });
-  const error = await repo.count({ where: { error: Not(IsNull()) } });
-  return { total, openai, anthropic, streaming, error };
+  const counts = await countListBuckets(repo);
+  return { total, ...counts };
 }
 
 /** 全局相邻与序号（按时间降序）：供详情页全局导航直接查接口刷新 */

@@ -24,8 +24,9 @@ export function isTerminalSSE(result: SSEParseResult, endpoint: ApiEndpoint): bo
       return result.chunks.some(chunk => isResponsesTerminal(chunk.data));
     case 'anthropic-messages':
       return result.chunks.some(chunk => eventType(chunk) === 'message_stop');
+    case 'passthrough':
+      return true;
   }
-  return assertNever(endpoint);
 }
 
 export function mergeChunks(chunks: SSEChunk[], endpoint: ApiEndpoint): MergedContentResult | null {
@@ -37,15 +38,12 @@ export function mergeChunks(chunks: SSEChunk[], endpoint: ApiEndpoint): MergedCo
       for (const chunk of chunks) accumulator.accept(chunk);
       return accumulator.final();
     }
+    case 'passthrough':
+      return null;
   }
-  return assertNever(endpoint);
 }
 
 type MergedContentResult = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
-
-function assertNever(value: never): never {
-  throw new Error(`未实现的 endpoint: ${String(value)}`);
-}
 
 function hasChatFinishReason(value: unknown): boolean {
   if (!isRecord(value) || !Array.isArray(value.choices)) return false;

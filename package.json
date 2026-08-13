@@ -26,9 +26,11 @@
     "prepack": "npm run build:all",
     "test:sse": "tsx backend/test/sse-merger.test.ts",
     "test:decode": "tsx backend/test/body-decode.test.ts",
+    "test:identity": "tsx backend/test/record-identity.test.ts",
     "test:endpoints": "tsx backend/test/endpoint-tools.test.ts",
     "test:usage": "tsx backend/test/api-usage.test.ts",
     "test:preview": "tsx backend/test/store-preview.test.ts",
+    "test:passthrough-store": "tsx backend/test/store-passthrough.test.ts",
     "test:response-flow": "tsx frontend/test/response-flow.test.ts",
     "test:proxy": "tsx backend/test/proxy-data-plane.test.ts",
     "test:worker": "tsx backend/test/recorder-worker.test.ts",
@@ -37,9 +39,10 @@
     "test:capture-queue": "tsx backend/test/recorder-capture-queue.test.ts",
     "test:token-speed": "tsx frontend/test/token-speed.test.ts",
     "test:context": "tsx frontend/test/context-composition.test.ts",
+    "test:body-presentation": "tsx frontend/test/body-presentation.test.ts",
     "test:logger": "tsx backend/test/logger.test.ts",
     "test:cli-logging": "tsx backend/test/cli-logging.test.ts",
-    "test:all": "npm run test:sse && npm run test:decode && npm run test:endpoints && npm run test:usage && npm run test:preview && npm run test:response-flow && npm run test:proxy && npm run test:worker && npm run test:ui-buffer && npm run test:shutdown && npm run test:capture-queue && npm run test:token-speed && npm run test:context && npm run test:logger && npm run test:cli-logging && tsx backend/test/db-logger.test.ts"
+    "test:all": "npm run test:sse && npm run test:decode && npm run test:identity && npm run test:endpoints && npm run test:usage && npm run test:preview && npm run test:passthrough-store && npm run test:response-flow && npm run test:proxy && npm run test:worker && npm run test:ui-buffer && npm run test:shutdown && npm run test:capture-queue && npm run test:token-speed && npm run test:context && npm run test:body-presentation && npm run test:logger && npm run test:cli-logging && tsx backend/test/db-logger.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.10.1",

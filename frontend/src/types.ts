@@ -1,6 +1,29 @@
-export type ApiProvider = 'openai' | 'anthropic'
-export type ApiEndpoint = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
-export type RequestListFilter = 'all' | 'openai' | 'anthropic' | 'streaming' | 'error'
+export const ApiType = {
+  OpenAI: 'openai',
+  Anthropic: 'anthropic',
+  Passthrough: 'passthrough',
+} as const
+export type ApiType = (typeof ApiType)[keyof typeof ApiType]
+/** 兼容旧名 */
+export type ApiProvider = ApiType
+
+export const ApiEndpoint = {
+  OpenAIChat: 'openai-chat',
+  OpenAIResponses: 'openai-responses',
+  AnthropicMessages: 'anthropic-messages',
+  Passthrough: 'passthrough',
+} as const
+export type ApiEndpoint = (typeof ApiEndpoint)[keyof typeof ApiEndpoint]
+
+export const RequestListFilter = {
+  All: 'all',
+  OpenAI: 'openai',
+  Anthropic: 'anthropic',
+  Passthrough: 'passthrough',
+  Streaming: 'streaming',
+  Error: 'error',
+} as const
+export type RequestListFilter = (typeof RequestListFilter)[keyof typeof RequestListFilter]
 
 /** 后端 RecordSummary 的前端映射 */
 export interface RecordSummary {
@@ -12,7 +35,7 @@ export interface RecordSummary {
   streaming: boolean
   durationMs: number
   state: 'streaming' | 'done' | 'error'
-  apiType: ApiProvider
+  apiType: ApiType
   apiEndpoint: ApiEndpoint
   /** 请求路径仅用于展示。 */
   path: string
@@ -38,7 +61,7 @@ export interface RecordedRequest {
   responseContent: unknown
   streaming: boolean
   durationMs: number
-  apiType: ApiProvider
+  apiType: ApiType
   apiEndpoint: ApiEndpoint
   error?: string
   state: 'streaming' | 'done' | 'error'
@@ -58,18 +81,27 @@ export interface ToolCallEntry {
   result?: string
 }
 
+export interface ListCounts {
+  openai: number
+  anthropic: number
+  passthrough: number
+  streaming: number
+  error: number
+}
+
 export interface ListResult {
   items: RecordSummary[]
   total: number
   page: number
   pageSize: number
-  counts?: { openai: number; anthropic: number; streaming: number; error: number }
+  counts?: ListCounts
 }
 
 export interface StatsResult {
   total: number
   openai: number
   anthropic: number
+  passthrough: number
   streaming: number
   error: number
 }

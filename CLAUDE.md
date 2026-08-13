@@ -42,6 +42,12 @@ npm run test:sse
 # 请求体解码（gzip/deflate/br/zstd）纯函数测试
 npm run test:decode
 
+# 记录身份（AI / passthrough）解析测试
+npm run test:identity
+
+# 透传 store 读写 / filter / counts 测试
+npm run test:passthrough-store
+
 # 代理数据面字节透传与 Recorder Worker dev/prod 测试
 npm run test:proxy
 npm run test:worker
@@ -50,7 +56,7 @@ npm run test:worker
 npm run test:logger
 npm run test:cli-logging
 
-# endpoint、preview、工具配对和前端响应映射全量测试
+# endpoint、preview、工具配对、透传记录和前端响应映射全量测试
 npm run test:all
 ```
 
@@ -117,9 +123,11 @@ backend/src/proxy.ts
 
 代理数据面入口。`httpxy` 是 request/response pipe、HTTP 背压、headers、keep-alive 和双向 socket 销毁的唯一所有者；禁止重新引入手写 `http.request`、`res.write` 循环或 `selfHandleResponse`。
 
-被记录请求通过原生 `Transform` tee 传给 `httpxy.buffer`，确保首个已缓冲请求 chunk 不会被观察监听器提前消费。请求/响应 chunk 与生命周期控制消息进入同一个有序延迟队列，实际 Buffer 复制和 Worker `postMessage` 在后续事件循环执行，每轮最多复制 1 MiB；队列与 Worker 未 ACK 字节共用 64 MiB 上限。主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应保持原始状态码、headers 和 body 字节，不经过 JSON 重编码。
+已注册 AI endpoint（`handleProxy`）与未注册路径透传（`handlePassthrough`）共用同一 `forward()` capture 管线：均生成 UUID、`beginCapture`，并 tee 请求体、观察响应体后落库。透传 metadata 固定为 `apiType/apiEndpoint=passthrough`；仍排除现有 catch-all 规则（`/api/*`、`/`、带扩展名的 GET 静态资源）。日志 label 区分 `proxy` / `passthrough`，二者开始/结束日志都必须带真实 `requestId`（不再使用 `'-'`）。
 
-客户端先关闭时只记录 `downstream_closed` / `request_aborted`，由 `httpxy` 负责终止上游连接；上游异常才打印转发失败。正常 `upstream_complete` 与 `downstream_closed` 都输出中性的 `proxy request ended` info 日志，`request_aborted` 输出 warning，`upstream_aborted` / `upstream_error` 输出 error。Recorder 根据 endpoint terminal SSE 判断 `client_close` 是完整结果还是部分错误；缺少 terminal 时额外输出一次 `captured response is incomplete` warning；`request_aborted` 只持久化中断状态和已捕获原始响应字节，不解析未完成请求或空响应。开始日志包含 request ID、method、path、target，结束日志包含 request ID、status、duration 和 reason。
+被记录请求通过原生 `Transform` tee 传给 `httpxy.buffer`，确保首个已缓冲请求 chunk 不会被观察监听器提前消费。请求/响应 chunk 与生命周期控制消息进入同一个有序延迟队列，实际 Buffer 复制和 Worker `postMessage` 在后续事件循环执行，每轮最多复制 1 MiB（`MAX_CAPTURE_DRAIN_BYTES`）。**无 pending 字节上限、无 truncate**：取消原 64 MiB 积压截断后，Worker 慢或大体量并发时主线程队列可无限增长，存在 OOM 风险；1 MiB drain 只保护事件循环。主线程不访问数据库、不解析 JSON/SSE、不计算 token。非流式响应保持原始状态码、headers 和 body 字节，不经过 JSON 重编码。
+
+客户端先关闭时只记录 `downstream_closed` / `request_aborted`，由 `httpxy` 负责终止上游连接；上游异常才打印转发失败。正常 `upstream_complete` 与 `downstream_closed` 都输出中性的 `proxy request ended` info 日志，`request_aborted` 输出 warning，`upstream_aborted` / `upstream_error` 输出 error。AI endpoint 的 Recorder 根据 terminal SSE 判断 `client_close` 是完整结果还是部分错误；缺少 terminal 时额外输出一次 `captured response is incomplete` warning。透传不做协议 terminal 判断，不因缺 terminal 打 AI 专用 incomplete 语义。`request_aborted` 只持久化中断状态和已捕获原始响应字节，不解析未完成请求或空响应。开始日志包含 request ID、method、path、target，结束日志包含 request ID、status、duration 和 reason。
 
 ```text
 backend/src/recorder/client.ts
@@ -128,7 +136,7 @@ backend/src/recorder/worker.ts
 bin/recorder-worker.js
 ```
 
-Recorder 观察面：`client.ts` 管理 Worker 生命周期、RPC、UI 事件、延迟 capture 队列和 64 MiB 积压上限；`protocol.ts` 定义强类型消息；`worker.ts` 是 TypeORM、SQLite、SSE 合并、usage、preview 和工具配对的唯一运行时所有者。Worker 异常退出时代理继续透传，内部数据库 API 返回 503，并按 1 秒、2 秒、5 秒退避自动恢复。dev 使用 tsx CJS bootstrap，prod 加载 `dist/recorder/worker.js`。
+Recorder 观察面：`client.ts` 管理 Worker 生命周期、RPC、UI 事件与延迟 capture 队列（每轮 1 MiB drain，无 pending 上限）；`protocol.ts` 定义强类型消息（已删除 `capture.truncated`）；`worker.ts` 是 TypeORM、SQLite、SSE 合并、usage、preview 和工具配对的唯一运行时所有者。`apiEndpoint === passthrough` 时 Worker 短路：不 mergeChunks / 不写 usage / 不写 tool_calls / 不做 terminal SSE 判断；请求体可 decode 为 JSON 或 UTF-8 文本回退，响应始终保留完整 raw。Worker 异常退出时代理继续透传，内部数据库 API 返回 503，并按 1 秒、2 秒、5 秒退避自动恢复。dev 使用 tsx CJS bootstrap，prod 加载 `dist/recorder/worker.js`。
 
 进程关闭时先停止 HTTP Server 接收新连接，并立即停止向 Recorder 投递新捕获和 RPC。Worker 获得最多 4 秒优雅收尾时间，随后最多 1 秒强制终止；从收到 SIGINT/SIGTERM 起总退出时间严格不超过 5 秒。
 
@@ -169,16 +177,23 @@ backend/src/sse-parser.ts
 底层 SSE 解析，只负责把 raw SSE 文本解析成 `SSEChunk[]`，不处理 OpenAI / Anthropic 业务语义。
 
 ```text
+backend/src/types.ts
+backend/src/record-identity.ts
+```
+
+`ApiType` / `ApiEndpoint` / `RequestListFilter` 使用 `as const` 对象 + 派生联合类型（不用 TypeScript `enum`），含 `passthrough`。运行时比较优先常量（如 `ApiType.Passthrough` / `ApiEndpoint.Passthrough`）。`resolveRecordIdentity` 是记录身份的单一入口：透传要求 `apiType` 与 `apiEndpoint` 同时为 `passthrough`，不调用 `resolveEndpoint(path)`；AI 走 path↔endpoint 一致性校验。
+
+```text
 backend/src/endpoints.ts
 ```
 
-AI endpoint 唯一注册表。路由、provider、accumulator factory、数据库 path 分类都从这里派生。当前只注册 `openai-chat`、`openai-responses`、`anthropic-messages`；未知 path 不得默认回退 Chat。
+AI endpoint 唯一注册表。路由、provider、accumulator factory 都从这里派生。当前只注册 `openai-chat`、`openai-responses`、`anthropic-messages`；未知 path 走透传 capture（`apiType/apiEndpoint=passthrough`），不得默认回退 Chat。
 
 ```text
 backend/src/sse-merger.ts
 ```
 
-流式合并门面。公共接口固定为 `parseSSE(rawText)` 与 `mergeChunks(chunks, endpoint)`；endpoint 必填并使用穷尽分支，禁止通过 SSE 内容猜测协议。
+流式合并门面。公共接口固定为 `parseSSE(rawText)` 与 `mergeChunks(chunks, endpoint)`；endpoint 必填并使用穷尽分支，禁止通过 SSE 内容猜测协议。透传不得调用 merge。
 
 ```text
 backend/src/stream-accumulators/
@@ -192,19 +207,20 @@ backend/src/stream-accumulators/
 - `types.ts`：accumulator 公共类型和工具函数。
 
 ```text
+backend/src/entity/RequestEntity.ts
 backend/src/store.ts
 ```
 
-请求记录持久化、列表摘要、实时更新事件、工具调用查询。生产运行时仅允许 Recorder Worker 导入；Express 主线程通过 Worker RPC 查询，不得直接调用 store。
+请求记录持久化、列表摘要、实时更新事件、工具调用查询。实体表含必填 `api_endpoint` 列，写入时同时落 `api_type` 与 `api_endpoint`。**读路径以 `api_endpoint`（及 `api_type`）为准**，path 仅展示与搜索，不承担协议分发或 endpoint 反推。`getAll` / stats counts 结构为 `{ openai, anthropic, passthrough, streaming, error }`。生产运行时仅允许 Recorder Worker 导入 store；Express 主线程通过 Worker RPC 查询，不得直接调用 store。
 
 ```text
 backend/src/protocol-content.ts
 backend/src/tool-calls.ts
 ```
 
-无数据库依赖的协议内容 helper：统一提取多文本块、最新可读 message、最新 user message，以及按 endpoint 提取工具调用和下一轮工具结果。Responses 工具配对优先使用 `call_id`，`id` 仅作为明确标记的非标准 fallback。
+无数据库依赖的协议内容 helper：统一提取多文本块、最新可读 message、最新 user message，以及按 endpoint 提取工具调用和下一轮工具结果。Responses 工具配对优先使用 `call_id`，`id` 仅作为明确标记的非标准 fallback。透传不参与工具配对。
 
-SQLite 数据仅作为一次性检查记录，不维护 schema migration。TypeORM 通过 entity 与 `synchronize: true` 创建或同步当前 schema；实体结构发生不兼容变化时直接删除旧 DB 重建，不承诺历史数据迁移。启动阶段不扫描历史 requests 数据；endpoint/provider 一致性只在新记录写入和读取时通过 Endpoint Registry 校验。
+SQLite 数据仅作为一次性检查记录，不维护 schema migration。TypeORM 通过 entity 与 `synchronize: true` 创建或同步当前 schema；实体结构发生不兼容变化时直接删除旧 DB 重建，不承诺历史数据迁移。启动阶段不扫描历史 requests 数据；AI 记录的 endpoint/provider 一致性在新记录写入和读取时经 `resolveRecordIdentity` / Endpoint Registry 校验，透传跳过 path 注册表。
 
 `backend/src/db/slow-query-logger.ts` 负责慢 SQL 日志。执行时间超过 200ms 时只输出耗时和 SQL 文本，不输出绑定参数或查询结果，避免大型请求/响应字段的日志序列化阻塞 Recorder Worker。
 
@@ -237,7 +253,7 @@ backend/test/body-decode.test.ts
 frontend/src/
 ```
 
-前端页面、组件、store、API 调用和详情展示逻辑。API 返回的 `apiEndpoint` 为必填字段，前端不得再从 path 或 provider 推断协议。`response-flow.ts` 将规范化响应转换为卡片 descriptor，模型工具调用卡片不内联 result，结果仅通过 hover 使用现有工具配对接口加载。完整工具历史只在 `MessageFlow` 展示；`DetailView` 对每条 request body 只解析一次，会话前后记录只在导航、diff 或 MessageFlow 操作时加载，请求体和响应体 Monaco 只在对应折叠区及 tab 打开时挂载。
+前端页面、组件、store、API 调用和详情展示逻辑。API 返回的 `apiEndpoint` 为必填字段，前端不得再从 path 或 provider 推断协议；透传使用 `ApiEndpoint.Passthrough` / 灰色「透传」徽章，列表顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。`DetailView` 对透传走 raw inspector（headers + body 原始/美化），不启动协议合并、MessageFlow、工具配对或上下文组成分析。`response-flow.ts` 将规范化 AI 响应转换为卡片 descriptor，模型工具调用卡片不内联 result，结果仅通过 hover 使用现有工具配对接口加载。完整工具历史只在 `MessageFlow` 展示；`DetailView` 对每条 request body 只解析一次，会话前后记录只在导航、diff 或 MessageFlow 操作时加载，请求体和响应体 Monaco 只在对应折叠区及 tab 打开时挂载。
 
 ## 流式合并维护规则
 
@@ -383,3 +399,8 @@ frontend/src/
 
 - `docs/superpowers/specs/2026-07-14-proxy-log-semantics-design.md`：结构化日志与代理关闭语义设计。
 - `docs/superpowers/plans/2026-07-14-proxy-log-semantics.md`：Pino 全量迁移实施计划与验证清单。
+- `docs/superpowers/specs/2026-07-17-streaming-empty-placeholder-design.md`：流式等首包阶段占位展示设计。
+- `docs/superpowers/plans/2026-07-17-streaming-empty-placeholder.md`：流式等首包占位实施计划。
+- `docs/superpowers/plans/2026-07-19-body-raw-and-blobs.md`：请求体原始展示与二进制处理实施计划。
+- `docs/superpowers/specs/2026-07-19-passthrough-recording-design.md`：透传请求记录、`api_endpoint` 列与取消 64 MiB 截断设计。
+- `docs/superpowers/plans/2026-07-19-passthrough-recording.md`：透传记录与筛选实施计划。

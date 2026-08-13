@@ -7,11 +7,9 @@ export interface DeferredCaptureItem {
 }
 
 interface DeferredCaptureQueueOptions {
-  maxPendingBytes: number
   maxDrainBytes?: number
   schedule(callback: () => void): void
   deliver(item: DeferredCaptureItem): void
-  truncate(id: string, pendingBytes: number): void
 }
 
 interface QueuedChunkItem {
@@ -21,22 +19,15 @@ interface QueuedChunkItem {
   chunk: Uint8Array
 }
 
-interface QueuedTruncateItem {
-  type: 'truncate'
-  id: string
-  pendingBytes: number
-}
-
 interface QueuedControlItem {
   type: 'control'
   deliver(): void
 }
 
-type QueuedCaptureItem = QueuedChunkItem | QueuedTruncateItem | QueuedControlItem
+type QueuedCaptureItem = QueuedChunkItem | QueuedControlItem
 
 export class DeferredCaptureQueue {
   private readonly items: QueuedCaptureItem[] = []
-  private readonly truncatedIds = new Set<string>()
   private readonly idleWaiters: Array<() => void> = []
   private scheduled = false
   private totalPendingBytes = 0
@@ -47,19 +38,10 @@ export class DeferredCaptureQueue {
     return this.totalPendingBytes
   }
 
-  enqueue(kind: CaptureChunkKind, id: string, chunk: Uint8Array): boolean {
-    if (this.truncatedIds.has(id)) return false
-    if (this.totalPendingBytes + chunk.byteLength > this.options.maxPendingBytes) {
-      this.truncatedIds.add(id)
-      this.items.push({ type: 'truncate', id, pendingBytes: this.totalPendingBytes })
-      this.ensureScheduled()
-      return false
-    }
-
+  enqueue(kind: CaptureChunkKind, id: string, chunk: Uint8Array): void {
     this.items.push({ type: 'chunk', kind, id, chunk })
     this.totalPendingBytes += chunk.byteLength
     this.ensureScheduled()
-    return true
   }
 
   enqueueControl(deliver: () => void): void {
@@ -82,10 +64,6 @@ export class DeferredCaptureQueue {
       const item = this.items[processedItems]
       if (item.type === 'chunk' && drainedBytes > 0 && drainedBytes + item.chunk.byteLength > maxDrainBytes) break
       processedItems += 1
-      if (item.type === 'truncate') {
-        this.options.truncate(item.id, item.pendingBytes)
-        continue
-      }
       if (item.type === 'control') {
         item.deliver()
         continue
@@ -103,13 +81,8 @@ export class DeferredCaptureQueue {
     this.totalPendingBytes = Math.max(0, this.totalPendingBytes - bytes)
   }
 
-  release(id: string): void {
-    this.truncatedIds.delete(id)
-  }
-
   clear(): void {
     this.items.length = 0
-    this.truncatedIds.clear()
     this.totalPendingBytes = 0
     this.scheduled = false
     this.resolveIdleWaiters()

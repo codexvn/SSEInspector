@@ -43,7 +43,14 @@ async function runWorker(dev: boolean): Promise<void> {
   const result = await waitForMessage(worker, message => message.type === 'rpc.result' && message.correlationId === 1)
   assert.equal(result.type, 'rpc.result')
   assert.equal(result.ok, true)
-  if (result.ok) assert.deepEqual(result.value, { total: 0, openai: 0, anthropic: 0, streaming: 0, error: 0 })
+  if (result.ok) assert.deepEqual(result.value, {
+    total: 0,
+    openai: 0,
+    anthropic: 0,
+    passthrough: 0,
+    streaming: 0,
+    error: 0,
+  })
 
   const captureId = `${mode}-capture`
   const requestBody = Buffer.from(JSON.stringify({ model: 'unknown', input: 'hello' }))
@@ -97,8 +104,9 @@ async function runWorker(dev: boolean): Promise<void> {
 
   await assertClientCloseCapture(worker, mode, true, 3)
   await assertClientCloseCapture(worker, mode, false, 4)
-  await assertClientCloseCapture(worker, mode, false, 5, true)
   await assertRequestAbortedCapture(worker, mode, 6)
+  await assertPassthroughCapture(worker, mode, 5)
+  await assertPassthroughClientClose(worker, mode, 7)
 
   worker.postMessage({ type: 'shutdown' })
   await new Promise<void>((resolve, reject) => {
@@ -125,6 +133,135 @@ async function runWorker(dev: boolean): Promise<void> {
     fs.rm(`${dbPath}-wal`, { force: true }),
     fs.rm(`${dbPath}-shm`, { force: true }),
   ])
+}
+
+async function assertPassthroughCapture(worker: Worker, mode: string, correlationId: number): Promise<void> {
+  const captureId = `${mode}-passthrough`
+  const requestBody = Buffer.from('plain-text-request-body', 'utf8')
+  const responseBody = Buffer.from('not-json-response-body', 'utf8')
+  worker.postMessage({
+    type: 'capture.start',
+    metadata: {
+      id: captureId,
+      startedAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      method: 'GET',
+      path: '/healthz',
+      upstreamUrl: 'http://127.0.0.1:1/healthz',
+      requestHeaders: { 'content-type': 'text/plain' },
+      apiType: 'passthrough',
+      apiEndpoint: 'passthrough',
+    },
+  })
+  worker.postMessage({ type: 'capture.request_chunk', id: captureId, chunk: Uint8Array.from(requestBody) })
+  worker.postMessage({ type: 'capture.request_end', id: captureId })
+  worker.postMessage({
+    type: 'capture.response_start',
+    id: captureId,
+    status: 200,
+    headers: { 'content-type': 'text/plain' },
+    streaming: false,
+  })
+  worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody) })
+  worker.postMessage({ type: 'capture.complete', id: captureId })
+  worker.postMessage({ type: 'rpc', correlationId, method: 'requests.detail', args: [captureId] })
+  const detailResult = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === correlationId,
+  )
+  assert.equal(detailResult.type, 'rpc.result')
+  assert.equal(detailResult.ok, true)
+  if (!detailResult.ok) return
+  const detail = detailResult.value as {
+    state: string
+    apiType: string
+    apiEndpoint: string
+    requestBody: string | null
+    responseBody?: string
+    responseContent: unknown
+    apiUsage?: string
+  }
+  assert.equal(detail.state, 'done')
+  assert.equal(detail.apiType, 'passthrough')
+  assert.equal(detail.apiEndpoint, 'passthrough')
+  assert.equal(JSON.parse(detail.requestBody ?? 'null'), 'plain-text-request-body')
+  assert.equal(detail.responseBody, 'not-json-response-body')
+  assert.equal(detail.responseContent, null)
+  assert.equal(detail.apiUsage, undefined)
+
+  const toolsCorrelationId = correlationId + 100
+  worker.postMessage({ type: 'rpc', correlationId: toolsCorrelationId, method: 'tools.list', args: [captureId] })
+  const toolsResult = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === toolsCorrelationId,
+  )
+  assert.equal(toolsResult.type, 'rpc.result')
+  assert.equal(toolsResult.ok, true)
+  if (toolsResult.ok) {
+    assert.deepEqual(toolsResult.value, { toolCalls: [] })
+  }
+}
+
+async function assertPassthroughClientClose(worker: Worker, mode: string, correlationId: number): Promise<void> {
+  const captureId = `${mode}-passthrough-client-close`
+  const requestBody = Buffer.from('stream-req', 'utf8')
+  const responseText = 'chunk-one\nchunk-two\n'
+  worker.postMessage({
+    type: 'capture.start',
+    metadata: {
+      id: captureId,
+      startedAt: Date.now(),
+      timestamp: new Date().toISOString(),
+      method: 'GET',
+      path: '/metrics',
+      upstreamUrl: 'http://127.0.0.1:1/metrics',
+      requestHeaders: { accept: 'text/plain' },
+      apiType: 'passthrough',
+      apiEndpoint: 'passthrough',
+    },
+  })
+  worker.postMessage({ type: 'capture.request_chunk', id: captureId, chunk: Uint8Array.from(requestBody) })
+  worker.postMessage({ type: 'capture.request_end', id: captureId })
+  worker.postMessage({
+    type: 'capture.response_start',
+    id: captureId,
+    status: 200,
+    headers: { 'content-type': 'text/plain' },
+    streaming: true,
+  })
+  worker.postMessage({
+    type: 'capture.response_chunk',
+    id: captureId,
+    chunk: Uint8Array.from(Buffer.from(responseText)),
+  })
+  worker.postMessage({ type: 'capture.closed', id: captureId, status: 200, reason: 'downstream_closed' })
+  worker.postMessage({ type: 'rpc', correlationId, method: 'requests.detail', args: [captureId] })
+  const result = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === correlationId,
+  )
+  assert.equal(result.type, 'rpc.result')
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  const detail = result.value as {
+    state: string
+    finished: string
+    error?: string
+    apiType: string
+    apiEndpoint: string
+    responseBody?: string
+    responseContent: unknown
+    apiUsage?: string
+  }
+  // 透传 client_close：有 response_start 即完成，不走 isTerminalSSE / incomplete warning
+  assert.equal(detail.state, 'done')
+  assert.equal(detail.finished, 'client_close')
+  assert.equal(detail.error, undefined)
+  assert.equal(detail.apiType, 'passthrough')
+  assert.equal(detail.apiEndpoint, 'passthrough')
+  assert.equal(detail.responseBody, responseText)
+  assert.equal(detail.responseContent, null)
+  assert.equal(detail.apiUsage, undefined)
 }
 
 async function assertRequestAbortedCapture(worker: Worker, mode: string, correlationId: number): Promise<void> {
@@ -179,9 +316,8 @@ async function assertClientCloseCapture(
   mode: string,
   terminal: boolean,
   correlationId: number,
-  truncated = false,
 ): Promise<void> {
-  const captureId = `${mode}-client-close-${terminal ? 'terminal' : truncated ? 'truncated' : 'partial'}`
+  const captureId = `${mode}-client-close-${terminal ? 'terminal' : 'partial'}`
   const requestBody = Buffer.from(JSON.stringify({ model: 'gpt-test', input: 'hello', stream: true }))
   const responseText = terminal
     ? `data: ${JSON.stringify({ type: 'response.completed', response: { id: captureId, status: 'completed', output: [], usage: { input_tokens: 2, output_tokens: 1 } } })}\n\n`
@@ -211,7 +347,6 @@ async function assertClientCloseCapture(
     streaming: true,
   })
   worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(Buffer.from(responseText)) })
-  if (truncated) worker.postMessage({ type: 'capture.truncated', id: captureId, pendingBytes: responseText.length })
   worker.postMessage({ type: 'capture.closed', id: captureId, status: 200, reason: 'downstream_closed' })
   worker.postMessage({ type: 'rpc', correlationId, method: 'requests.detail', args: [captureId] })
 
@@ -224,12 +359,8 @@ async function assertClientCloseCapture(
   if (!result.ok) return
   const detail = result.value as { state: string; finished: string; error?: string; responseBody: string }
   assert.equal(detail.state, terminal ? 'done' : 'error')
-  assert.equal(detail.finished, truncated ? 'capture_truncated' : 'client_close')
-  assert.equal(detail.error, terminal
-    ? undefined
-    : truncated
-      ? '检查数据因 Recorder 积压被截断'
-      : '客户端在响应完成前断开')
+  assert.equal(detail.finished, 'client_close')
+  assert.equal(detail.error, terminal ? undefined : '客户端在响应完成前断开')
   assert.equal(detail.responseBody, responseText)
 }
 

@@ -16,9 +16,10 @@ import {
   endCaptureRequest,
   failCapture,
 } from './recorder/client';
+import { ApiEndpoint, ApiType } from './types';
 
 interface ProxyContext {
-  id: string | null;
+  id: string;
   startedAt: number;
   label: 'proxy' | 'passthrough';
   targetLog: string;
@@ -111,32 +112,31 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   const target = new URL(targetUrl);
   const targetLog = `${target.origin}${target.pathname}`;
   const label = endpointDefinition ? 'proxy' : 'passthrough';
-  const id = endpointDefinition ? crypto.randomUUID() : null;
+  // 所有经 forward 的代理流量都记录（含未注册 path 的透传）
+  const id = crypto.randomUUID();
   const startedAt = Date.now();
   getLogger(label).info({
-    requestId: id ?? '-',
+    requestId: id,
     method: req.method,
     path: req.path,
     target: targetLog,
   }, 'proxy request started');
-  if (id) {
-    const session = extractSessionId(req);
-    const contentEncoding = firstHeader(req.headers['content-encoding']);
-    beginCapture({
-      id,
-      startedAt,
-      timestamp: new Date().toISOString(),
-      method: req.method,
-      path: req.path,
-      upstreamUrl: targetUrl,
-      requestHeaders: flattenHeaders(filterHeaders(req.headers)),
-      contentEncoding,
-      apiType: endpointDefinition!.provider,
-      apiEndpoint: endpointDefinition!.endpoint,
-      sessionId: session?.value,
-      sessionIdKey: session?.key,
-    });
-  }
+  const session = extractSessionId(req);
+  const contentEncoding = firstHeader(req.headers['content-encoding']);
+  beginCapture({
+    id,
+    startedAt,
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.path,
+    upstreamUrl: targetUrl,
+    requestHeaders: flattenHeaders(filterHeaders(req.headers)),
+    contentEncoding,
+    apiType: endpointDefinition?.provider ?? ApiType.Passthrough,
+    apiEndpoint: endpointDefinition?.endpoint ?? ApiEndpoint.Passthrough,
+    sessionId: session?.value,
+    sessionIdKey: session?.key,
+  });
 
   const context: ProxyContext = {
     id,
@@ -150,9 +150,9 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   };
   proxyContexts.set(req, context);
 
-  const requestTap = id ? createRequestCaptureTap(id, context) : undefined;
+  const requestTap = createRequestCaptureTap(id, context);
   context.requestTap = requestTap;
-  if (requestTap) req.pipe(requestTap);
+  req.pipe(requestTap);
   req.once('aborted', () => {
     finalizeClosed(context, 499, 'request_aborted');
   });
@@ -211,13 +211,11 @@ function registerProxyEvents(proxy: ProxyServer): void {
     const responseHeaders = filterHeaders(proxyRes.headers as IncomingHttpHeaders);
     const contentType = firstHeader(proxyRes.headers['content-type']) ?? '';
     const streaming = contentType.toLowerCase().includes('text/event-stream');
-    if (context.id) {
-      beginCaptureResponse(context.id, context.responseStatus, flattenHeaders(responseHeaders), streaming);
-      proxyRes.on('data', (value: Buffer | string) => {
-        if (!context.id || context.finalized) return;
-        captureResponseChunk(context.id, typeof value === 'string' ? Buffer.from(value) : value);
-      });
-    }
+    beginCaptureResponse(context.id, context.responseStatus, flattenHeaders(responseHeaders), streaming);
+    proxyRes.on('data', (value: Buffer | string) => {
+      if (context.finalized) return;
+      captureResponseChunk(context.id, typeof value === 'string' ? Buffer.from(value) : value);
+    });
     proxyRes.once('aborted', () => {
       if (!context.downstreamClosed) finalizeFailure(context, new Error('上游响应异常中断'), 'upstream_aborted');
     });
@@ -235,7 +233,7 @@ function registerProxyEvents(proxy: ProxyServer): void {
       ...contextLogFields(context),
       reason: 'upstream_complete',
     }, 'proxy request ended');
-    if (context.id) completeCapture(context.id);
+    completeCapture(context.id);
   });
   proxy.on('econnreset', (_error, req) => {
     const context = proxyContexts.get(req);
@@ -265,7 +263,7 @@ function finalizeClosed(
   context.downstreamClosed = true;
   context.finalized = true;
   context.requestTap?.destroy();
-  if (context.id) closeCapture(context.id, status, reason);
+  closeCapture(context.id, status, reason);
   const logger = getLogger(context.label);
   const fields = { ...contextLogFields(context, status), reason };
   if (reason === 'request_aborted') logger.warn(fields, 'proxy request aborted');
@@ -286,12 +284,12 @@ function finalizeFailure(
     reason,
     err: serializeError(error),
   }, 'proxy request failed');
-  if (context.id) failCapture(context.id, context.responseStatus, detail);
+  failCapture(context.id, context.responseStatus, detail);
 }
 
 function contextLogFields(context: ProxyContext, status = context.responseStatus) {
   return {
-    requestId: context.id ?? '-',
+    requestId: context.id,
     status,
     durationMs: Date.now() - context.startedAt,
     target: context.targetLog,

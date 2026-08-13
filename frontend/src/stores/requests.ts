@@ -10,7 +10,7 @@ export const useRequestsStore = defineStore('requests', () => {
   const pageSize = 50
   const total = ref(0)
   const loading = ref(false)
-  const counts = ref({ total: 0, openai: 0, anthropic: 0, streaming: 0, error: 0 })
+  const counts = ref({ total: 0, openai: 0, anthropic: 0, passthrough: 0, streaming: 0, error: 0 })
   const activeFilter = ref<RequestListFilter>('all')
   /** 会话维度过滤，与类别 filter 正交；非空时只显示该会话的请求 */
   const sessionFilter = ref<string | null>(null)
@@ -25,6 +25,9 @@ export const useRequestsStore = defineStore('requests', () => {
         break
       case 'anthropic':
         if (record.apiType !== 'anthropic') return false
+        break
+      case 'passthrough':
+        if (record.apiType !== 'passthrough') return false
         break
       case 'streaming':
         if (record.state !== 'streaming') return false

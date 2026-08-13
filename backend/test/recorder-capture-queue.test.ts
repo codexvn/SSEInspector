@@ -6,13 +6,11 @@ function testDefersCopiesUntilFlush(): void {
   const delivered: Array<{ id: string; chunk: Uint8Array }> = []
   const source = Uint8Array.from([1, 2, 3])
   const queue = new DeferredCaptureQueue({
-    maxPendingBytes: 16,
     schedule: callback => scheduled.push(callback),
     deliver: item => delivered.push({ id: item.id, chunk: item.chunk }),
-    truncate: () => assert.fail('不应截断'),
   })
 
-  assert.equal(queue.enqueue('response', 'request-1', source), true)
+  queue.enqueue('response', 'request-1', source)
   assert.equal(delivered.length, 0)
   source[0] = 9
   scheduled.shift()?.()
@@ -25,41 +23,33 @@ function testDefersCopiesUntilFlush(): void {
   assert.equal(queue.pendingBytes, 0)
 }
 
-function testPendingLimitIncludesDeferredBytes(): void {
-  const truncated: Array<{ id: string; pendingBytes: number }> = []
-  const events: string[] = []
+function testEnqueueNeverTruncatesAcrossLargeVolume(): void {
   const scheduled: Array<() => void> = []
+  const delivered: number[] = []
   const queue = new DeferredCaptureQueue({
-    maxPendingBytes: 4,
+    maxDrainBytes: 3,
     schedule: callback => scheduled.push(callback),
-    deliver: item => events.push(`chunk:${item.chunk.byteLength}`),
-    truncate: (id, pendingBytes) => {
-      events.push('truncated')
-      truncated.push({ id, pendingBytes })
-    },
+    deliver: item => delivered.push(item.chunk.byteLength),
   })
 
-  assert.equal(queue.enqueue('request', 'request-1', Uint8Array.from([1, 2, 3])), true)
-  assert.equal(queue.enqueue('request', 'request-1', Uint8Array.from([4, 5])), false)
-  assert.deepEqual(events, [])
-  scheduled.shift()?.()
-  assert.deepEqual(truncated, [{ id: 'request-1', pendingBytes: 3 }])
-  assert.deepEqual(events, ['chunk:3', 'truncated'])
-  assert.equal(queue.pendingBytes, 3)
-  queue.acknowledge(3)
-  queue.release('request-1')
-  assert.equal(queue.enqueue('request', 'request-1', Uint8Array.from([6])), true)
+  for (let i = 0; i < 5; i++) {
+    queue.enqueue('response', 'r1', Uint8Array.from([1, 2, 3]))
+  }
+  assert.equal(queue.pendingBytes, 15)
+
+  while (scheduled.length) scheduled.shift()?.()
+  assert.deepEqual(delivered, [3, 3, 3, 3, 3])
+  queue.acknowledge(15)
+  assert.equal(queue.pendingBytes, 0)
 }
 
 function testControlMessagesRemainOrderedAcrossBoundedDrains(): void {
   const scheduled: Array<() => void> = []
   const events: string[] = []
   const queue = new DeferredCaptureQueue({
-    maxPendingBytes: 16,
     maxDrainBytes: 3,
     schedule: callback => scheduled.push(callback),
     deliver: item => events.push(`${item.kind}:${item.chunk.byteLength}`),
-    truncate: () => assert.fail('不应截断'),
   })
 
   queue.enqueue('request', 'request-1', Uint8Array.from([1, 2, 3]))
@@ -78,10 +68,8 @@ function testControlMessagesRemainOrderedAcrossBoundedDrains(): void {
 async function testIdleWaitsForScheduledControls(): Promise<void> {
   const scheduled: Array<() => void> = []
   const queue = new DeferredCaptureQueue({
-    maxPendingBytes: 16,
     schedule: callback => scheduled.push(callback),
     deliver: () => assert.fail('不应投递字节'),
-    truncate: () => assert.fail('不应截断'),
   })
   let resolved = false
   queue.enqueueControl(() => undefined)
@@ -96,7 +84,7 @@ async function testIdleWaitsForScheduledControls(): Promise<void> {
 
 async function main(): Promise<void> {
   testDefersCopiesUntilFlush()
-  testPendingLimitIncludesDeferredBytes()
+  testEnqueueNeverTruncatesAcrossLargeVolume()
   testControlMessagesRemainOrderedAcrossBoundedDrains()
   await testIdleWaitsForScheduledControls()
   console.log('recorder capture queue tests passed')

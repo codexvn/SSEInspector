@@ -14,7 +14,6 @@ import {
 import { DeferredCaptureItem, DeferredCaptureQueue } from './capture-queue';
 import { getLogger, serializeError } from '../logger';
 
-const MAX_PENDING_CAPTURE_BYTES = 64 * 1024 * 1024;
 const MAX_CAPTURE_DRAIN_BYTES = 1024 * 1024;
 const logger = getLogger('recorder');
 const events = new EventEmitter();
@@ -26,18 +25,15 @@ let stopping = false;
 let restartAttempt = 0;
 let correlationId = 0;
 let stopPromise: Promise<void> | null = null;
-const truncatedCaptures = new Set<string>();
 const activeCaptures = new Set<string>();
 const pendingRpc = new Map<number, {
   resolve(value: unknown): void;
   reject(error: Error): void;
 }>();
 const captureQueue = new DeferredCaptureQueue({
-  maxPendingBytes: MAX_PENDING_CAPTURE_BYTES,
   maxDrainBytes: MAX_CAPTURE_DRAIN_BYTES,
   schedule: callback => setImmediate(callback),
   deliver: deliverCaptureChunk,
-  truncate: truncateCapture,
 });
 
 export async function startRecorder(): Promise<void> {
@@ -56,7 +52,6 @@ export function onRecorderUiEvent(listener: (event: RecorderUiEvent) => void): (
 }
 
 export function beginCapture(metadata: CaptureMetadata): void {
-  truncatedCaptures.delete(metadata.id);
   if (!recorderAvailable()) return;
   activeCaptures.add(metadata.id);
   post({ type: 'capture.start', metadata });
@@ -126,7 +121,6 @@ async function stopRecorderWithinDeadline(timeoutMs: number): Promise<void> {
 
   await waitForPromise(captureQueue.whenIdle(), Math.max(0, deadline - Date.now()));
   ready = false;
-  truncatedCaptures.clear();
   captureQueue.clear();
 
   const current = worker;
@@ -174,7 +168,7 @@ function waitForPromise(promise: Promise<void>, timeoutMs: number): Promise<void
 }
 
 function postCaptureChunk(message: MainToRecorderMessage, id: string, chunk: Uint8Array): void {
-  if (!recorderAvailable() || !activeCaptures.has(id) || truncatedCaptures.has(id)) return;
+  if (!recorderAvailable() || !activeCaptures.has(id)) return;
   const kind = message.type === 'capture.request_chunk' ? 'request' : 'response';
   captureQueue.enqueue(kind, id, chunk);
 }
@@ -185,17 +179,8 @@ function deliverCaptureChunk(item: DeferredCaptureItem): void {
   worker!.postMessage({ type, id: item.id, chunk: item.chunk }, [item.chunk.buffer]);
 }
 
-function truncateCapture(id: string, pendingBytes: number): void {
-  if (truncatedCaptures.has(id)) return;
-  truncatedCaptures.add(id);
-  postQueued({ type: 'capture.truncated', id, pendingBytes });
-  logger.error({ requestId: id, pendingBytes }, 'capture backlog limit exceeded');
-}
-
 function finalizeCaptureQueue(id: string, message: MainToRecorderMessage): void {
   postQueued(message);
-  captureQueue.release(id);
-  truncatedCaptures.delete(id);
 }
 
 function post(message: MainToRecorderMessage): void {
@@ -264,7 +249,6 @@ async function spawnRecorder(initial: boolean): Promise<void> {
     ready = false;
     captureQueue.clear();
     activeCaptures.clear();
-    truncatedCaptures.clear();
     rejectPendingRpc(new Error(`Recorder Worker 已退出: code=${code}`));
     if (!stopping) scheduleRestart();
   });

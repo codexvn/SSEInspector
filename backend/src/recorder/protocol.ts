@@ -53,7 +53,6 @@ export type MainToRecorderMessage =
   | { type: 'capture.complete'; id: string }
   | { type: 'capture.closed'; id: string; status: number; reason: CaptureCloseReason }
   | { type: 'capture.failed'; id: string; status: number; error: string }
-  | { type: 'capture.truncated'; id: string; pendingBytes: number }
   | { type: 'rpc'; correlationId: number; method: RecorderRpcMethod; args: unknown[] }
   | { type: 'shutdown' };
 
