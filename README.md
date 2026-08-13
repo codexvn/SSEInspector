@@ -26,8 +26,12 @@ OpenAI / Anthropic API 代理检查器，实时记录流式请求和响应，无
 ```bash
 git clone https://github.com/codexvn/SSEInspector.git
 cd SSEInspector
-npm install && npm run build:all
+npm install
+npm --prefix frontend install
+npm run build:all
 ```
+
+`frontend/` 是独立 npm 项目，其依赖（vite、@vitejs/plugin-vue 等）不随根目录安装；缺少该步骤会导致 `npm start`（dev 模式 HMR）和 `build:frontend` 失败。仅通过 `npx` tarball 运行时无需安装任何依赖。
 
 ## 启动
 
