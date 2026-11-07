@@ -6,7 +6,7 @@
 
 ## 当前问题
 
-后端运行时当前分散使用 `console.log/warn/error`，字段和错误格式不统一，无法在彩色终端与日志平台 JSON 之间切换。`backend/src/proxy.ts` 在 `res.close` 或 httpxy `econnreset` 时立即打印 `downstream_closed`；此时主线程只知道关闭方向，不知道响应是否已经包含 terminal 事件，因此正常完成和真正提前中断使用同一条误导性文案。
+后端运行时当前分散使用 `console.log/warn/error`，字段和错误格式不统一，无法在彩色终端与日志平台 JSON 之间切换。`backend/src/proxy.ts` 在 `res.close` 或 httpxy `econnreset` 时立即打印 `downstream_closed`；此时主线程只知道关闭方向，不知道响应是否已经包含 terminal 事件（terminal 指标志一次流式响应结束的 SSE 事件，例如 `response.completed`），因此正常完成和真正提前中断使用同一条误导性文案。
 
 ## 设计
 
@@ -14,16 +14,16 @@
 
 - 使用 `pino@10.3.1` 和 `pino-pretty@13.1.3`，项目最低 Node.js 版本提升到 20。
 - 新增 `backend/src/logger.ts`，提供根 logger、按 component 缓存的 child logger、日志格式解析和完整 Error cause 链序列化。
-- 默认 `LOG_FORMAT=pretty`，使用同步 `pino-pretty` stream 输出彩色单行日志；`LOG_FORMAT=json` 时输出标准 Pino NDJSON，供 OpenTelemetry Collector、Grafana Alloy 或其他 agent 采集。
+- 默认 `LOG_FORMAT=pretty`，使用同步 `pino-pretty` stream 输出彩色单行日志；`LOG_FORMAT=json` 时输出标准 Pino NDJSON（以换行分隔的 JSON），供 OpenTelemetry Collector、Grafana Alloy 或其他 agent 采集。
 - `LOG_LEVEL` 默认 `info`。非法 format 或 level 在启动阶段明确失败，不静默回退。
 - 主线程与 Recorder Worker 读取相同环境配置，各自初始化 logger，不新增 transport Worker，也不改变 Recorder 消息协议。
 - Pino 字段使用稳定名称：`component`、`requestId`、`method`、`path`、`target`、`status`、`durationMs`、`reason`、`err`。
-- 不直接从应用连接 Loki、Elastic 或其他平台；生产接入通过 JSON stdout → Collector/Agent → OTLP/平台 exporter，避免平台网络或重试影响代理数据面。
+- 不直接从应用连接 Loki、Elastic 或其他平台；生产接入链路为应用输出 JSON 到 stdout，由 Collector 或 Agent 采集，再经 OTLP（OpenTelemetry Protocol）或平台 exporter 转发，避免平台网络或重试影响代理数据面。
 
 ### 迁移范围
 
 - `backend/src` 与 `bin` 中运行时 `console.*` 全部迁移，包括 proxy、api、db、recorder、SSE parser、store、accumulators 和 CLI 参数/启动错误。
-- `bin/parse-args.js` 改为纯解析函数，返回 options 与 errors，不自行输出；`bin/sse-inspector.js` 在解析 `--dev` 后加载 dev TS 或 prod dist logger，再输出结构化参数错误。
+- `bin/parse-args.js` 改为纯解析函数，返回 options 与 errors，不自行输出；`bin/sse-inspector.js` 在解析 `--dev` 后加载开发模式 TS 源码或生产模式 dist 产物的 logger，再输出结构化参数错误。
 - CLI help 属于命令输出而不是日志，使用 `process.stdout.write()` 输出纯文本，不加 Pino 前缀，也不作为 logger 失败兜底。
 - logger 加载、配置或依赖失败时直接由 Node 终止，不保留 console fallback 或第二套 logger。
 - 前端浏览器 console 和测试脚本的最终结果输出不属于 Node 服务日志，不在本轮迁移范围内。
@@ -31,8 +31,8 @@
 ### 主线程传输日志
 
 - 请求开始输出一条结构化 info 日志，包含 request ID、method、path 和 target。
-- 正常上游 HTTP EOF 输出中性的 `end` info 日志，reason 为 `upstream_complete`。
-- `downstream_closed` 输出中性的 `end` info 日志，不使用“客户端连接关闭”或 error 文案。主线程继续通知 Recorder，并立即终止对应上游连接；不改变传输生命周期。
+- 正常上游 HTTP EOF 时输出中性的 `end` info 日志，reason 为 `upstream_complete`。
+- `downstream_closed` 输出中性的 `end` info 日志，不使用「客户端连接关闭」或 error 文案。主线程继续通知 Recorder，并立即终止对应上游连接；不改变传输生命周期。
 - `request_aborted` 输出 warning，包含 request ID、status、duration 和 target。
 - `upstream_aborted`、`upstream_error` 输出 error，包含 request ID、status、duration、target 和完整异常链。
 - passthrough 与 AI endpoint 同样生成 UUID 并 capture（见 `docs/superpowers/specs/2026-07-19-passthrough-recording-design.md`）；开始/结束日志必须带真实 `requestId`，不再使用 `id=-`。
@@ -42,7 +42,7 @@
 - Recorder 收到 `downstream_closed` 后，对 AI endpoint 继续使用现有 terminal SSE 判断；透传不做协议 terminal 判断。
 - 已包含 terminal 事件：正常保存为 `finished=client_close`、`error=null`；控制台只保留主线程的中性 `end` 日志。
 - 缺少 terminal 事件（仅 AI endpoint）：保留主线程的中性 `end` 日志，保存部分响应并额外输出一条 warning，包含 request ID、status、duration 和 `reason=downstream_closed`。
-- 已取消 capture 队列 64 MiB 积压截断（无 pending 上限，仅保留每轮 1 MiB drain）；不再存在「因 truncate 跳过 incomplete warning」分支。
+- capture 队列不设 pending 上限，仅保留每轮 1 MiB drain；不存在因 truncate 跳过 incomplete warning 的分支。
 - `request_aborted` 的持久化仍不解析未完成请求或空响应。
 
 ## 非目标

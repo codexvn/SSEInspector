@@ -1,4 +1,4 @@
-# 流式等首包占位设计
+# 流式响应等待首包阶段的占位展示设计
 
 ## 目标
 
@@ -8,14 +8,14 @@
 
 详情页流式卡片条件为 `isStreaming && streamText`。`response_start` 后记录已是 `streaming`，但首个 body chunk 到达前 `streamText` 为空/`undefined`，卡片整块不渲染。用户只能从 meta「● 传输中…」推断仍在进行，主响应区看起来像未加载或卡住。
 
-列表页对 `state === 'streaming'` 已有「传输中 / 流式传输中…」，不在本次范围。
+列表页对 `state === 'streaming'` 已有「传输中 / 流式传输中…」展示，该展示不在本次修改范围内。
 
 ## 设计
 
 ### 原则
 
-- 等首包就是「空的实时接收中」，不新增状态、不新增独立文案。
-- 首包前后共用同一张卡片：空内容 = 等首包；有内容 = 增量展示。
+- 等待首包就是「空的实时接收中」，不新增状态、不新增独立文案。
+- 首包前后共用同一张卡片：空内容时表示等待首包，有内容时增量展示。
 - 仅改前端展示条件，不改后端 capture、SSE 协议或 `state` 枚举。
 
 ### 详情页
@@ -40,7 +40,7 @@
 </div>
 ```
 
-- `streamText` 计算属性保持不变：优先 `store.items` 中 SSE 快照，fallback 到 `record.streamText`。
+- `streamText` 计算属性保持不变：优先使用 `store.items` 中的 SSE 快照，回退到 `record.streamText`。
 - 完成后的分支 `v-else-if="record.responseContent && !isStreaming"` 不变。
 - meta「● 传输中…」保留，作为次要状态提示。
 
@@ -50,7 +50,7 @@
 
 - 继续接收 `text: string`；空字符串时 `<pre>` 为空，不抛错、不走特殊业务分支。
 - 给 `.stream-card pre` 增加约 1～2 行的 `min-height`，避免空内容时卡片视觉塌成细条。
-- 增量 append 与自动滚底逻辑不变；空 → 有内容时现有 `watch` 负责写入或追加。
+- 增量 append 与自动滚底逻辑不变；由空变为有内容时，由现有 `watch` 负责写入或追加。
 
 ### 数据流
 
@@ -68,7 +68,7 @@ complete/close → state done/error → 换合并响应卡（已有）
 
 ## 非目标
 
-- 不覆盖「请求已进入代理、上游尚未返回响应头」阶段（记录仍在 `response_start` 时创建）。
+- 不覆盖「请求已进入代理、上游尚未返回响应头」阶段——该阶段尚无记录，记录要等到 `response_start` 事件才创建。
 - 不新增「等待首包」独立文案或状态枚举。
 - 不改列表页预览/状态徽章。
 - 不在后端 `response_start` 强制推送空 `streamText` 快照。
@@ -84,4 +84,4 @@ complete/close → state done/error → 换合并响应卡（已有）
 7. 列表「传输中 / 流式传输中…」与改前一致。
 8. `npm run build:frontend` 通过。
 
-自动化：若仓库已有合适的前端组件测试脚手架，可补空 `streamText` 时卡片可见的用例；否则以手工验收 + 前端构建为准，不强行新增测试基建。
+自动化：若仓库已有合适的前端组件测试脚手架，可补空 `streamText` 时卡片可见的用例；否则以手工验收和前端构建为准，不强行新增测试基础设施。
