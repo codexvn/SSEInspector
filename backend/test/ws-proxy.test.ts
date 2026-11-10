@@ -7,14 +7,15 @@
  * 客户端用 http.request 的 upgrade 事件手工对话（帧构造见 ws-helpers），
  * 以便精确携带 sec-websocket-extensions 头验证剥离行为。
  *
- * 场景顺序说明：两个轻场景（开发模式让位、生产模式销毁）放在进程状态
- * 干净的最前面执行；完整桥接场景放在最后，收尾立即清理并显式退出——
+ * 场景顺序说明：轻场景（开发模式让位、生产模式销毁、h2c 拒绝桥接）放在
+ * 进程状态干净的最前面执行；完整桥接场景放在最后，收尾立即清理并显式退出——
  * Node 24 / Windows 上 socket 拆除后的空闲窗口存在偶发的进程级竞态，
  * 避免「重拆除残留 + 长空闲」的组合可以稳定测试。
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { CaptureMetadata } from '../src/recorder/protocol';
@@ -31,6 +32,9 @@ const require = createRequire(__filename);
 const clientPath = require.resolve('../src/recorder/client');
 
 const observation: WsObservation = { opens: [], chunks: [], closes: [] };
+
+/** 场景 E：h2c 拒绝桥接后经普通 request 管线收到的请求 */
+const httpEvents: Array<{ method?: string; url?: string; upgradeHeader?: string; body: string }> = [];
 
 const recorderMock = {
   beginWsCapture: (metadata: CaptureMetadata) => observation.opens.push(metadata),
@@ -179,13 +183,28 @@ async function main(): Promise<void> {
   const upstreamPort = await listen(upstream);
   setConfig({ upstreamUrl: `http://127.0.0.1:${upstreamPort}` });
 
-  const proxyServer = http.createServer();
-  proxyServer.on('upgrade', createUpgradeHandler({ isDev: false }));
+  const proxyServer = http.createServer((req, res) => {
+    // 场景 E：非 WebSocket 升级被拒绝后经 'connection' 重放进普通请求管线
+    const chunks: Buffer[] = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      httpEvents.push({
+        method: req.method,
+        url: req.url,
+        upgradeHeader: req.headers.upgrade,
+        body: Buffer.concat(chunks).toString(),
+      });
+      const payload = req.url === '/v1/models' ? 'second-ok' : 'first-ok';
+      res.writeHead(200, { 'content-length': String(payload.length) });
+      res.end(payload);
+    });
+  });
+  proxyServer.on('upgrade', createUpgradeHandler({ isDev: false, server: proxyServer }));
   const proxyPort = await listen(proxyServer);
 
   // ---- 场景 A：开发模式未注册路径让位（不销毁、不响应、不录制） ----
   const devServer = http.createServer();
-  devServer.on('upgrade', createUpgradeHandler({ isDev: true }));
+  devServer.on('upgrade', createUpgradeHandler({ isDev: true, server: devServer }));
   const devPort = await listen(devServer);
   let devOutcome: 'handled' | 'silent' = 'silent';
   const devReq = http.request({
@@ -218,6 +237,51 @@ async function main(): Promise<void> {
     setTimeout(() => reject(new Error('未注册路径既未销毁也未响应')), 4000);
   });
   assert.ok(unregistered, '生产模式未注册升级路径应被销毁');
+
+  // ---- 场景 E：非 WebSocket 升级（h2c）被优雅拒绝并桥接回普通请求管线 ----
+  // JDK HttpClient（默认 HTTP/2）对明文 http:// 的每个新连接先发 h2c 升级尝试；
+  // 拒绝后请求应作为普通 HTTP/1.1 处理（收到正常响应与请求体），且同一连接
+  // 可继续复用（第二个纯 1.1 请求直接成功）
+  const h2cFlow = await new Promise<string>((resolve, reject) => {
+    const s = net.connect(proxyPort, '127.0.0.1', () => {
+      s.write(
+        'POST /v1/chat/completions HTTP/1.1\r\n'
+        + 'Connection: Upgrade, HTTP2-Settings\r\n'
+        + 'Content-Length: 5\r\n'
+        + 'Host: x\r\n'
+        + 'HTTP2-Settings: AAEAAEAAAAIAAAAAAAMAAAAAAAQBAAAAAAUAAEAAAAYABgAA\r\n'
+        + 'Upgrade: h2c\r\n'
+        + 'User-Agent: Java-http-client/21.0.7\r\n'
+        + '\r\nhello',
+      );
+    });
+    let raw = '';
+    let secondSent = false;
+    s.on('data', chunk => {
+      raw += chunk.toString();
+      if (!secondSent && raw.includes('first-ok')) {
+        secondSent = true;
+        s.write('GET /v1/models HTTP/1.1\r\nHost: x\r\n\r\n');
+      }
+      if (raw.includes('second-ok')) {
+        s.end();
+        resolve(raw);
+      }
+    });
+    s.on('error', reject);
+    setTimeout(() => reject(new Error(`h2c bridge timeout, raw=${raw.slice(0, 120)}`)), 4000);
+  });
+  // 第一个响应是正常 HTTP/1.1 应答（非 101、非重置）
+  assert.ok(h2cFlow.startsWith('HTTP/1.1 200'), 'h2c 请求应收到普通 200 响应');
+  // 桥接后的请求：升级头已被剥离、请求体完整送达
+  assert.equal(httpEvents.length, 2);
+  assert.deepEqual(
+    { ...httpEvents[0], upgradeHeader: httpEvents[0].upgradeHeader ?? 'stripped' },
+    { method: 'POST', url: '/v1/chat/completions', upgradeHeader: 'stripped', body: 'hello' },
+  );
+  assert.equal(httpEvents[1].url, '/v1/models');
+  // h2c 桥接不产生任何 WS 录制
+  assert.equal(observation.opens.length, 0);
 
   // ---- 场景 C：完整桥接与录制 ----
   const client = await dial(proxyPort, '/v1/responses?x=1', {

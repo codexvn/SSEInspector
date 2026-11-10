@@ -230,6 +230,8 @@ async function start() {
   }
   // WebSocket 升级接管：升级请求不经过 Express 中间件栈（Node 以 'upgrade' 事件分发）。
   // 开发模式下 Vite HMR 也在同一 server 上监听 upgrade，未命中注册表的路径必须让位。
+  // 带 Connection: Upgrade 但非 WebSocket 的请求（如 JDK HttpClient 的 h2c 升级尝试）
+  // 由处理器拒绝升级并桥接回普通请求管线，因此需要把 server 实例传入。
   // 模块级 let 的控制流空值收窄在此不延续，两种 listen 分支都已赋值后显式断言非空。
   const activeServer = server as Server;
 
@@ -245,7 +247,7 @@ async function start() {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
   });
 
-  activeServer.on('upgrade', createUpgradeHandler({ isDev }));
+  activeServer.on('upgrade', createUpgradeHandler({ isDev, server: activeServer }));
 }
 
 async function shutdown(signal: string): Promise<void> {
