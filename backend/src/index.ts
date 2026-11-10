@@ -232,6 +232,19 @@ async function start() {
   // 开发模式下 Vite HMR 也在同一 server 上监听 upgrade，未命中注册表的路径必须让位。
   // 模块级 let 的控制流空值收窄在此不延续，两种 listen 分支都已赋值后显式断言非空。
   const activeServer = server as Server;
+
+  // 空闲 keep-alive 超时：Node 默认 5s，会在两次请求的间隙主动关闭空闲连接；
+  // JDK HttpClient 等按「复用池内连接、不校验存活」工作的客户端，会把请求写进
+  // 恰在此刻被服务端关闭的 socket——客户端表现为 Connection reset 且服务端无任何日志。
+  // 调大到 120s 显著收窄该竞态窗口；headersTimeout 必须大于 keepAliveTimeout。
+  activeServer.keepAliveTimeout = 120_000;
+  activeServer.headersTimeout = 125_000;
+  // 请求头解析失败等 socket 级错误默认被静默销毁，不留任何痕迹；挂日志并回 400 以便排查
+  activeServer.on('clientError', (err, socket) => {
+    serverLogger.warn({ err: serializeError(err) }, 'http client error');
+    if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+  });
+
   activeServer.on('upgrade', createUpgradeHandler({ isDev }));
 }
 
