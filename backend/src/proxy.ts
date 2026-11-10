@@ -53,8 +53,9 @@ const KNOWN_SESSION_HEADERS = [
 ];
 
 /** 从请求头中按已知列表提取 session ID，返回 { value, key } 或 null。
- *  优先匹配已知列表，兜底匹配任意以 -session-id 结尾的头（忽略大小写）。 */
-function extractSessionId(req: Request): { value: string; key: string } | null {
+ *  优先匹配已知列表，兜底匹配任意以 -session-id 结尾的头（忽略大小写）。
+ *  参数取结构最小类型，HTTP 与 WS 升级请求都可传入。 */
+export function extractSessionId(req: { headers: Record<string, string | string[] | undefined> }): { value: string; key: string } | null {
   const headers = req.headers as Record<string, string | string[] | undefined>;
   // 第一轮：已知列表精确匹配
   for (const name of KNOWN_SESSION_HEADERS) {
@@ -79,7 +80,7 @@ function extractSessionId(req: Request): { value: string; key: string } | null {
 
 type ForwardHeaders = Record<string, string | string[]>;
 
-function filterHeaders(headers: Record<string, string | string[] | undefined>): ForwardHeaders {
+export function filterHeaders(headers: Record<string, string | string[] | undefined>): ForwardHeaders {
   const result: ForwardHeaders = {};
   for (const [key, value] of Object.entries(headers)) {
     if (HOP_HEADERS.includes(key.toLowerCase())) continue;
@@ -296,7 +297,7 @@ function contextLogFields(context: ProxyContext, status = context.responseStatus
   };
 }
 
-function flattenHeaders(headers: ForwardHeaders): Record<string, string> {
+export function flattenHeaders(headers: ForwardHeaders): Record<string, string> {
   return Object.fromEntries(
     Object.entries(headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : value]),
   );

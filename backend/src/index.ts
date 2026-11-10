@@ -4,6 +4,7 @@ import compression from 'compression';
 import path from 'path';
 import type { Server } from 'http';
 import { handleProxy, handlePassthrough, initializeProxy } from './proxy';
+import { createUpgradeHandler } from './ws-proxy';
 import { config } from './config';
 import { RequestListFilter } from './types';
 import { ENDPOINT_DEFINITIONS } from './endpoints';
@@ -227,6 +228,11 @@ async function start() {
   } else {
     server = app.listen(PORT, onStart);
   }
+  // WebSocket 升级接管：升级请求不经过 Express 中间件栈（Node 以 'upgrade' 事件分发）。
+  // 开发模式下 Vite HMR 也在同一 server 上监听 upgrade，未命中注册表的路径必须让位。
+  // 模块级 let 的控制流空值收窄在此不延续，两种 listen 分支都已赋值后显式断言非空。
+  const activeServer = server as Server;
+  activeServer.on('upgrade', createUpgradeHandler({ isDev }));
 }
 
 async function shutdown(signal: string): Promise<void> {

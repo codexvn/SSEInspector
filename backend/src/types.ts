@@ -189,6 +189,8 @@ export interface RecordedRequest {
   sessionId?: string;
   /** 会话标识来源头名称 */
   sessionIdKey?: string;
+  /** Responses WS 模式的 stream_id（lane 维度；HTTP 请求与隐式默认 lane 为空） */
+  streamId?: string;
 }
 
 export interface RecordSummary {

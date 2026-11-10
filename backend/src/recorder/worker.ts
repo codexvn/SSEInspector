@@ -3,6 +3,7 @@ import { TextDecoder } from 'util';
 import { setConfig } from '../config';
 import { isPassthroughEndpoint } from '../record-identity';
 import { MainToRecorderMessage, RecorderRpcMethod, RecorderToMainMessage, CaptureMetadata } from './protocol';
+import { createWsConnectionCapture, type WsConnectionCapture } from './ws-capture';
 import { RecordedRequest, MergedContent } from '../types';
 import { formatErrorChain, getLogger, serializeError } from '../logger';
 
@@ -23,9 +24,13 @@ interface CaptureState {
   streaming: boolean;
   record?: RecordedRequest;
   lastPublishedAt: number;
+  /** WebSocket turn 专属：原始信封 NDJSON 累积，持久化时优先作为 response_body；HTTP 路径恒为空 */
+  rawResponseText?: string;
 }
 
 const captures = new Map<string, CaptureState>();
+/** WS 连接级 capture 状态（lane 管理器持有 turn 明细，与 HTTP 的 captures 分离） */
+const wsConnections = new Map<string, WsConnectionCapture>();
 const activeUiStates = new Map<string, RecordedRequest['state']>();
 let shuttingDown = false;
 let messageChain = Promise.resolve();
@@ -55,17 +60,23 @@ async function initialize(): Promise<void> {
       },
     });
   });
-  parentPort!.on('message', (message: MainToRecorderMessage) => {
-    messageChain = messageChain
-      .then(() => handleMessage(message))
-      .catch(error => {
-        const detail = formatErrorChain(error);
-        logger.fatal({ err: serializeError(error) }, 'Recorder Worker message handling failed');
-        send({ type: 'fatal', error: detail });
-        process.exit(1);
-      });
-  });
+  parentPort!.on('message', enqueueMessage);
   send({ type: 'ready' });
+}
+
+/**
+ * 把消息追加到串行处理链尾部。真实消息（parentPort）与 WS lane 管理器合成的
+ * capture.* 消息走同一条链，保证合成消息与 ws_close 等真实消息的相对顺序。
+ */
+function enqueueMessage(message: MainToRecorderMessage): void {
+  messageChain = messageChain
+    .then(() => handleMessage(message))
+    .catch(error => {
+      const detail = formatErrorChain(error);
+      logger.fatal({ err: serializeError(error) }, 'Recorder Worker message handling failed');
+      send({ type: 'fatal', error: detail });
+      process.exit(1);
+    });
 }
 
 async function handleMessage(message: MainToRecorderMessage): Promise<void> {
@@ -116,6 +127,30 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       await failCapture(requireCapture(message.id), message.status, message.error);
       captures.delete(message.id);
       return;
+    case 'capture.ws_open':
+      wsConnections.set(message.metadata.id, createWsConnectionCapture(message.metadata, {
+        dispatch: enqueueMessage,
+        appendRawResponseText(turnId, line) {
+          const state = captures.get(turnId);
+          if (state) state.rawResponseText = (state.rawResponseText ?? '') + line;
+        },
+        warn: (event, text) => logger.warn(event, text),
+      }));
+      return;
+    case 'capture.ws_chunk': {
+      const connection = wsConnections.get(message.id);
+      if (connection) connection.feed(message.dir, message.chunk);
+      send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
+      return;
+    }
+    case 'capture.ws_close': {
+      const connection = wsConnections.get(message.id);
+      if (connection) {
+        connection.close(message.reason, message.error);
+        wsConnections.delete(message.id);
+      }
+      return;
+    }
     case 'rpc':
       await handleRpc(message.correlationId, message.method, message.args);
       return;
@@ -211,7 +246,7 @@ async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'cl
   if (!state.record) throw new Error(`响应完成前缺少 response_start: id=${state.metadata.id}`);
   const responseContent = await buildResponseContent(state);
   state.record.responseContent = responseContent;
-  state.record.responseBody = state.responseText;
+  state.record.responseBody = state.rawResponseText ?? state.responseText;
   state.record.responseHeaders = state.responseHeaders;
   state.record.responseStatus = state.responseStatus ?? 0;
   state.record.durationMs = Date.now() - state.metadata.startedAt;
@@ -242,7 +277,7 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   const responseContent = await buildResponseContent(state);
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
-  record.responseBody = state.responseText || undefined;
+  record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.responseContent = responseContent;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
@@ -275,7 +310,7 @@ async function persistAbortedCapture(state: CaptureState, status: number): Promi
   const record = state.record ?? buildRecord(state, 'streaming');
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
-  record.responseBody = state.responseText || undefined;
+  record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.responseContent = null;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
@@ -292,7 +327,7 @@ async function failCapture(state: CaptureState, status: number, error: string): 
   const record = state.record ?? buildRecord(state, 'streaming');
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
-  record.responseBody = state.responseText || undefined;
+  record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
   record.finished = 'error';
@@ -332,6 +367,7 @@ function buildRecord(state: CaptureState, stateName: 'streaming' | 'done'): Reco
     finished: stateName === 'streaming' ? 'pending' : 'ok',
     sessionId: metadata.sessionId,
     sessionIdKey: metadata.sessionIdKey,
+    streamId: metadata.streamId,
   };
 }
 

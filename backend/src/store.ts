@@ -127,6 +127,7 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     outputTokens: buildTokenSummary(identity.endpoint, row.api_usage).outputTokens,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
+    streamId: row.stream_id ?? undefined,
   };
 }
 
@@ -287,6 +288,7 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       api_usage: r.apiUsage ?? null,
       session_id: r.sessionId ?? null,
       session_id_key: r.sessionIdKey ?? null,
+      stream_id: r.streamId ?? null,
     });
   }
 

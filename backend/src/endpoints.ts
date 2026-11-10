@@ -8,6 +8,12 @@ export interface EndpointDefinition {
   endpoint: ApiEndpoint;
   provider: ApiType;
   routePattern: RegExp;
+  /**
+   * WebSocket 升级路由（可选）：命中该 pattern 的 GET 升级请求走 WS 代理。
+   * 与 POST 的 routePattern 分离——path 无法区分 GET-WS 与 POST，
+   * WS 维度只在升级处理器里使用，不参与 resolveEndpoint 的唯一匹配约束。
+   */
+  wsRoutePattern?: RegExp;
   createAccumulator(): StreamAccumulator<MergedContent>;
 }
 
@@ -25,6 +31,8 @@ const ENDPOINT_REGISTRY: Readonly<Record<EndpointKey, EndpointDefinition>> = Obj
     endpoint: 'openai-responses',
     provider: 'openai',
     routePattern: /\/responses$/,
+    // Responses WebSocket 模式：GET /v1/responses 的升级请求与 POST 同路径
+    wsRoutePattern: /\/responses$/,
     createAccumulator: () => new OpenAIResponsesAccumulator(),
   },
   'anthropic-messages': {
@@ -61,4 +69,9 @@ export function assertEndpointProvider(path: string, actualProvider: string): En
     );
   }
   return definition;
+}
+
+/** 查找 path 命中的 WebSocket 升级注册（无命中返回 undefined，调用方决定销毁或让位） */
+export function findWsEndpointDefinition(path: string): EndpointDefinition | undefined {
+  return ENDPOINT_DEFINITIONS.find(definition => definition.wsRoutePattern?.test(path));
 }

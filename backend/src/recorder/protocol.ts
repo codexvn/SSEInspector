@@ -13,6 +13,8 @@ export interface CaptureMetadata {
   apiEndpoint: ApiEndpoint;
   sessionId?: string;
   sessionIdKey?: string;
+  /** WebSocket 记录专属：Responses WS 模式下该 turn 的 stream_id（隐式默认 lane 省略时为空） */
+  streamId?: string;
 }
 
 export type RecorderRpcMethod =
@@ -44,6 +46,13 @@ export interface RecorderUiEvent {
 
 export type CaptureCloseReason = 'downstream_closed' | 'request_aborted';
 
+/**
+ * WebSocket 连接级关闭原因。与 HTTP 语义的 CaptureCloseReason 分开维护：
+ * 连接关闭在 Worker 内由 lane 管理器转译为各未完成 turn 的
+ * capture.closed（下游先关）或 capture.failed（上游关闭/出错）。
+ */
+export type WsCaptureCloseReason = 'downstream_closed' | 'upstream_closed' | 'upstream_error';
+
 export type MainToRecorderMessage =
   | { type: 'capture.start'; metadata: CaptureMetadata }
   | { type: 'capture.request_chunk'; id: string; chunk: Uint8Array }
@@ -53,6 +62,9 @@ export type MainToRecorderMessage =
   | { type: 'capture.complete'; id: string }
   | { type: 'capture.closed'; id: string; status: number; reason: CaptureCloseReason }
   | { type: 'capture.failed'; id: string; status: number; error: string }
+  | { type: 'capture.ws_open'; metadata: CaptureMetadata }
+  | { type: 'capture.ws_chunk'; id: string; dir: 'request' | 'response'; chunk: Uint8Array }
+  | { type: 'capture.ws_close'; id: string; reason: WsCaptureCloseReason; error?: string }
   | { type: 'rpc'; correlationId: number; method: RecorderRpcMethod; args: unknown[] }
   | { type: 'shutdown' };
 

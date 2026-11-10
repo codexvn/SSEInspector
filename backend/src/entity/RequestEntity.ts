@@ -99,4 +99,8 @@ export class RequestEntity {
   /** 会话标识来源头名称（如 x-claude-code-session-id） */
   @Column('text', { nullable: true })
   session_id_key?: string | null;
+
+  /** Responses WS 模式的 stream_id（lane 维度；HTTP 请求与隐式默认 lane 为 null） */
+  @Column('text', { nullable: true })
+  stream_id?: string | null;
 }

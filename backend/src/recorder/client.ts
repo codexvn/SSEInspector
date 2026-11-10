@@ -10,6 +10,7 @@ import {
   RecorderRpcMethod,
   RecorderToMainMessage,
   RecorderUiEvent,
+  WsCaptureCloseReason,
 } from './protocol';
 import { DeferredCaptureItem, DeferredCaptureQueue } from './capture-queue';
 import { getLogger, serializeError } from '../logger';
@@ -26,6 +27,8 @@ let restartAttempt = 0;
 let correlationId = 0;
 let stopPromise: Promise<void> | null = null;
 const activeCaptures = new Set<string>();
+/** WebSocket 连接级 capture：deliver 时据此把队列 chunk 映射为 capture.ws_chunk */
+const wsCaptures = new Set<string>();
 const pendingRpc = new Map<number, {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -93,6 +96,32 @@ export function closeCapture(id: string, status: number, reason: CaptureCloseRea
 export function failCapture(id: string, status: number, error: string): void {
   if (!activeCaptures.delete(id)) return;
   captureQueue.enqueueControl(() => finalizeCaptureQueue(id, { type: 'capture.failed', id, status, error }));
+}
+
+/** WebSocket 连接开启录制：连接 id 同时登记到 activeCaptures 与 wsCaptures */
+export function beginWsCapture(metadata: CaptureMetadata): void {
+  if (!recorderAvailable()) return;
+  activeCaptures.add(metadata.id);
+  wsCaptures.add(metadata.id);
+  post({ type: 'capture.ws_open', metadata });
+}
+
+/** WebSocket 双向原始字节 tee：复用同一延迟队列与 ack 背压，方向复用 request/response 两种 kind */
+export function wsCaptureChunk(id: string, dir: 'request' | 'response', chunk: Uint8Array): void {
+  if (!recorderAvailable() || !activeCaptures.has(id)) return;
+  captureQueue.enqueue(dir, id, chunk);
+}
+
+/**
+ * WebSocket 连接结束录制。ws_close 经队列尾投递，保证排在已入队 chunk 之后；
+ * wsCaptures 延迟到投递时刻清理，使仍在队列中的 chunk 继续按 ws 消息映射。
+ */
+export function endWsCapture(id: string, reason: WsCaptureCloseReason, error?: string): void {
+  if (!activeCaptures.delete(id)) return;
+  captureQueue.enqueueControl(() => {
+    postQueued({ type: 'capture.ws_close', id, reason, error });
+    wsCaptures.delete(id);
+  });
 }
 
 export async function recorderRpc<M extends RecorderRpcMethod>(
@@ -175,6 +204,10 @@ function postCaptureChunk(message: MainToRecorderMessage, id: string, chunk: Uin
 
 function deliverCaptureChunk(item: DeferredCaptureItem): void {
   if (!ready || !worker) return;
+  if (wsCaptures.has(item.id)) {
+    worker!.postMessage({ type: 'capture.ws_chunk', id: item.id, dir: item.kind, chunk: item.chunk }, [item.chunk.buffer]);
+    return;
+  }
   const type = item.kind === 'request' ? 'capture.request_chunk' : 'capture.response_chunk';
   worker!.postMessage({ type, id: item.id, chunk: item.chunk }, [item.chunk.buffer]);
 }
@@ -249,6 +282,7 @@ async function spawnRecorder(initial: boolean): Promise<void> {
     ready = false;
     captureQueue.clear();
     activeCaptures.clear();
+    wsCaptures.clear();
     rejectPendingRpc(new Error(`Recorder Worker 已退出: code=${code}`));
     if (!stopping) scheduleRestart();
   });

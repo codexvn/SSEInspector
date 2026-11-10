@@ -1,5 +1,6 @@
 /tmp
 /.tmp/
+/harness/
 /out-tsc
 
 /node_modules
