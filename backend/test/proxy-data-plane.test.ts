@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import fs from 'node:fs'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import { once } from 'node:events'
 import express from 'express'
@@ -89,6 +91,7 @@ const { setConfig } = require('../src/config') as typeof import('../src/config')
 const { getEndpointDefinition } = require('../src/endpoints') as typeof import('../src/endpoints')
 const { getLogger } = require('../src/logger') as typeof import('../src/logger')
 const { handlePassthrough, handleProxy } = require('../src/proxy') as typeof import('../src/proxy')
+const { initRouting, replaceRoutingConfig } = require('../src/routing') as typeof import('../src/routing')
 
 const proxyLogger = getLogger('proxy')
 const originalLoggerMethods = {
@@ -258,9 +261,57 @@ async function main(): Promise<void> {
     new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('客户端中断上传后上游请求未被终止')), 2000)),
   ])
 
+  // ---- 多上游分流：规则命中走上游 B，未命中走默认，两者皆无时 503 ----
+  const upstreamBSeen: string[] = []
+  const upstreamB = http.createServer((req, res) => {
+    upstreamBSeen.push(req.url ?? '')
+    res.writeHead(202, { 'content-type': 'application/json', 'x-upstream-b': '1' })
+    res.end('{"from":"b"}')
+  })
+  upstreamB.listen(0, '127.0.0.1')
+  await once(upstreamB, 'listening')
+  const upstreamBPort = (upstreamB.address() as { port: number }).port
+  const upstreamAUrl = `http://127.0.0.1:${upstreamPort}`
+
+  const routingFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sse-proxy-routing-')), 'routing.json')
+  initRouting({ cliUpstream: null, filePath: routingFile })
+  replaceRoutingConfig({
+    defaultUpstream: upstreamAUrl,
+    routes: [
+      { id: 'b1', name: 'beta 分流', enabled: true, prefix: '/v1/alpha', upstream: `http://127.0.0.1:${upstreamBPort}` },
+    ],
+  })
+
+  // 命中规则：同一透传路径改走上游 B，记录的 upstreamUrl 指向 B
+  const betaResult = await postJson(proxyPort, '/v1/alpha/search')
+  assert.equal(betaResult.status, 202)
+  assert.equal(betaResult.headers['x-upstream-b'], '1')
+  assert.deepEqual(upstreamBSeen, ['/v1/alpha/search'])
+  const betaCapture = captureObservation.starts.filter(start => start.path === '/v1/alpha/search').at(-1)
+  assert.ok(betaCapture, '分流请求应触发 capture.start')
+  assert.ok(betaCapture.upstreamUrl.includes(`:${upstreamBPort}`), '记录的 upstreamUrl 应指向规则命中的上游')
+
+  // 未命中规则：默认上游兜底（/v1/responses 不在 /v1/alpha 前缀内）
+  const defaultResult = await postJson(proxyPort, '/v1/responses')
+  assert.equal(defaultResult.status, 201)
+  assert.deepEqual(upstreamBSeen, ['/v1/alpha/search'], '未命中路径不应到达上游 B')
+
+  // 清空默认上游后未命中路径：503 明确拒绝，且不产生新录制
+  const startsBeforeReject = captureObservation.starts.length
+  replaceRoutingConfig({ defaultUpstream: null, routes: [] })
+  const rejected = await postJson(proxyPort, '/v1/responses')
+  assert.equal(rejected.status, 503)
+  assert.ok(rejected.body.toString().includes('未匹配任何分流规则'), '拒绝响应应携带中文错误说明')
+  assert.equal(captureObservation.starts.length, startsBeforeReject, '被拒绝请求不应产生录制')
+  assert.ok(
+    logEvents.some(event => event.level === 'warn' && event.message === 'no upstream resolved, rejecting request'),
+    '拒绝路径应输出 warn 日志',
+  )
+
   await Promise.all([
     new Promise<void>((resolve, reject) => proxy.close(error => error ? reject(error) : resolve())),
     new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve())),
+    new Promise<void>((resolve, reject) => upstreamB.close(error => error ? reject(error) : resolve())),
   ])
 
   assert.ok(logEvents.some(event => event.message === 'proxy request started' && event.fields.method === 'POST'))
@@ -334,6 +385,32 @@ async function abortRequestUpload(proxyPort: number): Promise<void> {
       request.destroy()
       resolve()
     }, 50)
+  })
+}
+
+/** 分流场景复用的最小 POST：返回状态、头与响应体 */
+async function postJson(
+  proxyPort: number,
+  requestPath: string,
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: requestPath,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-length': '2' },
+    }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => chunks.push(chunk))
+      response.on('end', () => resolve({
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      }))
+    })
+    request.once('error', reject)
+    request.end('{}')
   })
 }
 

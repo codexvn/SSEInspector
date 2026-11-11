@@ -14,8 +14,10 @@
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { CaptureMetadata } from '../src/recorder/protocol';
@@ -70,6 +72,7 @@ require.cache[clientPath] = {
 } as NodeModule;
 
 const { setConfig } = require('../src/config') as typeof import('../src/config');
+const { initRouting, replaceRoutingConfig } = require('../src/routing') as typeof import('../src/routing');
 const { createUpgradeHandler } = require('../src/ws-proxy') as typeof import('../src/ws-proxy');
 
 interface ClientConnection {
@@ -283,6 +286,26 @@ async function main(): Promise<void> {
   // h2c 桥接不产生任何 WS 录制
   assert.equal(observation.opens.length, 0);
 
+  // ---- 场景 F：WS 升级按分流规则走第二上游（默认路径不受影响）----
+  const upstreamB = http.createServer();
+  upstreamB.on('upgrade', (_req, socket) => {
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    socket.destroy();
+  });
+  const upstreamBPort = await listen(upstreamB);
+  const routingFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sse-ws-routing-')), 'routing.json');
+  initRouting({ cliUpstream: `http://127.0.0.1:${upstreamPort}`, filePath: routingFile });
+  replaceRoutingConfig({
+    defaultUpstream: `http://127.0.0.1:${upstreamPort}`,
+    routes: [
+      { id: 'ws-b', name: '第二上游', enabled: true, prefix: '/other', upstream: `http://127.0.0.1:${upstreamBPort}` },
+    ],
+  });
+  const routedClient = await dial(proxyPort, '/other/responses?x=1');
+  const routedOpen = await waitFor(() => observation.opens.find(open => open.upstreamUrl.includes(`:${upstreamBPort}`)));
+  assert.equal(routedOpen.path, '/other/responses');
+  routedClient.socket.destroy();
+
   // ---- 场景 C：完整桥接与录制 ----
   const client = await dial(proxyPort, '/v1/responses?x=1', {
     'sec-websocket-extensions': 'permessage-deflate; client_max_window_bits',
@@ -301,9 +324,9 @@ async function main(): Promise<void> {
   assert.equal(upstreamHeaders.authorization, 'Bearer test-token');
   assert.ok(!('sec-websocket-extensions' in upstreamHeaders));
 
-  // 录制：连接级 ws_open 元数据正确
-  assert.equal(observation.opens.length, 1);
-  const open = observation.opens[0];
+  // 录制：连接级 ws_open 元数据正确（按路径排除场景 F 的分流连接）
+  assert.equal(observation.opens.filter(open => open.path === '/v1/responses').length, 1);
+  const open = observation.opens.find(o => o.path === '/v1/responses')!;
   assert.equal(open.method, 'WS');
   assert.equal(open.path, '/v1/responses');
   assert.equal(open.apiType, 'openai');
@@ -321,15 +344,16 @@ async function main(): Promise<void> {
   // ---- 场景 D：下游断开 → downstream_closed（destroy 模拟客户端突然断开；
   //      TCP 半关闭 end() 只结束可读侧，mock 上游不回关会让双方半开悬挂） ----
   client.socket.destroy();
-  const close = await waitFor(() => observation.closes[0]);
+  const close = await waitFor(() => observation.closes.find(c => c.reason === 'downstream_closed'));
   assert.equal(close.reason, 'downstream_closed');
 
-  // 让位与销毁场景都不产生录制
-  assert.equal(observation.opens.length, 1);
-  assert.equal(observation.closes.length, 1);
+  // 让位与销毁场景不产生录制；场景 F 与场景 C 各产生一条 open/close
+  assert.equal(observation.opens.length, 2);
+  assert.equal(observation.closes.length, 2);
 
   // ---- 清理：升级连接可能半关闭导致 server.close() 永久等待，强制断开全部连接 ----
   client.socket.destroy();
+  routedClient.socket.destroy();
   for (const socket of upstreamSockets) socket.destroy();
   proxyServer.close();
   proxyServer.closeAllConnections();
@@ -337,6 +361,8 @@ async function main(): Promise<void> {
   devServer.closeAllConnections();
   upstream.close();
   upstream.closeAllConnections();
+  upstreamB.close();
+  upstreamB.closeAllConnections();
   console.log('ws-proxy tests passed');
   // Node 24 / Windows 在 socket 拆除后的空闲窗口存在偶发进程竞态，测试完成后立即退出
   process.exit(0);

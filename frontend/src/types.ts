@@ -117,3 +117,26 @@ export interface SSEEvent {
   type: 'update'
   record?: RecordSummary
 }
+
+/** 分流规则：路径前缀 → 上游，数组顺序即优先级 */
+export interface UpstreamRoute {
+  id: string
+  name: string
+  enabled: boolean
+  prefix: string
+  upstream: string
+}
+
+/** 设置页读回的路由状态：CLI 默认上游、界面持久值与生效值 */
+export interface RoutingState {
+  cliUpstream: string | null
+  persistedDefault: string | null
+  effectiveDefault: string | null
+  routes: UpstreamRoute[]
+}
+
+/** 保存请求体：整文档替换 */
+export interface RoutingSavePayload {
+  defaultUpstream: string | null
+  routes: UpstreamRoute[]
+}

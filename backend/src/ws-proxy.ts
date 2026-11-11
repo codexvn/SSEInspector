@@ -25,8 +25,8 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { config } from './config';
 import { findWsEndpointDefinition, type EndpointDefinition } from './endpoints';
+import { resolveUpstream } from './routing';
 import { beginWsCapture, endWsCapture, wsCaptureChunk } from './recorder/client';
 import type { WsCaptureCloseReason } from './recorder/protocol';
 import { extractSessionId, filterHeaders, flattenHeaders } from './proxy';
@@ -134,12 +134,16 @@ async function bridge(
   head: Buffer,
   pathname: string,
 ): Promise<void> {
-  const upstreamUrl = config.upstreamUrl;
-  if (!upstreamUrl) {
-    socket.destroy();
+  // 分流解析与 HTTP 数据面同一规则表；无上游可用时以 503 明确拒绝握手，
+  // 让 WS 客户端拿到状态码而非裸重置。WS 桥接只取上游 origin：路径前缀
+  // 对升级请求不生效（proxyUpgrade 以 origin 建连，已知限制）
+  const resolved = resolveUpstream(pathname);
+  if (!resolved) {
+    logger.warn({ path: pathname }, 'no upstream resolved, rejecting websocket upgrade');
+    socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
     return;
   }
-  const origin = new URL(upstreamUrl).origin;
+  const origin = new URL(resolved.upstream).origin;
   const id = crypto.randomUUID();
   const startedAt = Date.now();
   const target = `${origin}${pathname}`;

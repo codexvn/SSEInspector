@@ -6,6 +6,13 @@ import type { Server } from 'http';
 import { handleProxy, handlePassthrough, initializeProxy } from './proxy';
 import { createUpgradeHandler } from './ws-proxy';
 import { config } from './config';
+import {
+  getRoutingState,
+  initRouting,
+  replaceRoutingConfig,
+  routingFilePath,
+  validateRoutingConfig,
+} from './routing';
 import { RequestListFilter } from './types';
 import { ENDPOINT_DEFINITIONS } from './endpoints';
 import {
@@ -33,16 +40,9 @@ const isDev = process.env.NODE_ENV !== 'production';
 
 /** 端口：由 CLI 入口 setConfig 填充（bin/sse-inspector.js --port） */
 const PORT = config.port;
-/** 上游 URL：由 CLI 入口 setConfig 填充（bin/sse-inspector.js --upstream） */
-const UPSTREAM_URL = config.upstreamUrl;
 const SHUTDOWN_TIMEOUT_MS = 5000;
 let server: Server | null = null;
 let shutdownStarted = false;
-
-if (!UPSTREAM_URL) {
-  serverLogger.error({ argument: '--upstream' }, 'upstream URL is not configured');
-  process.exit(1);
-}
 
 /** 包装 async handler：任意 reject 自动 → 500 + 打印日志 */
 function route(fn: (req: express.Request, res: express.Response) => Promise<void>) {
@@ -65,6 +65,22 @@ function parseRequestListFilter(value: unknown): RequestListFilter {
 }
 
 async function start() {
+  // 分流路由初始化：读取 routing.json 并固化 CLI 默认上游的覆盖关系。
+  // 生效默认上游与启用中的规则同时为空视为配置错误（服务起来也无法代理
+  // 任何请求）；CLI --upstream 非法时 initRouting 直接抛错，同样终止启动。
+  initRouting({ cliUpstream: config.upstreamUrl || null, filePath: routingFilePath() });
+  const routing = getRoutingState();
+  if (!routing.effectiveDefault && routing.routes.every(route => !route.enabled)) {
+    serverLogger.error(
+      { argument: '--upstream' },
+      'no default upstream and no enabled routing rules; pass --upstream or configure routing via the settings page',
+    );
+    process.exit(1);
+  }
+  serverLogger.info(
+    { defaultUpstream: routing.effectiveDefault, routes: routing.routes.length },
+    'routing initialized',
+  );
   await initializeProxy();
   await startRecorder();
   const app = express();
@@ -177,6 +193,22 @@ async function start() {
     }
   }));
 
+  // ---- 设置：多上游分流路由（整文档替换，保存即时生效） ----
+
+  app.get('/api/routing', route(async (_req, res) => {
+    res.json(getRoutingState());
+  }));
+
+  app.put('/api/routing', route(async (req, res) => {
+    const validated = validateRoutingConfig(req.body);
+    if (!validated.ok) {
+      res.status(400).json({ error: '路由配置校验失败', details: validated.errors });
+      return;
+    }
+    replaceRoutingConfig(validated.config);
+    res.json(getRoutingState());
+  }));
+
   // ---- Proxy 路由 ----
 
   for (const definition of ENDPOINT_DEFINITIONS) {
@@ -219,7 +251,10 @@ async function start() {
 
   // ---- 启动 ----
   const onStart = () => {
-    serverLogger.info({ host: '0.0.0.0', port: PORT, upstream: UPSTREAM_URL }, 'SSEInspector started');
+    serverLogger.info(
+      { host: '0.0.0.0', port: PORT, upstream: getRoutingState().effectiveDefault },
+      'SSEInspector started',
+    );
   };
   if (isDev) {
     const ve = require('vite-express');

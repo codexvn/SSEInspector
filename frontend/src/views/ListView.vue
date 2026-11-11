@@ -203,6 +203,7 @@ function sessionLabel(sid?: string, key?: string): string {
           <button class="session-chip-close" @click="clearSessionFilter" title="清除会话筛选">×</button>
         </span>
         <input v-model="searchQuery" placeholder="搜索路径、模型、请求、响应…" class="search-input" />
+        <button class="settings-btn" @click="router.push({ name: 'settings' })" title="多上游分流设置">设置</button>
       </div>
     </div>
 
@@ -342,6 +343,13 @@ function sessionLabel(sid?: string, key?: string): string {
 }
 .search-input:focus { border-color: var(--accent); }
 .search-input::placeholder { color: var(--text-muted); }
+
+.settings-btn {
+  padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 0.84rem; background: var(--bg-card); color: var(--text-primary);
+  cursor: pointer; transition: border-color .15s, color .15s; white-space: nowrap;
+}
+.settings-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .list-view {
   background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;

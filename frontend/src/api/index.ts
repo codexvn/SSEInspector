@@ -1,4 +1,4 @@
-import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter } from '../types'
+import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter, RoutingState, RoutingSavePayload, UpstreamRoute } from '../types'
 
 const BASE = '/api'
 
@@ -67,6 +67,44 @@ export async function fetchToolCallPair(
   )
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
+}
+
+/** 读取多上游分流配置 */
+export async function fetchRouting(): Promise<RoutingState> {
+  const res = await fetch(`${BASE}/routing`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return parseRoutingState(await res.json(), '路由配置')
+}
+
+/** 保存多上游分流配置（整文档替换，保存后即时生效） */
+export async function saveRouting(payload: RoutingSavePayload): Promise<RoutingState> {
+  const res = await fetch(`${BASE}/routing`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    // 400 携带后端校验的中文错误清单，直接透出给设置页展示
+    const detail = await res.json().catch(() => null) as { error?: string; details?: string[] } | null
+    const reasons = detail?.details?.length ? `：${detail.details.join('；')}` : ''
+    throw new Error(`${detail?.error ?? `HTTP ${res.status}`}${reasons}`)
+  }
+  return parseRoutingState(await res.json(), '路由配置')
+}
+
+function parseRoutingState(value: unknown, label: string): RoutingState {
+  if (typeof value !== 'object' || value === null) throw new Error(`${label} 不是对象`)
+  const state = value as Partial<RoutingState>
+  if (!Array.isArray(state.routes)) throw new Error(`${label} 缺少 routes 数组`)
+  state.routes.forEach((route, index) => assertRoutingRoute(route, `路由规则第 ${index + 1} 条`))
+  return state as RoutingState
+}
+
+function assertRoutingRoute(value: { id?: unknown; name?: unknown; enabled?: unknown; prefix?: unknown; upstream?: unknown }, label: string): asserts value is UpstreamRoute {
+  if (typeof value.id !== 'string' || typeof value.name !== 'string'
+    || typeof value.enabled !== 'boolean' || typeof value.prefix !== 'string' || typeof value.upstream !== 'string') {
+    throw new Error(`${label} 结构非法`)
+  }
 }
 
 /** 连接 SSE 实时推送，返回取消函数 */

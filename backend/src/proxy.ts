@@ -3,9 +3,9 @@ import crypto from 'crypto';
 import type { IncomingHttpHeaders, IncomingMessage } from 'http';
 import type { ProxyServer } from 'httpxy' with { 'resolution-mode': 'import' };
 import { Transform } from 'stream';
-import { config } from './config';
 import { EndpointDefinition } from './endpoints';
 import { formatErrorChain, getLogger, serializeError } from './logger';
+import { resolveUpstream } from './routing';
 import {
   beginCapture,
   beginCaptureResponse,
@@ -32,11 +32,6 @@ interface ProxyContext {
 
 let proxyServerPromise: Promise<ProxyServer> | null = null;
 const proxyContexts = new WeakMap<IncomingMessage, ProxyContext>();
-
-/** 读取 CLI 写入的唯一上游 URL 配置。 */
-function getUpstreamUrl(): string {
-  return config.upstreamUrl;
-}
 
 const HOP_HEADERS = [
   'connection', 'keep-alive', 'transfer-encoding', 'te',
@@ -102,19 +97,22 @@ export async function initializeProxy(): Promise<void> {
 }
 
 async function forward(req: Request, res: Response, endpointDefinition?: EndpointDefinition): Promise<void> {
-  const upstreamUrl = getUpstreamUrl();
-  if (!upstreamUrl) {
-    res.status(500).json({ error: 'UPSTREAM_URL not configured' });
+  const label = endpointDefinition ? 'proxy' : 'passthrough';
+  const id = crypto.randomUUID();
+  // 分流解析：规则命中或默认上游二选一；两者皆无时明确拒绝（请求未离开本机，
+  // 不产生录制记录），由调用语义保证客户端拿到可理解的错误而不是超时
+  const resolved = resolveUpstream(req.path);
+  if (!resolved) {
+    getLogger(label).warn({ requestId: id, method: req.method, path: req.path }, 'no upstream resolved, rejecting request');
+    res.status(503).json({ error: '未匹配任何分流规则且未配置默认上游' });
     return;
   }
   const proxy = await getProxyServer();
 
-  const targetUrl = upstreamUrl.replace(/\/$/, '') + req.originalUrl;
+  const targetUrl = resolved.upstream.replace(/\/$/, '') + req.originalUrl;
   const target = new URL(targetUrl);
   const targetLog = `${target.origin}${target.pathname}`;
-  const label = endpointDefinition ? 'proxy' : 'passthrough';
   // 所有经 forward 的代理流量都记录（含未注册 path 的透传）
-  const id = crypto.randomUUID();
   const startedAt = Date.now();
   getLogger(label).info({
     requestId: id,
@@ -164,7 +162,7 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   });
 
   await proxy.web(req, res, {
-    target: upstreamUrl,
+    target: resolved.upstream,
     changeOrigin: true,
     xfwd: false,
     followRedirects: false,

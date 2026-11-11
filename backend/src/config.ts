@@ -9,7 +9,7 @@
  */
 
 export interface SseInspectorConfig {
-  /** 上游 API 地址，必填，已校验非空（无尾斜杠） */
+  /** 默认上游地址（无尾斜杠）；CLI --upstream 可选，缺省时由设置页持久化的默认上游兜底 */
   upstreamUrl: string;
   /** 监听端口，默认 3000 */
   port: number;

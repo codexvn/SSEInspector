@@ -49,9 +49,8 @@ if (parsed.errors.length > 0) {
   process.exitCode = 1;
 } else if (opts.help) {
   process.stdout.write(getHelpText());
-} else if (!opts.upstream || Number.isNaN(opts.port)) {
-  if (!opts.upstream) logger.error({ argument: '--upstream' }, 'required CLI argument is missing');
-  if (Number.isNaN(opts.port)) logger.error({ argument: '--port' }, 'CLI argument is invalid');
+} else if (Number.isNaN(opts.port)) {
+  logger.error({ argument: '--port' }, 'CLI argument is invalid');
   process.stderr.write(getHelpText());
   process.exitCode = 1;
 } else if (!opts.dbPath) {
@@ -71,8 +70,10 @@ function start(dbPath) {
     dbPath = path.resolve(process.cwd(), dbPath);
   }
 
+  // --upstream 可选：缺省时默认上游由设置页持久化的 routing.json 提供，
+  // 两者皆无的兜底校验在 index.ts 的启动守卫完成
   setConfig({
-    upstreamUrl: opts.upstream.replace(/\/$/, ''),
+    upstreamUrl: opts.upstream ? opts.upstream.replace(/\/$/, '') : '',
     port: opts.port,
     dbPath,
   });
