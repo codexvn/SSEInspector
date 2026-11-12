@@ -19,10 +19,13 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: 安装 Node.js 20
+      - name: 安装 Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Node 20 捆绑的 npm 10.8.2 在本仓库 npm ci 时崩溃
+          #（"Exit handler never called"，node_modules 残缺且退出码为 0，
+          # 后续 tsc: not found）；Node 22 的 npm 已修复，与本地开发版本一致
+          node-version: '22'
           cache: 'npm'
 
       - name: 安装后端依赖
