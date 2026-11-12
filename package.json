@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "start": "node bin/sse-inspector.js --dev",
+    "dev": "npm start -- --upstream http://localhost:8000 --db-path ./data.db",
     "build": "tsc",
     "build:frontend": "npm --prefix frontend run build",
     "build:all": "npm run build && npm run build:frontend",
