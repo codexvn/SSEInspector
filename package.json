@@ -1,6 +1,6 @@
 {
   "name": "sse-inspector",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "vLLM/OpenAI-compatible API proxy with SSE recording and inspection",
   "license": "MIT",
   "main": "dist/index.js",
