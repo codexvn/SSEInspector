@@ -1,7 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import MarkdownRender from './MarkdownRender.vue'
+import JsonViewer from './JsonViewer.vue'
+import { formatPrettyJson, formatPrettyXml, MAX_PRETTY_BODY_CHARS } from '../body-presentation'
 
+/**
+ * 通用消息卡片：按内容自动提供查看器。模型输出本身是结构化数据
+ * （JSON/XML 字符串，如结构化标注、工具结果）时默认展示对应的格式化
+ * 视图；普通文本保持 Markdown 渲染 / 原文两态。
+ */
 const props = withDefaults(defineProps<{
   title: string
   text?: string
@@ -15,18 +22,89 @@ const props = withDefaults(defineProps<{
   defaultRaw: false,
 })
 
-const showRaw = ref(props.defaultRaw)
+type CardViewer = 'render' | 'json' | 'xml' | 'raw'
+
+const oversized = computed(() => (props.text ?? '').length > MAX_PRETTY_BODY_CHARS)
+
+// 只把对象/数组形态的文本视为结构化输出：裸数字、布尔等普通消息不触发 JSON 视图
+const isJson = computed(() => {
+  const text = (props.text ?? '').trimStart()
+  if (!text.startsWith('{') && !text.startsWith('[')) return false
+  if (oversized.value) return false
+  return formatPrettyJson(props.text ?? '') != null
+})
+
+const prettyJson = computed(() => (isJson.value ? formatPrettyJson(props.text ?? '') : null))
+
+const isXml = computed(() => {
+  const text = (props.text ?? '').trimStart()
+  if (!text.startsWith('<')) return false
+  if (oversized.value) return false
+  return !isJson.value && formatPrettyXml(props.text ?? '') != null
+})
+
+const prettyXml = computed(() => (isXml.value ? formatPrettyXml(props.text ?? '') : null))
+
+const viewers = computed<CardViewer[]>(() => {
+  const list: CardViewer[] = []
+  if (isJson.value) list.push('json')
+  if (isXml.value) list.push('xml')
+  if (props.markdown) list.push('render')
+  list.push('raw')
+  return list
+})
+
+const activeViewer = ref<CardViewer>('raw')
+
+function pickDefault(): CardViewer {
+  if (props.defaultRaw) return 'raw'
+  if (isJson.value) return 'json'
+  if (isXml.value) return 'xml'
+  return props.markdown ? 'render' : 'raw'
+}
+
+watch(
+  () => [props.text, props.markdown] as const,
+  () => { activeViewer.value = pickDefault() },
+  { immediate: true },
+)
+
+function viewerLabel(viewer: CardViewer): string {
+  switch (viewer) {
+    case 'render': return '渲染'
+    case 'json': return 'JSON'
+    case 'xml': return 'XML'
+    case 'raw': return '原文'
+  }
+}
 </script>
 
 <template>
   <div class="text-card" :class="`tone-${tone}`">
     <div class="text-card-header">
       <span class="text-card-title">{{ title }}</span>
-      <button class="text-card-toggle" type="button" @click="showRaw = !showRaw">
-        {{ showRaw ? '渲染' : '原文' }}
-      </button>
+      <span v-if="viewers.length > 1" class="text-card-viewers">
+        <button
+          v-for="viewer in viewers"
+          :key="viewer"
+          type="button"
+          class="text-card-toggle"
+          :class="{ active: activeViewer === viewer }"
+          @click="activeViewer = viewer"
+        >{{ viewerLabel(viewer) }}</button>
+      </span>
     </div>
-    <pre v-if="showRaw || !markdown" class="text-card-raw">{{ text }}</pre>
+    <pre v-if="activeViewer === 'raw'" class="text-card-raw">{{ text }}</pre>
+    <JsonViewer
+      v-else-if="activeViewer === 'json' && prettyJson"
+      :value="prettyJson"
+      lang="json"
+    />
+    <JsonViewer
+      v-else-if="activeViewer === 'xml' && prettyXml"
+      :value="prettyXml"
+      lang="xml"
+    />
     <MarkdownRender v-else :text="text" />
   </div>
 </template>
@@ -56,6 +134,10 @@ const showRaw = ref(props.defaultRaw)
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
+.text-card-viewers {
+  display: inline-flex;
+  gap: 4px;
+}
 .text-card-toggle {
   border: 1px solid var(--border);
   background: var(--bg-card);
@@ -68,6 +150,11 @@ const showRaw = ref(props.defaultRaw)
 .text-card-toggle:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+.text-card-toggle.active {
+  background: #e0e7ff;
+  border-color: #c7d2fe;
+  color: #3730a3;
 }
 .text-card-raw {
   margin: 0;

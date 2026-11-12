@@ -174,7 +174,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 
 ### 前端：展示面
 
-列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
+列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
 
 ## 关键目录与文件职责
 
