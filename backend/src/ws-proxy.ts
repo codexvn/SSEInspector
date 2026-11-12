@@ -55,23 +55,29 @@ function isWebSocketUpgrade(req: IncomingMessage): boolean {
  * 重建规则：请求行原样；Upgrade / HTTP2-Settings 头整体删除；Connection
  * 头剥除 upgrade / http2-settings 令牌。这三者都是逐跳头，filterHeaders
  * 转发上游时本就会剥除，因此上游收到的请求不变，仅记录中的请求头展示
- * 与原始字节有此差异。防重入护栏必须存在：若重建字节再次触发 upgrade
- * 事件（剥离逻辑失效等异常场景），销毁连接而不是继续桥接，否则会形成
- * 解析循环耗尽内存。
+ * 与原始字节有此差异。
+ *
+ * 同一连接可重复桥接：JDK HttpClient 对明文 http:// 的行为是每个请求都
+ * 重试 h2c 升级（并非首请求一次），连接复用时后续请求会再次进入本函数，
+ * 每次都需剥离重放。次数上限只防剥离逻辑失效导致的解析循环（重建字节
+ * 再次触发 upgrade 事件会形成自旋耗尽内存），正常流量远达不到上限。
  */
+const MAX_UPGRADE_DECLINES_PER_SOCKET = 64;
+
 function declineUpgrade(
   server: Server,
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-  bridged: WeakSet<Duplex>,
+  bridgeCounts: WeakMap<Duplex, number>,
 ): void {
-  if (bridged.has(socket)) {
-    logger.warn({ path: req.url }, 'bridged socket re-entered upgrade path, destroying');
+  const count = (bridgeCounts.get(socket) ?? 0) + 1;
+  if (count > MAX_UPGRADE_DECLINES_PER_SOCKET) {
+    logger.warn({ path: req.url, count }, 'bridged socket exceeded decline limit, destroying');
     socket.destroy();
     return;
   }
-  bridged.add(socket);
+  bridgeCounts.set(socket, count);
   const lines = [`${req.method} ${req.url} HTTP/1.1`];
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
     const name = req.rawHeaders[i];
@@ -93,19 +99,19 @@ function declineUpgrade(
   const rebuiltHead = Buffer.from(`${lines.join('\r\n')}\r\n\r\n`);
   socket.unshift(Buffer.concat([rebuiltHead, head]));
   server.emit('connection', socket as unknown as Socket);
-  logger.info(
-    { path: req.url, upgrade: req.headers.upgrade },
+  logger.debug(
+    { path: req.url, upgrade: req.headers.upgrade, count },
     'non-websocket upgrade declined, bridged to http pipeline',
   );
 }
 
 /** 创建 http.Server 'upgrade' 事件处理器；WebSocket 升级按注册表桥接，其余升级拒绝后走普通请求管线 */
 export function createUpgradeHandler(options: UpgradeHandlerOptions) {
-  const bridged = new WeakSet<Duplex>();
+  const bridgeCounts = new WeakMap<Duplex, number>();
   return function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
     if (!isWebSocketUpgrade(req)) {
       // h2c 等非 WebSocket 升级：优雅拒绝，请求继续按普通 HTTP/1.1 处理
-      declineUpgrade(options.server, req, socket, head, bridged);
+      declineUpgrade(options.server, req, socket, head, bridgeCounts);
       return;
     }
     let pathname = '/';

@@ -197,7 +197,12 @@ async function main(): Promise<void> {
         upgradeHeader: req.headers.upgrade,
         body: Buffer.concat(chunks).toString(),
       });
-      const payload = req.url === '/v1/models' ? 'second-ok' : 'first-ok';
+      const markers: Record<string, string> = {
+        '/v1/chat/completions': 'r1-done',
+        '/v1/models': 'r2-done',
+        '/v1/other': 'r3-done',
+      };
+      const payload = markers[req.url ?? ''] ?? 'ok-done';
       res.writeHead(200, { 'content-length': String(payload.length) });
       res.end(payload);
     });
@@ -242,47 +247,55 @@ async function main(): Promise<void> {
   assert.ok(unregistered, '生产模式未注册升级路径应被销毁');
 
   // ---- 场景 E：非 WebSocket 升级（h2c）被优雅拒绝并桥接回普通请求管线 ----
-  // JDK HttpClient（默认 HTTP/2）对明文 http:// 的每个新连接先发 h2c 升级尝试；
-  // 拒绝后请求应作为普通 HTTP/1.1 处理（收到正常响应与请求体），且同一连接
-  // 可继续复用（第二个纯 1.1 请求直接成功）
+  // JDK HttpClient（默认 HTTP/2）对明文 http:// 的每个请求都会携带 h2c 升级头
+  //（连接复用时反复重试），因此同一连接上必须可重复桥接：首请求 h2c、第二
+  // 请求再次 h2c、第三请求纯 HTTP/1.1，三者都应正常处理且连接可复用
+  const H2C_EXTRA_HEADERS =
+    'Connection: Upgrade, HTTP2-Settings\r\n'
+    + 'HTTP2-Settings: AAEAAEAAAAIAAAAAAAMAAAAAAAQBAAAAAAUAAEAAAAYABgAA\r\n'
+    + 'Upgrade: h2c\r\n';
+  function rawRequest(path: string, withH2c: boolean): string {
+    const body = 'hello';
+    return `POST ${path} HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n`
+      + (withH2c ? H2C_EXTRA_HEADERS : '')
+      + `\r\n${body}`;
+  }
   const h2cFlow = await new Promise<string>((resolve, reject) => {
     const s = net.connect(proxyPort, '127.0.0.1', () => {
-      s.write(
-        'POST /v1/chat/completions HTTP/1.1\r\n'
-        + 'Connection: Upgrade, HTTP2-Settings\r\n'
-        + 'Content-Length: 5\r\n'
-        + 'Host: x\r\n'
-        + 'HTTP2-Settings: AAEAAEAAAAIAAAAAAAMAAAAAAAQBAAAAAAUAAEAAAAYABgAA\r\n'
-        + 'Upgrade: h2c\r\n'
-        + 'User-Agent: Java-http-client/21.0.7\r\n'
-        + '\r\nhello',
-      );
+      s.write(rawRequest('/v1/chat/completions', true));
     });
     let raw = '';
-    let secondSent = false;
+    let step = 1;
     s.on('data', chunk => {
       raw += chunk.toString();
-      if (!secondSent && raw.includes('first-ok')) {
-        secondSent = true;
-        s.write('GET /v1/models HTTP/1.1\r\nHost: x\r\n\r\n');
-      }
-      if (raw.includes('second-ok')) {
+      if (step === 1 && raw.includes('r1-done')) {
+        step = 2;
+        s.write(rawRequest('/v1/models', true));
+      } else if (step === 2 && raw.includes('r2-done')) {
+        step = 3;
+        s.write(rawRequest('/v1/other', false));
+      } else if (step === 3 && raw.includes('r3-done')) {
         s.end();
         resolve(raw);
       }
     });
     s.on('error', reject);
-    setTimeout(() => reject(new Error(`h2c bridge timeout, raw=${raw.slice(0, 120)}`)), 4000);
+    setTimeout(() => reject(new Error(`h2c bridge timeout at step ${step}, raw=${raw.slice(0, 160)}`)), 4000);
   });
-  // 第一个响应是正常 HTTP/1.1 应答（非 101、非重置）
-  assert.ok(h2cFlow.startsWith('HTTP/1.1 200'), 'h2c 请求应收到普通 200 响应');
+  // 三个请求都收到正常 HTTP/1.1 应答（非 101、非重置）
+  assert.equal((h2cFlow.match(/HTTP\/1.1 200 OK/g) ?? []).length, 3, '同连接三个请求都应返回 200');
   // 桥接后的请求：升级头已被剥离、请求体完整送达
-  assert.equal(httpEvents.length, 2);
+  assert.equal(httpEvents.length, 3);
   assert.deepEqual(
     { ...httpEvents[0], upgradeHeader: httpEvents[0].upgradeHeader ?? 'stripped' },
     { method: 'POST', url: '/v1/chat/completions', upgradeHeader: 'stripped', body: 'hello' },
   );
+  // 第二次 h2c（连接复用时的重试）同样被桥接成功
   assert.equal(httpEvents[1].url, '/v1/models');
+  assert.equal(httpEvents[1].upgradeHeader ?? 'stripped', 'stripped');
+  // 第三次纯 HTTP/1.1 请求直接走正常管线
+  assert.equal(httpEvents[2].url, '/v1/other');
+  assert.equal(httpEvents[2].upgradeHeader ?? 'none', 'none');
   // h2c 桥接不产生任何 WS 录制
   assert.equal(observation.opens.length, 0);
 
