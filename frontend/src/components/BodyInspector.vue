@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import JsonViewer from './JsonViewer.vue'
+import MarkdownRender from './MarkdownRender.vue'
 import {
-  defaultBodyTab,
+  defaultBodyViewer,
   formatPrettyJson,
+  formatPrettyXml,
   presentBody,
-  type BodyContentTab,
+  type BodyViewer,
 } from '../body-presentation'
 
 const props = withDefaults(defineProps<{
@@ -18,9 +20,9 @@ const props = withDefaults(defineProps<{
   open?: boolean
   /** 是否展示空 body 占位；默认 false 时 empty 不渲染 */
   showEmpty?: boolean
-  /** 协议合并结果（AI 响应体）；非空则出现「合并」tab */
+  /** 协议合并结果（AI 响应体）；非空时 JSON 查看器展示合并结果而非原始体 */
   mergedText?: string | null
-  /** 即使 mergedText 为空也显示「合并」tab（AI 路径） */
+  /** 即使 mergedText 为空也启用 JSON 查看器展示合并结果（AI 路径） */
   enableMerged?: boolean
 }>(), {
   open: false,
@@ -32,69 +34,81 @@ const emit = defineEmits<{
   'update:open': [value: boolean]
 }>()
 
-type Tab = BodyContentTab | 'merged'
-
 const presentation = computed(() => presentBody(props.body, props.contentType))
 
-const tabs = computed<Tab[]>(() => {
-  const list: Tab[] = [...presentation.value.contentTabs]
-  if (props.enableMerged || (props.mergedText != null && props.mergedText !== '')) {
-    if (!list.includes('merged')) list.push('merged')
-  }
-  return list
+/** AI 响应路径：有合并结果时查看器固定为 原始 + JSON（JSON 即合并结果的格式化视图） */
+const mergedMode = computed(() => props.enableMerged || (props.mergedText != null && props.mergedText !== ''))
+
+const viewers = computed<BodyViewer[]>(() => {
+  if (mergedMode.value) return ['raw', 'json']
+  return presentation.value.viewers
 })
 
-const activeTab = ref<Tab>('raw')
-/** 按需美化缓存（大 body 首次点「美化」时生成） */
-const lazyPretty = ref<string | null>(null)
-const prettyError = ref<string | null>(null)
-const prettyLoading = ref(false)
-
-function pickDefaultTab(available: Tab[]): Tab {
-  const contentOnly = available.filter((tab): tab is BodyContentTab => tab !== 'merged')
-  const preferred = defaultBodyTab(contentOnly, presentation.value.defaultTab)
-  if (available.includes(preferred)) return preferred
-  return available[0] ?? 'raw'
-}
+const activeViewer = ref<BodyViewer>('raw')
+/** 按需格式化缓存（大 body 首次切到对应查看器时生成） */
+const lazyJson = ref<string | null>(null)
+const lazyXml = ref<string | null>(null)
+const lazyError = ref<string | null>(null)
+const lazyLoading = ref(false)
 
 watch(
   () => [props.body, props.contentType, props.enableMerged, props.mergedText] as const,
   () => {
-    lazyPretty.value = null
-    prettyError.value = null
-    prettyLoading.value = false
-    activeTab.value = pickDefaultTab(tabs.value)
+    lazyJson.value = null
+    lazyXml.value = null
+    lazyError.value = null
+    lazyLoading.value = false
+    activeViewer.value = mergedMode.value
+      ? 'json'
+      : defaultBodyViewer(viewers.value, presentation.value.defaultViewer)
   },
   { immediate: true },
 )
 
-const displayPretty = computed(() => presentation.value.prettyText ?? lazyPretty.value)
-
-watch(activeTab, (tab) => {
-  if (tab !== 'pretty') return
-  if (displayPretty.value != null) return
-  if (!presentation.value.canPretty) return
-  prettyLoading.value = true
-  prettyError.value = null
-  // 下一帧再 parse，避免挡住 tab 切换绘制
-  requestAnimationFrame(() => {
-    const text = formatPrettyJson(presentation.value.rawText)
-    if (text == null) {
-      prettyError.value = '美化失败：不是合法 JSON'
-      lazyPretty.value = null
-    } else {
-      lazyPretty.value = text
-    }
-    prettyLoading.value = false
-  })
+const displayJson = computed(() => {
+  if (mergedMode.value) return props.mergedText || ''
+  return presentation.value.prettyJson ?? lazyJson.value
 })
 
-function tabLabel(tab: Tab): string {
-  switch (tab) {
+const displayXml = computed(() => presentation.value.prettyXml ?? lazyXml.value)
+
+watch(activeViewer, (viewer) => {
+  if (viewer === 'json' && !mergedMode.value) {
+    if (displayJson.value != null || !presentation.value.canPrettyJson) return
+    prepareLazy(() => {
+      const text = formatPrettyJson(presentation.value.rawText)
+      if (text == null) lazyError.value = 'JSON 格式化失败：不是合法 JSON'
+      else lazyJson.value = text
+    })
+  }
+  if (viewer === 'xml') {
+    if (displayXml.value != null) return
+    prepareLazy(() => {
+      const text = formatPrettyXml(presentation.value.rawText)
+      if (text == null) lazyError.value = 'XML 格式化失败：内容不含标签'
+      else lazyXml.value = text
+    })
+  }
+})
+
+/** 下一帧再格式化，避免挡住查看器切换绘制 */
+function prepareLazy(format: () => void): void {
+  if (lazyLoading.value) return
+  lazyLoading.value = true
+  lazyError.value = null
+  requestAnimationFrame(() => {
+    format()
+    lazyLoading.value = false
+  })
+}
+
+function viewerLabel(viewer: BodyViewer): string {
+  switch (viewer) {
     case 'raw': return '原始'
-    case 'pretty': return '美化'
+    case 'json': return 'JSON'
+    case 'xml': return 'XML'
+    case 'markdown': return 'Markdown'
     case 'fields': return '字段'
-    case 'merged': return '合并'
   }
 }
 
@@ -130,19 +144,21 @@ const visible = computed(() => {
     <template v-else>
       <p v-if="presentation.note" class="bi-note">{{ presentation.note }}</p>
 
-      <div v-if="tabs.length > 1" class="rb-tabs">
+      <div v-if="viewers.length > 1" class="rb-tabs">
         <button
-          v-for="tab in tabs"
-          :key="tab"
+          v-for="viewer in viewers"
+          :key="viewer"
           type="button"
           class="rb-tab"
-          :class="{ active: activeTab === tab }"
-          @click="activeTab = tab"
-        >{{ tabLabel(tab) }}</button>
+          :class="{ active: activeViewer === viewer }"
+          @click="activeViewer = viewer"
+        >{{ viewerLabel(viewer) }}</button>
       </div>
 
       <div v-if="open" class="rb-pane">
-        <template v-if="activeTab === 'fields' && presentation.formFields">
+        <p v-if="lazyLoading" class="bi-empty">正在格式化…</p>
+        <p v-else-if="lazyError" class="bi-empty">{{ lazyError }}</p>
+        <template v-else-if="activeViewer === 'fields' && presentation.formFields">
           <table class="bi-form-table">
             <thead>
               <tr><th>字段</th><th>值</th></tr>
@@ -155,17 +171,19 @@ const visible = computed(() => {
             </tbody>
           </table>
         </template>
-        <p v-else-if="activeTab === 'pretty' && prettyLoading" class="bi-empty">正在美化…</p>
-        <p v-else-if="activeTab === 'pretty' && prettyError" class="bi-empty">{{ prettyError }}</p>
         <JsonViewer
-          v-else-if="activeTab === 'pretty' && displayPretty"
-          :value="displayPretty"
+          v-else-if="activeViewer === 'json' && displayJson"
+          :value="displayJson"
           lang="json"
         />
         <JsonViewer
-          v-else-if="activeTab === 'merged'"
-          :value="mergedText || ''"
-          lang="json"
+          v-else-if="activeViewer === 'xml' && displayXml"
+          :value="displayXml"
+          lang="xml"
+        />
+        <MarkdownRender
+          v-else-if="activeViewer === 'markdown'"
+          :text="presentation.rawText"
         />
         <JsonViewer
           v-else

@@ -1,6 +1,6 @@
 # SSEInspector 项目架构
 
-SSEInspector 是 OpenAI / Anthropic API 的透明代理检查器：客户端把上游地址指向本代理，请求与响应字节原样转发，录制、合并与展示全部在旁路完成，不影响数据面语义。整个项目由三部分构成——主进程代理数据面（31 个 TypeScript 文件、约 4,980 行）、Recorder Worker 观察面（独立 worker_threads，持有数据库与全部解析逻辑）、Vue 3 前端（39 个文件、约 5,910 行），配套 23 个测试文件（后端 19 个、前端 4 个）。当前注册 3 个 AI endpoint（`openai-chat`、`openai-responses`、`anthropic-messages`），其余 HTTP 路径一律透传录制，`/v1/responses` 的 WebSocket 升级走独立桥接（见「典型场景」）；上游目标由 `routing.ts` 按分流规则在多个上游中选定，规则与默认上游可在设置页动态配置（见「多上游分流」）；代理与观察面之间以保序延迟队列衔接，每轮投递量以 1 MiB 为软上限，主线程零解析、零数据库访问。
+SSEInspector 是 OpenAI / Anthropic API 的透明代理检查器：客户端把上游地址指向本代理，请求与响应字节原样转发，录制、合并与展示全部在旁路完成，不影响数据面语义。整个项目由三部分构成——主进程代理数据面（31 个 TypeScript 文件、约 4,980 行）、Recorder Worker 观察面（独立 worker_threads，持有数据库与全部解析逻辑）、Vue 3 前端（40 个文件、约 6,050 行），配套 23 个测试文件（后端 19 个、前端 4 个）。当前注册 3 个 AI endpoint（`openai-chat`、`openai-responses`、`anthropic-messages`），其余 HTTP 路径一律透传录制，`/v1/responses` 的 WebSocket 升级走独立桥接（见「典型场景」）；上游目标由 `routing.ts` 按分流规则在多个上游中选定，规则与默认上游可在设置页动态配置（见「多上游分流」）；代理与观察面之间以保序延迟队列衔接，每轮投递量以 1 MiB 为软上限，主线程零解析、零数据库访问。
 
 对 AI 编码代理的行为约束见仓库根目录 `AGENTS.md`；本文描述架构事实与维护规则。
 
@@ -134,7 +134,7 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 透传流量
 
-未命中注册表且未被排除的路径进入 catch-all `handlePassthrough`（排除规则：`/api/*` 前缀、根路径 `/`、带扩展名的 GET 静态请求），与 AI 流量共用 `forward()`：同样生成 UUID、tee 字节、落库，身份固定为 `passthrough`。Worker 对透传短路全部协议逻辑（细则见「分层职责」的 Recorder Worker 一节），详情页走 raw inspector（headers + body 原始 / 美化），列表以灰色「透传」徽章区分。
+未命中注册表且未被排除的路径进入 catch-all `handlePassthrough`（排除规则：`/api/*` 前缀、根路径 `/`、带扩展名的 GET 静态请求），与 AI 流量共用 `forward()`：同样生成 UUID、tee 字节、落库，身份固定为 `passthrough`。Worker 对透传短路全部协议逻辑（细则见「分层职责」的 Recorder Worker 一节），详情页走 raw inspector（headers + 正文多查看器，见「分层职责」的前端一节），列表以灰色「透传」徽章区分。
 
 ### 多上游分流
 
@@ -174,7 +174,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 
 ### 前端：展示面
 
-列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + body 原始 / 美化）。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
+列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
 
 ## 关键目录与文件职责
 
@@ -203,7 +203,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 | `backend/src/protocol-content.ts` + `tool-calls.ts` | 协议内容提取与工具调用 / 结果配对 |
 | `backend/src/logger.ts` + `db/slow-query-logger.ts` | Pino 统一日志入口与慢 SQL 日志 |
 | `frontend/src/views/` | `ListView`（列表筛选统计）、`DetailView`（详情分叉视图）与 `SettingsView`（多上游分流设置） |
-| `frontend/src/components/` | 消息卡片族（user / assistant / thinking / tool call 等）、`MessageFlow`、`BodyInspector`、`StreamLive`、`TokenSpeed`、`HeadersViewer`、`DiffViewer` 等 |
+| `frontend/src/components/` | 消息卡片族（user / assistant / thinking / tool call 等）、`MessageFlow`、`BodyInspector`（正文多查看器）、`MarkdownRender`（共享 Markdown/图表渲染）、`StreamLive`、`TokenSpeed`、`HeadersViewer`、`DiffViewer` 等 |
 | `frontend/src/stores/requests.ts` + `api/index.ts` | Pinia 状态与 `/api` 客户端（含 EventSource 实时更新） |
 | `frontend/src/response-flow.ts` 等 | 前端纯函数：响应卡片 descriptor、body 展示、token 速度、上下文组成 |
 | `frontend/src/workers/request-analysis.worker.ts` | 请求体上下文组成分析（避免主线程解析大 body） |
