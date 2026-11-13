@@ -434,37 +434,6 @@ async function extractToolCallEntries(response: MergedContent | null, endpoint: 
   }));
 }
 
-/**
- * 流式写出归档文件：逐行 JSON.stringify 后带背压写入，避免把整批记录
- * 拼成单个字符串的内存峰值（单行可达 MB 级）。写出失败时销毁流并抛出，
- * 由调用方兜底（归档失败即中止本轮删除，宁可下轮重试也不丢数据）。
- */
-async function writeArchiveFile(
-  filePath: string,
-  data: { triggerCount: number; keepCount: number; requests: unknown[]; toolCalls: unknown[] },
-): Promise<void> {
-  const stream = fs.createWriteStream(filePath);
-  // 显式 encoding 让 write(chunk, encoding, cb) 三参重载命中，避免回调被误判为 encoding
-  const write = (chunk: string) => new Promise<void>((resolve, reject) => {
-    stream.write(chunk, 'utf8', (error: Error | null | undefined) => (error ? reject(error) : resolve()));
-  });
-  try {
-    await write(`{"archivedAt":${JSON.stringify(new Date().toISOString())},"triggerCount":${data.triggerCount},"keepCount":${data.keepCount},"requests":[`);
-    for (let i = 0; i < data.requests.length; i++) {
-      await write(i === 0 ? JSON.stringify(data.requests[i]) : `,${JSON.stringify(data.requests[i])}`);
-    }
-    await write('],"toolCalls":[');
-    for (let i = 0; i < data.toolCalls.length; i++) {
-      await write(i === 0 ? JSON.stringify(data.toolCalls[i]) : `,${JSON.stringify(data.toolCalls[i])}`);
-    }
-    await write(']}');
-    await new Promise<void>((resolve, reject) => stream.end((error: Error | null | undefined) => (error ? reject(error) : resolve())));
-  } catch (error) {
-    stream.destroy();
-    throw error;
-  }
-}
-
 async function handleRpc(correlationId: number, method: RecorderRpcMethod, args: unknown[]): Promise<void> {
   try {
     const store = require('../store') as typeof import('../store');
@@ -501,9 +470,9 @@ async function handleRpc(correlationId: number, method: RecorderRpcMethod, args:
       case 'retention.run': {
         // 配置由主线程保存，执行前强制重读文件，避免用到启动时的旧值。
         // 单次最多处理 RETENTION_ROTATE_BATCH_LIMIT 条：大批量首次清理
-        // 分多轮探查消化，导出用流式逐行写出，避免单串内存峰值与长时间
-        // 阻塞 Worker 消息链
-        const { getRetentionConfigFresh, shouldRotate, RETENTION_ROTATE_BATCH_LIMIT, retentionArchiveDir, buildArchiveFileName } =
+        // 分多轮探查消化，归档用流式 gzip 逐行写出，避免单串内存峰值与
+        // 长时间阻塞 Worker 消息链
+        const { getRetentionConfigFresh, shouldRotate, RETENTION_ROTATE_BATCH_LIMIT, retentionArchiveDir, buildArchiveFileName, writeArchiveFile } =
           require('../retention') as typeof import('../retention');
         const conf = getRetentionConfigFresh();
         const total = await store.countRequests();

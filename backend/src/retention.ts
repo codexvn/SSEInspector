@@ -1,5 +1,5 @@
 /**
- * 数据轮转配置：读写 retention.json、校验与进程内配置单例。
+ * 数据轮转：retention.json 配置读写校验、轮转判定与 gzip 归档写出。
  *
  * 语义：仅按数据量轮转——记录总数超过「触发阈值 triggerCount」时，把最老
  * 的记录删除到只剩「保留量 keepCount」（删除动作与归档导出在 Recorder
@@ -9,6 +9,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { config } from './config';
 import { getLogger, serializeError } from './logger';
 
@@ -21,7 +22,7 @@ export const RETENTION_ROTATE_BATCH_LIMIT = 500;
 const THRESHOLD_MAX = 1_000_000;
 
 /** 归档目录与文件名的单一来源：Worker 归档、Worker 列表、主线程下载白名单三处共用 */
-export const ARCHIVE_FILE_PATTERN = /^archive-\d{8}-\d{6}\.json$/;
+export const ARCHIVE_FILE_PATTERN = /^archive-\d{8}-\d{6}\.json\.gz$/;
 
 export function retentionArchiveDir(): string {
   return path.join(path.dirname(config.dbPath || '.'), 'retention-archive');
@@ -29,7 +30,55 @@ export function retentionArchiveDir(): string {
 
 export function buildArchiveFileName(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `archive-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.json`;
+  return `archive-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.json.gz`;
+}
+
+/**
+ * 流式写出 gzip 压缩的归档文件：逐行 JSON.stringify 后经 gzip 层带背压写入，
+ * 避免把整批记录拼成单个字符串的内存峰值（单行可达 MB 级），压缩显著缩小
+ * 以文本为主的请求响应体归档体积。写出失败时销毁流并抛出，由调用方兜底
+ * （归档失败即中止本轮删除，宁可下轮重试也不丢数据）。
+ */
+export async function writeArchiveFile(
+  filePath: string,
+  data: { triggerCount: number; keepCount: number; requests: unknown[]; toolCalls: unknown[] },
+): Promise<void> {
+  const output = fs.createWriteStream(filePath);
+  const gzip = zlib.createGzip();
+  gzip.pipe(output);
+  // 输出流出错（如磁盘满）时让挂起的写 Promise 立即失败，避免等待已 unpiped 的 gzip 缓冲
+  let outputError: Error | null = null;
+  output.on('error', (error: Error) => { outputError ??= error; });
+  // 显式 encoding 让 write(chunk, encoding, cb) 三参重载命中，避免回调被误判为 encoding
+  const write = (chunk: string) => new Promise<void>((resolve, reject) => {
+    if (outputError) { reject(outputError); return; }
+    gzip.write(chunk, 'utf8', (error: Error | null | undefined) => (error ? reject(error) : resolve()));
+  });
+  try {
+    await write(`{"archivedAt":${JSON.stringify(new Date().toISOString())},"triggerCount":${data.triggerCount},"keepCount":${data.keepCount},"requests":[`);
+    for (let i = 0; i < data.requests.length; i++) {
+      await write(i === 0 ? JSON.stringify(data.requests[i]) : `,${JSON.stringify(data.requests[i])}`);
+    }
+    await write('],"toolCalls":[');
+    for (let i = 0; i < data.toolCalls.length; i++) {
+      await write(i === 0 ? JSON.stringify(data.toolCalls[i]) : `,${JSON.stringify(data.toolCalls[i])}`);
+    }
+    await write(']}');
+    // gzip.end 的回调只代表可写端结束：必须等输出流 finish（pipe 在 gzip 冲刷
+    // 完成后自动 end 输出流），否则文件里是截断的 gzip 流
+    await new Promise<void>((resolve, reject) => {
+      if (outputError) { reject(outputError); return; }
+      output.once('finish', resolve);
+      const fail = (error: Error) => reject(error);
+      output.once('error', fail);
+      gzip.once('error', fail);
+      gzip.end();
+    });
+  } catch (error) {
+    gzip.destroy();
+    output.destroy();
+    throw error;
+  }
 }
 
 export interface RetentionConfig {

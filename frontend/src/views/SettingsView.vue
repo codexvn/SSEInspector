@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchRetention, fetchRouting, retentionArchiveUrl, runRetention, saveRetention, saveRouting } from '../api'
 import type { RetentionArchiveEntry, RetentionConfig, RoutingState, UpstreamRoute } from '../types'
@@ -117,6 +117,18 @@ const runResult = ref('')
 const retentionDirty = computed(() => JSON.stringify(retention.value) !== retentionSnapshot.value)
 // 任一操作进行中互斥：立即轮转按磁盘上已保存的配置执行，保存未落盘时执行会用到旧值
 const retentionBusy = computed(() => retentionSaving.value || retentionRunning.value)
+
+/** 默认阈值按目标库体积 10 GiB 评估：实测每条记录的请求+响应体约 1.76 MiB（本机
+ *  557 条样本、body 占库文件约 99%），10 GiB ≈ 5800 条，留余量取 5000；保留量
+ *  取 4000（轮转后约 6.7 GiB） */
+const RETENTION_DEFAULT_TRIGGER = 5000
+const RETENTION_DEFAULT_KEEP = 4000
+// 首次启用且未填阈值时预填默认值，避免面对空输入猜数字
+watch(() => retention.value.enabled, (enabled) => {
+  if (!enabled) return
+  if (!retention.value.triggerCount) retention.value.triggerCount = RETENTION_DEFAULT_TRIGGER
+  if (!retention.value.keepCount) retention.value.keepCount = RETENTION_DEFAULT_KEEP
+})
 
 async function refreshRetention(): Promise<void> {
   const loaded = await fetchRetention()
@@ -263,8 +275,8 @@ function formatArchiveTime(iso: string): string {
             <input v-model="retention.enabled" type="checkbox" />
             启用轮转
           </label>
-          <label>触发阈值 <input v-model.number="retention.triggerCount" class="text-input mono num" type="number" min="1" placeholder="如 100000" /></label>
-          <label>保留量 <input v-model.number="retention.keepCount" class="text-input mono num" type="number" min="1" placeholder="如 80000" /></label>
+          <label>触发阈值 <input v-model.number="retention.triggerCount" class="text-input mono num" type="number" min="1" placeholder="默认 5000" /></label>
+          <label>保留量 <input v-model.number="retention.keepCount" class="text-input mono num" type="number" min="1" placeholder="默认 4000" /></label>
           <button class="save-btn retention-save" :disabled="!retentionLoaded || !retentionDirty || retentionBusy" @click="onSaveRetention">
             {{ retentionSaving ? '保存中…' : '保存轮转配置' }}
           </button>

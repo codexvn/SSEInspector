@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { setConfig } from '../src/config';
 import { ApiEndpoint, ApiType, type RecordedRequest } from '../src/types';
 import {
@@ -21,15 +22,17 @@ import {
   retentionArchiveDir,
   shouldRotate,
   validateRetentionConfig,
+  writeArchiveFile,
 } from '../src/retention';
 
 async function main(): Promise<void> {
   // ---- 归档命名单一来源：构造的文件名必须能被白名单模式放行（Worker 归档与主线程下载共用该模式）----
   const sample = buildArchiveFileName(new Date('2026-11-14T01:23:45'));
-  assert.equal(sample, 'archive-20261114-012345.json');
+  assert.equal(sample, 'archive-20261114-012345.json.gz');
   assert.ok(ARCHIVE_FILE_PATTERN.test(sample), '构造的归档文件名必须匹配白名单模式');
-  assert.ok(!ARCHIVE_FILE_PATTERN.test('../archive-20261114-012345.json'), '白名单必须拒绝路径穿越');
-  assert.ok(!ARCHIVE_FILE_PATTERN.test('archive-20261114-012345.json.txt'), '白名单必须拒绝附加扩展名');
+  assert.ok(!ARCHIVE_FILE_PATTERN.test('../archive-20261114-012345.json.gz'), '白名单必须拒绝路径穿越');
+  assert.ok(!ARCHIVE_FILE_PATTERN.test('archive-20261114-012345.json.gz.txt'), '白名单必须拒绝附加扩展名');
+  assert.ok(!ARCHIVE_FILE_PATTERN.test('archive-20261114-012345.json'), '旧明文 .json 归档不再支持');
   assert.ok(retentionArchiveDir().endsWith('retention-archive'));
 
   // ---- validateRetentionConfig ----
@@ -66,6 +69,26 @@ async function main(): Promise<void> {
     initRetention({ filePath: retentionFile });
     assert.deepEqual(getRetentionConfig(), { enabled: true, triggerCount: 500, keepCount: 400 });
     assert.throws(() => replaceRetentionConfig({ enabled: true, triggerCount: 400, keepCount: 500 }), /校验失败/);
+
+    // ---- gzip 归档写出与读回：writeArchiveFile 产物必须是可解压的合法 JSON ----
+    const archivePath = path.join(tempDir, buildArchiveFileName(new Date('2026-11-14T01:23:45')));
+    await writeArchiveFile(archivePath, {
+      triggerCount: 500,
+      keepCount: 400,
+      requests: [{ id: 'r01', responseBody: '{"n":1}' }],
+      toolCalls: [{ request_id: 'r01', tool_call_id: 'tc-1' }],
+    });
+    const rawArchive = fs.readFileSync(archivePath);
+    assert.equal(rawArchive[0], 0x1f, '归档必须是 gzip 魔数开头');
+    assert.equal(rawArchive[1], 0x8b, '归档必须是 gzip 魔数开头');
+    const decoded = JSON.parse(zlib.gunzipSync(rawArchive).toString('utf8')) as {
+      triggerCount: number;
+      requests: Array<{ id: string }>;
+      toolCalls: Array<{ request_id: string }>;
+    };
+    assert.equal(decoded.triggerCount, 500);
+    assert.equal(decoded.requests[0].id, 'r01');
+    assert.deepEqual(decoded.toolCalls.map(tc => tc.request_id), ['r01']);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
