@@ -7,8 +7,11 @@
  * Worker 与数据库（AGENTS.md 第 3 条限制的是每请求数据面路径）。
  *
  * 语义：规则按数组顺序自上而下，第一条启用且前缀命中（段边界）的生效；
- * 未命中回落默认上游；两者皆无时由调用方明确拒绝请求。CLI --upstream
- * 显式传入时作为本次运行的默认上游，覆盖界面持久值（不回写文件）。
+ * 命中规则时前缀按挂载点语义在转发时剥离（/easytier/v1/models → 上游收到
+ * /v1/models；需要在上游保留前缀时，把前缀写入规则上游地址的路径即可组合
+ * 还原）。未命中回落默认上游（默认不剥离）；两者皆无时由调用方明确拒绝
+ * 请求。CLI --upstream 显式传入时作为本次运行的默认上游，覆盖界面持久值
+ *（不回写文件）。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,6 +49,8 @@ export interface ResolvedUpstream {
   upstream: string;
   source: 'route' | 'default';
   routeName: string;
+  /** 命中规则的匹配前缀（默认上游为 undefined）；转发时据此剥离（挂载点语义） */
+  prefix?: string;
 }
 
 interface RoutingRuntime {
@@ -172,7 +177,7 @@ export function resolveUpstream(pathname: string): ResolvedUpstream | null {
   for (const route of rt.persisted.routes) {
     if (!route.enabled) continue;
     if (prefixMatches(route.prefix, pathname)) {
-      return { upstream: route.upstream, source: 'route', routeName: route.name };
+      return { upstream: route.upstream, source: 'route', routeName: route.name, prefix: route.prefix };
     }
   }
   if (rt.effectiveDefault) {

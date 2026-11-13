@@ -97,7 +97,7 @@ initRouting({ cliUpstream: 'http://cli:6', filePath: fileA });
 // CLI 覆盖持久默认值（effectiveDefault 取 CLI，persistedDefault 保留）
 assert.equal(resolveUpstream('/unknown')!.upstream, 'http://cli:6');
 // 顺序优先：/alpha 命中第一条；停用规则跳过，/v1 命中启用中的那条
-assert.deepEqual(resolveUpstream('/alpha/x'), { upstream: 'http://alpha:3', source: 'route', routeName: '前缀A' });
+assert.deepEqual(resolveUpstream('/alpha/x'), { upstream: 'http://alpha:3', source: 'route', routeName: '前缀A', prefix: '/alpha' });
 assert.equal(resolveUpstream('/v1/chat').upstream, 'http://v1:5');
 // 段边界：/alphax 不命中 /alpha，回落默认
 assert.equal(resolveUpstream('/alphax').source, 'default');

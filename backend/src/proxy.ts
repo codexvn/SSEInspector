@@ -109,7 +109,17 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   }
   const proxy = await getProxyServer();
 
-  const targetUrl = resolved.upstream.replace(/\/$/, '') + req.originalUrl;
+  // 规则命中时剥离被匹配的前缀（挂载点语义）：/easytier/v1/models → 上游收到
+  // /v1/models；需在上游保留前缀的场景把前缀写进规则上游地址的路径即可组合
+  // 还原。根前缀 / 无可剥离；query 串原样保留。默认上游不剥离。
+  let outgoingUrl = req.originalUrl;
+  if (resolved.source === 'route' && resolved.prefix && resolved.prefix !== '/') {
+    const searchIndex = req.originalUrl.indexOf('?');
+    const search = searchIndex >= 0 ? req.originalUrl.slice(searchIndex) : '';
+    const stripped = req.path === resolved.prefix ? '/' : req.path.slice(resolved.prefix.length);
+    outgoingUrl = stripped + search;
+  }
+  const targetUrl = resolved.upstream.replace(/\/$/, '') + outgoingUrl;
   const target = new URL(targetUrl);
   const targetLog = `${target.origin}${target.pathname}`;
   // 所有经 forward 的代理流量都记录（含未注册 path 的透传）
@@ -152,6 +162,14 @@ async function forward(req: Request, res: Response, endpointDefinition?: Endpoin
   const requestTap = createRequestCaptureTap(id, context);
   context.requestTap = requestTap;
   req.pipe(requestTap);
+
+  // httpxy 以 req.url 作为出网路径：命中规则时改写为剥离前缀后的路径。
+  // capture 快照已取原始 req.path，记录不受影响；upstreamUrl 元数据与
+  // 实际出网路径一致
+  if (resolved.source === 'route' && resolved.prefix && resolved.prefix !== '/') {
+    req.url = outgoingUrl;
+  }
+
   req.once('aborted', () => {
     finalizeClosed(context, 499, 'request_aborted');
   });

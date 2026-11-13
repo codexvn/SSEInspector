@@ -173,6 +173,10 @@ async function main(): Promise<void> {
   app.post('/v1/alpha/search', (req, res) => {
     void handlePassthrough(req, res)
   })
+  // 精确命中规则前缀的路径（剥离为 / 的场景）也需要透传入口
+  app.post('/v1/alpha', (req, res) => {
+    void handlePassthrough(req, res)
+  })
   const proxy = app.listen(0, '127.0.0.1')
   await once(proxy, 'listening')
   const proxyPort = (proxy.address() as { port: number }).port
@@ -282,19 +286,25 @@ async function main(): Promise<void> {
     ],
   })
 
-  // 命中规则：同一透传路径改走上游 B，记录的 upstreamUrl 指向 B
+  // 命中规则：同一透传路径改走上游 B，命中前缀剥离后转发，记录的 upstreamUrl 指向 B
   const betaResult = await postJson(proxyPort, '/v1/alpha/search')
   assert.equal(betaResult.status, 202)
   assert.equal(betaResult.headers['x-upstream-b'], '1')
-  assert.deepEqual(upstreamBSeen, ['/v1/alpha/search'])
+  assert.deepEqual(upstreamBSeen, ['/search'])
   const betaCapture = captureObservation.starts.filter(start => start.path === '/v1/alpha/search').at(-1)
   assert.ok(betaCapture, '分流请求应触发 capture.start')
   assert.ok(betaCapture.upstreamUrl.includes(`:${upstreamBPort}`), '记录的 upstreamUrl 应指向规则命中的上游')
+  assert.ok(betaCapture.upstreamUrl.endsWith('/search'), '记录的 upstreamUrl 应为剥离前缀后的真实目标')
+
+  // 前缀恰好等于路径：剥离为根路径 /
+  const exactPrefix = await postJson(proxyPort, '/v1/alpha')
+  assert.equal(exactPrefix.status, 202)
+  assert.deepEqual(upstreamBSeen, ['/search', '/'])
 
   // 未命中规则：默认上游兜底（/v1/responses 不在 /v1/alpha 前缀内）
   const defaultResult = await postJson(proxyPort, '/v1/responses')
   assert.equal(defaultResult.status, 201)
-  assert.deepEqual(upstreamBSeen, ['/v1/alpha/search'], '未命中路径不应到达上游 B')
+  assert.deepEqual(upstreamBSeen, ['/search', '/'], '未命中路径不应到达上游 B')
 
   // 清空默认上游后未命中路径：503 明确拒绝，且不产生新录制
   const startsBeforeReject = captureObservation.starts.length
@@ -416,7 +426,9 @@ async function postJson(
 
 main().catch(error => {
   console.error(formatErrorChain(error))
-  process.exitCode = 1
+  // 失败路径上各 mock server 未关闭、事件循环不会自然排空，必须显式退出，
+  // 否则失败表现为无限挂起
+  process.exit(1)
 }).finally(() => {
   proxyLogger.info = originalLoggerMethods.info
   proxyLogger.warn = originalLoggerMethods.warn

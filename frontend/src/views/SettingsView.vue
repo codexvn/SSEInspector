@@ -132,7 +132,8 @@ async function onSave(): Promise<void> {
         <div class="section-label">分流规则</div>
         <p class="hint">
           自上而下取第一条启用且前缀命中的规则（按路径段边界匹配，/v1 命中 /v1/... 但不命中 /v1foo）；
-          上游为 http(s) 地址，允许携带路径前缀（转发时与请求路径拼接）。修改后需点击「保存」，保存即时生效、无需重启。
+          命中时前缀按挂载点语义剥离后转发（/easytier/v1/models → 上游收到 /v1/models），需要保留前缀时把它写进上游地址的路径；
+          上游为 http(s) 地址，允许携带路径前缀（与剥离后的路径拼接）。修改后需点击「保存」，保存即时生效、无需重启。
         </p>
         <table v-if="routes.length > 0" class="routes-table">
           <thead>

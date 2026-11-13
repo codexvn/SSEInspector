@@ -14,7 +14,7 @@ flowchart TB
         CLI["bin/sse-inspector.js<br/>CLI 入口：解析参数 → setConfig"]
         INDEX["index.ts<br/>Express 装配：内部 API · 代理路由 · 前端托管 · 关停编排"]
         PROXY["proxy.ts · forward()<br/>handleProxy（注册表命中）/ handlePassthrough（catch-all）"]
-        ROUTING["routing.ts<br/>多上游分流：前缀规则 + 默认上游解析<br/>routing.json 持久化 · GET/PUT /api/routing"]
+        ROUTING["routing.ts<br/>多上游分流：前缀规则（挂载点剥离）+ 默认上游解析<br/>routing.json 持久化 · GET/PUT /api/routing"]
         HTTPXY["httpxy 传输层<br/>pipe · 背压 · headers · socket 销毁（唯一所有者）"]
         WSPROXY["ws-proxy.ts<br/>升级接管 · proxyUpgrade 桥接 · 双向字节 tee（GET /responses 升级）"]
         TEE["请求 Transform tee + 响应观察<br/>字节旁路复制，不阻塞转发"]
@@ -130,7 +130,7 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 请求与等待首包阶段
 
-记录在请求体接收完成（`request_end`，通常即请求发出后毫秒级）就写入数据库：此时 `finished = pending`、`status = 0`，读取侧派生状态为「等待响应」，列表随即可见（upsert 自带 SSE `update` 推送，无需等轮询），请求体与 model 均已可解析。上游返回响应头（`response_start`）后 `status` 列更新，同一行自动派生为 `streaming`；首个 body chunk 到达前 `streamText` 为空。详情页流式卡片的渲染条件是 `isStreaming` 而非 `isStreaming && streamText`，空内容时同样显示「实时接收中…」卡片，`StreamLive` 的 `min-height: 3em` 保证卡片有可见高度；列表页以「等待响应…」「流式传输中…」分别标识两个阶段。上游早于请求体结束回包的早响应场景由 Worker 兜底（响应阶段接管落库，请求阶段不再重复写）。
+记录在请求体接收完成时（`request_end`）即写入数据库，该时刻通常在请求发出后毫秒级以内：此时 `finished = pending`、`status = 0`，读取侧派生状态为「等待响应」，列表随即可见（upsert 自带 SSE `update` 推送，无需等待轮询），请求体与 `model` 字段此时均已解析。上游返回响应头（`response_start`）后 `status` 列更新，同一行自动派生为 `streaming`（传输中）；首个 body chunk 到达前 `streamText` 为空。详情页流式卡片的渲染条件是 `isStreaming` 而非 `isStreaming && streamText`，空内容时同样显示「实时接收中…」卡片，`StreamLive` 的 `min-height: 3em` 保证卡片有可见高度；列表页预览列以「等待响应…」「流式传输中…」分别标识两个阶段（状态徽章为「等待响应」/「传输中」）。上游在请求体接收结束前即返回响应的早响应场景由 Worker 兜底：落库由响应阶段的 streaming 记录接管（请求体仍随该记录入库），请求阶段不再重复写入。
 
 ### 透传流量
 
@@ -138,11 +138,11 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 多上游分流
 
-上游目标不是全局单值，而是由 `routing.ts` 在每次转发前按同一张规则表解析，HTTP 代理路由、catch-all 透传与 WebSocket 升级三处消费点行为一致。规则表为有序数组：自上而下取第一条启用且前缀命中的规则；前缀按路径段边界匹配（`/v1` 命中 `/v1` 与 `/v1/...`，不命中 `/v1foo`）；未命中则回落默认上游；两者皆无时 HTTP 请求返回 503 状态码与中文错误信息，WebSocket 升级回写 503 后关闭连接，被拒绝的请求不产生录制记录。
+上游目标不是全局单值，而是由 `routing.ts` 在每次转发前按同一张规则表解析，HTTP 代理路由、catch-all 透传与 WebSocket 升级三处消费点行为一致。规则表为有序数组：自上而下取第一条启用且前缀命中的规则；前缀按路径段边界匹配（`/v1` 命中 `/v1` 与 `/v1/...`，不命中 `/v1foo`）；命中规则的请求按挂载点语义剥离前缀后转发（`/easytier/v1/models` 上游收到 `/v1/models`，路径恰为前缀时剥离为 `/`，query 串原样保留；需要在上游保留前缀时，把前缀写进规则上游地址的路径即可组合还原），根前缀 `/` 无可剥离；未命中则回落默认上游，默认上游不剥离、转发完整请求路径；两者皆无时 HTTP 请求返回 503 状态码与中文错误信息，WebSocket 升级回写 503 后关闭连接，被拒绝的请求不产生录制记录。
 
 配置持久化在与 SQLite 同目录的 `routing.json`（数据卷内，随库备份），保存走整文档替换：校验通过后先写入临时文件并原子替换目标文件，再整体替换内存快照，因此保存即时生效、无需重启，在途请求继续读旧快照。默认上游有两个来源：CLI `--upstream`（可选参数）与设置页保存值；显式传入时以 CLI 传入值为准（仅本次运行生效，不回写文件），设置页会显示覆盖提示。
 
-启动时校验：生效默认上游与启用中的规则同时为空才退出。上游地址必须是 http(s)，允许携带路径前缀（转发时与请求路径拼接，与历史 `--upstream` 的拼接语义一致），不得携带 query、hash 或凭证；CLI 传入值与规则中的上游按同一规格校验，CLI 非法值在启动阶段即终止进程。WebSocket 升级桥接只使用上游的 origin，路径前缀对 WS 流量不生效（已知限制）。
+启动时校验：生效默认上游与启用中的规则同时为空才退出。上游地址必须是 http(s)，允许携带路径前缀（规则命中时与剥离前缀后的路径拼接，默认上游与完整请求路径拼接，与历史 `--upstream` 的拼接语义一致），不得携带 query、hash 或凭证；CLI 传入值与规则中的上游按同一规格校验，CLI 非法值在启动阶段即终止进程。WebSocket 升级桥接只使用上游的 origin，路径前缀对 WS 流量不生效（已知限制）。
 
 设置页（`SettingsView`，入口在列表页顶栏）提供默认上游编辑、规则的增删改、上移下移排序与启用停用开关，保存失败的校验错误以中文清单展示。路由配置不属于录制数据，不经 Recorder Worker 与数据库，主线程只在启动与保存两个时机对 `routing.json` 做一次同步读写，数据面每请求只读内存快照（不触碰「代理主线程不访问数据库」红线）。
 
@@ -152,7 +152,7 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 时间与耗时记录
 
-每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。主线程日志的 `durationMs` 与 Worker 各持久化点（请求阶段 / 完成 / 部分保存 / 中断 / 上游失败）的 `record.durationMs` 均由 `Date.now() - metadata.startedAt` 计算——两次计算发生在不同时刻、数值可能略有差异，但同源于同一 startedAt，语义一致。请求阶段落库的记录携带当时的耗时（即请求发出到请求体完成的时长），响应开始后的流式快照会继续刷新该值。
+每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。主线程日志的 `durationMs` 与 Worker 各持久化点（请求阶段 / 完成 / 部分保存 / 中断 / 上游失败）的 `record.durationMs` 均由 `Date.now() - metadata.startedAt` 计算——主线程与 Worker 两侧的计算发生在不同时刻、数值可能略有差异，但都取自同一个 `startedAt`，语义一致。请求阶段落库的记录携带当时的耗时（即从请求发出到请求体接收完成的时长），响应开始后的流式实时快照（`publishLiveSnapshot`，与持久化点不同，仅推送不落库）会继续刷新记录中的该值。
 
 ## 分层职责
 
@@ -174,7 +174,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 
 ### 前端：展示面
 
-列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`（「进行中」= 等待响应与传输中两态之和）。列表的速度列不做实时估算：进行中显示状态文案（等待响应 / 接收中），终态以 usage 返回的输出 token 为主计算 `tok/s`，usage 缺失时以记录的响应字符数（`responseChars`，请求完成落库时随响应文本长度一并写入）兜底显示 `字/s`，两者单位区分、不做 token 数的换算猜测。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
+列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`（「进行中」= 等待响应与传输中两态之和）。列表的速度列不做实时估算：进行中的记录显示状态文案（等待响应 / 接收中，速度列的短文案），终态记录以 usage 返回的输出 token 为主计算 `tok/s`，usage 缺失时以响应字符数（`responseChars`，终态落库时取原始响应文本长度写入）兜底显示 `字/s`，两种单位明确区分，不做 token 数的换算猜测。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
 
 ## 关键目录与文件职责
 
