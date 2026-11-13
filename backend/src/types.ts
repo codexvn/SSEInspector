@@ -199,6 +199,7 @@ export interface RecordedRequest {
 export interface RecordSummary {
   id: string;
   timestamp: string;
+  method: string;
   model: string;
   status: number;
   preview: string;
