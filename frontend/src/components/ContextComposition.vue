@@ -50,6 +50,8 @@ const visibleParts = computed(() => props.analysis.parts.filter(part => part.byt
 .context-title { font-size: .82rem; font-weight: 650; color: var(--text-primary); }
 .context-total { font: .76rem var(--font-mono); color: var(--text-secondary); }
 .context-bar { display: flex; height: 10px; overflow: hidden; border-radius: 6px; background: var(--border); }
+/* 进度条与消息正文同宽上限，避免被满宽拉伸（正文阅读宽度见 BaseTextCard） */
+.context-bar, .context-legend, .context-note { max-width: 880px; }
 .context-segment { min-width: 2px; height: 100%; }
 .context-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; }
 .context-item { display: flex; align-items: center; gap: 6px; font-size: .76rem; color: var(--text-secondary); }

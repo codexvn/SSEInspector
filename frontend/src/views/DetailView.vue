@@ -811,7 +811,7 @@ function createRequestAnalysisWorker(): Worker {
 }
 .card + .card { margin-top: 0; }
 .card-title {
-  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-secondary); font-weight: 600; margin-bottom: 8px;
 }
 .card-title .kv { text-transform: none; }
@@ -866,11 +866,12 @@ function createRequestAnalysisWorker(): Worker {
 /* 消息流弹窗：高度与宽度均贴合内容（少量分组时不留大片空白），超出视口时封顶滚动 */
 .diff-modal.flow-modal {
   flex: 0 1 auto;
-  margin: auto 2vw;
+  margin: auto;
   max-height: 96vh;
   min-height: 30vh;
   width: fit-content;
-  min-width: 560px;
+  /* 宽度下限贴近常见内容宽：短内容分组与工具密集分组间切换时，弹窗宽度不会大幅跳动 */
+  min-width: 960px;
   max-width: min(1400px, 96vw);
 }
 .diff-modal-header {

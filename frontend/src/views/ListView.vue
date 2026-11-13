@@ -213,6 +213,7 @@ function sessionLabel(sid?: string, key?: string): string {
         <colgroup>
           <col class="col-time" />
           <col class="col-api" />
+          <col class="col-path" />
           <col class="col-model" />
           <col class="col-status" />
           <col class="col-preview" />
@@ -225,6 +226,7 @@ function sessionLabel(sid?: string, key?: string): string {
           <tr>
             <th>时间</th>
             <th>API</th>
+            <th class="th-path">路径</th>
             <th>模型</th>
             <th>状态</th>
             <th>预览</th>
@@ -247,6 +249,7 @@ function sessionLabel(sid?: string, key?: string): string {
               <td class="cell-api">
                 <span class="badge badge-passthrough">透传</span>
               </td>
+              <td class="cell-path">-</td>
               <td class="cell-model group-count">×{{ row.items.length }}</td>
               <td class="cell-status group-status">{{ groupStatusSummary(row.items) }}</td>
               <td class="cell-preview group-preview" :title="groupPreview(row.items)">
@@ -270,11 +273,9 @@ function sessionLabel(sid?: string, key?: string): string {
                 <span v-if="row.record.apiType === 'passthrough'" class="badge badge-passthrough">透传</span>
                 <span v-else-if="row.record.apiType === 'anthropic'" class="badge badge-anthropic">Anthropic</span>
                 <span v-else class="badge badge-openai">OpenAI</span>
-                <div class="api-path" :title="row.record.path">
-                  <span class="endpoint-tag">{{ transportTag(row.record) }}</span>
-                  <span class="path-text">{{ row.record.path }}</span>
-                </div>
+                <span class="endpoint-tag">{{ transportTag(row.record) }}</span>
               </td>
+              <td class="cell-path" :title="row.record.path">{{ row.record.path }}</td>
               <td class="cell-model" :title="row.record.apiType === 'passthrough' ? undefined : row.record.model">{{ row.record.apiType === 'passthrough' ? '-' : row.record.model }}</td>
               <td class="cell-status">
                 <span v-if="row.record.state === 'pending'" class="badge badge-streaming">等待响应</span>
@@ -329,7 +330,8 @@ function sessionLabel(sid?: string, key?: string): string {
 </template>
 
 <style scoped>
-.list-page { width: min(100% - 80px, 1520px); margin: 0 auto; padding: 28px 0; }
+/* 与详情页同宽（1280px）：十列表格在更宽容器下只会拉长预览列行宽，统一上限更协调 */
+.list-page { width: min(100% - 80px, 1280px); margin: 0 auto; padding: 28px 0; }
 
 .top-bar {
   display: flex; justify-content: space-between; align-items: center;
@@ -366,18 +368,20 @@ function sessionLabel(sid?: string, key?: string): string {
 }
 
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.col-time { width: 9.5%; }
-.col-api { width: 8.5%; }
-.col-model { width: 9%; }
+.col-time { width: 8.5%; }
+/* API 列只放徽章 + 传输标签；路径独立成列，14% ≈ 179px 可完整显示 /easytier/v1/messages（21 字符） */
+.col-api { width: 10.5%; }
+.col-path { width: 14%; }
+.col-model { width: 9.5%; }
 .col-status { width: 6%; }
-.col-preview { width: 31.5%; }
-.col-session { width: 10.5%; }
-.col-duration { width: 7.5%; }
-.col-cache { width: 8%; }
-.col-speed { width: 9.5%; }
+.col-preview { width: 22%; }
+.col-session { width: 9%; }
+.col-duration { width: 7%; }
+.col-cache { width: 6.5%; }
+.col-speed { width: 7%; }
 thead { background: var(--bg-inset); border-bottom: 1px solid var(--border); }
 th {
-  text-align: center; padding: 11px 10px; font-size: 0.73rem;
+  text-align: center; padding: 11px 10px; font-size: 0.75rem;
   font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--text-secondary); white-space: nowrap;
 }
@@ -388,13 +392,16 @@ tbody tr:last-child td { border-bottom: none; }
 
 .cell-time { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
 .cell-model { overflow-wrap: anywhere; font-weight: 500; text-align: center; }
-.cell-api { font-size: 0.75rem; text-align: center; }
-/* API 徽章下方的传输标签 + 路径（超长省略，title 提示完整值） */
-.api-path { display: flex; align-items: center; gap: 5px; margin-top: 4px; min-width: 0; justify-content: center; }
-.api-path .path-text {
-  font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+.cell-api { font-size: 0.75rem; text-align: center; white-space: nowrap; }
+/* 协议徽章 + 传输标签（SSE/WS/JSON）同行居中，标签与徽章留一点间距 */
+.cell-api .endpoint-tag { margin-left: 5px; }
+/* 路径独立列：左对齐等宽字体，超长省略（count_tokens 等），title 提示完整值 */
+.cell-path {
+  font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 表头跟随内容左对齐，避免「路径」居中而单元格左对齐的错位观感 */
+.th-path { text-align: left; }
 .endpoint-tag {
   flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-sm);
   font-family: var(--font-mono); font-size: 0.68rem; font-weight: 600;
@@ -417,9 +424,10 @@ tbody tr:last-child td { border-bottom: none; }
   font-size: 0.95rem; line-height: 1; padding: 0; margin-left: 2px;
 }
 .session-chip-close:hover { color: #1e1b4b; }
-.cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
-.cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: center; }
-.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: center; }
+/* 数值列右对齐：耗时/缓存/速度按数量级纵向可比 */
+.cell-duration { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: right; }
+.cell-cache { white-space: nowrap; font-size: 0.78rem; text-align: right; }
+.cell-speed { white-space: nowrap; font-size: 0.78rem; color: var(--text-secondary); font-family: var(--font-mono); text-align: right; }
 .cache-hit { color: var(--success); font-weight: 600; }
 .cache-miss { color: var(--text-muted); }
 

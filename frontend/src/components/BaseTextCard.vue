@@ -159,6 +159,9 @@ function viewerLabel(viewer: CardViewer): string {
 .text-card-raw {
   margin: 0;
   padding: 16px 18px;
+  /* 正文收窄到统一阅读宽度（约 100 英文字符/行）：卡片本体与色条保持全宽，
+     只限正文行宽，标题与正文左对齐动线一致 */
+  max-width: 880px;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);

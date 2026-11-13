@@ -292,7 +292,16 @@ async function start() {
     // 生产模式：直接服务 frontend/dist 静态产物（前端用 hash 路由，无需 SPA fallback）
     // __dirname = <pkgroot>/dist，上一级到 pkgroot，再进 frontend/dist
     const frontendDist = path.resolve(__dirname, '..', 'frontend', 'dist');
-    app.use(express.static(frontendDist, { index: 'index.html' }));
+    // index.html 引用带内容哈希的资源名：HTML 本体必须每次协商校验（no-cache），
+    // 否则浏览器按启发式缓存旧 HTML、继续加载旧资源——部署后界面不更新的根因；
+    // assets/ 下文件名带哈希可安全长缓存，其余（favicon 等）跟随协商缓存。
+    app.use(express.static(frontendDist, {
+      index: 'index.html',
+      setHeaders: (res, filePath) => {
+        const isHashedAsset = filePath.split(/[\\/]/).includes('assets');
+        res.setHeader('Cache-Control', isHashedAsset ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    }));
   }
 
   // ---- Catch-all：透传未匹配请求到上游 ----

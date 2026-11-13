@@ -77,6 +77,8 @@ watch(() => props.text, renderMermaidBlocks, { immediate: true })
 <style scoped>
 .markdown-render {
   padding: 16px 18px;
+  /* 与 BaseTextCard 正文同宽的阅读上限，保证渲染态与原文态行宽一致 */
+  max-width: 880px;
   font-size: 0.9rem;
   line-height: 1.7;
   color: var(--text-primary);
