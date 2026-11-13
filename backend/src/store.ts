@@ -37,6 +37,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
   return {
     id: r.id,
     timestamp: r.timestamp,
+    method: r.method,
     model,
     status: r.responseStatus,
     preview: preview.slice(0, 80),
@@ -138,6 +139,7 @@ function entityToSummary(row: RequestEntity): RecordSummary {
   return {
     id: row.id,
     timestamp: row.timestamp,
+    method: row.method,
     model: row.model,
     status: row.status,
     preview: row.preview ?? '',
@@ -215,7 +217,7 @@ function buildSummaryWhere(
 
 // 列表查询的 select 列（跳过 blob，保证分页性能）
 const SUMMARY_SELECT = {
-  id: true, timestamp: true, model: true, status: true, preview: true,
+  id: true, timestamp: true, method: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
   api_endpoint: true, response_chars: true,
   session_id: true, session_id_key: true,
@@ -369,6 +371,38 @@ export async function getStats(): Promise<{ total: number } & ListCounts> {
   const total = await repo.count();
   const counts = await countListBuckets(repo);
   return { total, ...counts };
+}
+
+/** 仅取总条数的轻量查询：轮转探查每分钟一次，无需附带分桶统计 */
+export async function countRequests(): Promise<number> {
+  return reqRepo().count();
+}
+
+// ---- 数据轮转（retention.run RPC 专用）----
+
+/**
+ * 轮转导出：按时间正序取最老 count 条完整记录行与关联 tool_calls。
+ * 导出原始列（JSON TEXT 列保持字符串形态），保证归档与库内存储逐字段一致。
+ */
+export async function getOldestRequests(count: number): Promise<{ requests: RequestEntity[]; toolCalls: ToolCall[] }> {
+  const requests = await reqRepo().createQueryBuilder('r')
+    .orderBy('r.timestamp', 'ASC')
+    .take(count)
+    .getMany();
+  const ids = requests.map(row => row.id);
+  const toolCalls = ids.length === 0
+    ? []
+    : await toolRepo().createQueryBuilder('t')
+      .where('t.request_id IN (:...ids)', { ids })
+      .getMany();
+  return { requests, toolCalls };
+}
+
+/** 按主键批量删除记录。tool_calls 依赖数据库外键级联（PRAGMA foreign_keys=ON，ToolCall onDelete CASCADE）随主记录删除，返回删除的记录条数 */
+export async function deleteRequests(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const result = await reqRepo().delete(ids);
+  return result.affected ?? 0;
 }
 
 /** 全局相邻与序号（按时间降序）：供详情页全局导航直接查接口刷新 */

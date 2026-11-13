@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchRouting, saveRouting } from '../api'
-import type { RoutingState, UpstreamRoute } from '../types'
+import { fetchRetention, fetchRouting, retentionArchiveUrl, runRetention, saveRetention, saveRouting } from '../api'
+import type { RetentionArchiveEntry, RetentionConfig, RoutingState, UpstreamRoute } from '../types'
+import { formatBytes } from '../format'
 import { formatErrorChain } from '../error'
 
 const router = useRouter()
@@ -41,6 +42,12 @@ onMounted(async () => {
     error.value = `加载失败: ${formatErrorChain(e)}`
   } finally {
     loading.value = false
+  }
+  // 轮转状态独立加载：失败不阻塞分流配置的展示
+  try {
+    await refreshRetention()
+  } catch (e) {
+    retentionErrors.value = [`轮转状态加载失败: ${formatErrorChain(e)}`]
   }
 })
 
@@ -93,6 +100,74 @@ async function onSave(): Promise<void> {
   } finally {
     saving.value = false
   }
+}
+
+// ---- 数据轮转（独立于分流配置的保存与执行）----
+
+const retention = ref<RetentionConfig>({ enabled: false, triggerCount: 0, keepCount: 0 })
+const retentionTotal = ref(0)
+const archives = ref<RetentionArchiveEntry[]>([])
+const retentionSnapshot = ref('')
+const retentionLoaded = ref(false)
+const retentionSaving = ref(false)
+const retentionErrors = ref<string[]>([])
+const retentionRunning = ref(false)
+const runResult = ref('')
+
+const retentionDirty = computed(() => JSON.stringify(retention.value) !== retentionSnapshot.value)
+// 任一操作进行中互斥：立即轮转按磁盘上已保存的配置执行，保存未落盘时执行会用到旧值
+const retentionBusy = computed(() => retentionSaving.value || retentionRunning.value)
+
+async function refreshRetention(): Promise<void> {
+  const loaded = await fetchRetention()
+  retention.value = { ...loaded.config }
+  retentionTotal.value = loaded.total
+  archives.value = loaded.archives
+  retentionSnapshot.value = JSON.stringify(retention.value)
+  retentionLoaded.value = true
+}
+
+async function onSaveRetention(): Promise<void> {
+  retentionSaving.value = true
+  retentionErrors.value = []
+  try {
+    const saved = await saveRetention({ ...retention.value })
+    retention.value = { ...saved }
+    retentionSnapshot.value = JSON.stringify(retention.value)
+  } catch (e) {
+    retentionErrors.value = [formatErrorChain(e)]
+  } finally {
+    retentionSaving.value = false
+  }
+}
+
+async function onRunRetention(): Promise<void> {
+  retentionRunning.value = true
+  runResult.value = ''
+  try {
+    const result = await runRetention()
+    if (result.rotated) {
+      runResult.value = `已轮转：删除 ${result.deleted} 条并归档为 ${result.archivedFile}（剩余 ${result.total} 条）`
+    } else if (result.enabled) {
+      runResult.value = `未超限：当前 ${result.total} 条，未执行轮转`
+    } else {
+      runResult.value = '轮转未启用'
+    }
+  } catch (e) {
+    runResult.value = `执行失败: ${formatErrorChain(e)}`
+  } finally {
+    retentionRunning.value = false
+  }
+  // 轮转已生效，刷新失败只提示、不覆盖执行结果
+  try {
+    await refreshRetention()
+  } catch (e) {
+    retentionErrors.value = [`轮转状态刷新失败: ${formatErrorChain(e)}`]
+  }
+}
+
+function formatArchiveTime(iso: string): string {
+  return new Date(iso).toLocaleString('zh-CN', { hour12: false })
 }
 </script>
 
@@ -175,6 +250,54 @@ async function onSave(): Promise<void> {
         <div v-if="addError" class="error">{{ addError }}</div>
       </section>
 
+      <section class="card">
+        <div class="section-label">数据轮转</div>
+        <p class="hint">
+          按数据量轮转：记录总数超过「触发阈值」时，把最老的记录删除到只剩「保留量」，删除前自动导出为归档文件（可下载）。
+          后台每 60 秒探查一次，也可立即手动执行。启用时两个阈值必填，且保留量须小于触发阈值。
+        </p>
+        <p v-if="!retention.enabled" class="warn-hint">未启用轮转：录制数据将持续累积（当前 {{ retentionTotal }} 条）。</p>
+
+        <div class="retention-row">
+          <label class="retention-toggle">
+            <input v-model="retention.enabled" type="checkbox" />
+            启用轮转
+          </label>
+          <label>触发阈值 <input v-model.number="retention.triggerCount" class="text-input mono num" type="number" min="1" placeholder="如 100000" /></label>
+          <label>保留量 <input v-model.number="retention.keepCount" class="text-input mono num" type="number" min="1" placeholder="如 80000" /></label>
+          <button class="save-btn retention-save" :disabled="!retentionLoaded || !retentionDirty || retentionBusy" @click="onSaveRetention">
+            {{ retentionSaving ? '保存中…' : '保存轮转配置' }}
+          </button>
+          <button class="mini-btn" :disabled="retentionBusy" @click="onRunRetention">
+            {{ retentionRunning ? '执行中…' : '立即轮转' }}
+          </button>
+        </div>
+        <div v-if="retention.enabled" class="hint">当前 {{ retentionTotal }} 条，超过 {{ retention.triggerCount }} 条时自动清理至 {{ retention.keepCount }} 条。</div>
+        <div v-if="runResult" class="run-result" :class="{ 'run-result-error': runResult.startsWith('执行失败') }">{{ runResult }}</div>
+        <div v-if="retentionErrors.length > 0" class="save-errors">
+          <div v-for="(message, index) in retentionErrors" :key="index">{{ message }}</div>
+        </div>
+
+        <table v-if="archives.length > 0" class="routes-table archives-table">
+          <thead>
+            <tr>
+              <th>归档文件</th>
+              <th>大小</th>
+              <th>时间</th>
+              <th class="col-op">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="entry in archives" :key="entry.name">
+              <td class="mono">{{ entry.name }}</td>
+              <td>{{ formatBytes(entry.size) }}</td>
+              <td>{{ formatArchiveTime(entry.modifiedAt) }}</td>
+              <td class="col-op"><a class="mini-btn download-link" :href="retentionArchiveUrl(entry.name)" :download="entry.name">下载</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
       <div v-if="saveErrors.length > 0" class="save-errors">
         <div v-for="(message, index) in saveErrors" :key="index">{{ message }}</div>
       </div>
@@ -244,6 +367,42 @@ async function onSave(): Promise<void> {
   font-size: 0.82rem;
   margin: 8px 0 12px;
   line-height: 1.6;
+}
+
+.warn-hint {
+  color: var(--warning);
+  font-size: 0.82rem;
+  margin: 0 0 8px;
+}
+
+.retention-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.retention-row label {
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.retention-toggle { cursor: pointer; }
+.num { width: 130px; }
+
+.run-result {
+  font-size: 0.84rem;
+  color: var(--accent);
+  margin: 8px 0;
+}
+.run-result-error { color: var(--error); }
+
+.archives-table td { font-size: 0.84rem; }
+.download-link {
+  text-decoration: none;
+  display: inline-block;
 }
 
 .default-row {

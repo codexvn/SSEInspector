@@ -13,6 +13,13 @@ import {
   routingFilePath,
   validateRoutingConfig,
 } from './routing';
+import {
+  ARCHIVE_FILE_PATTERN,
+  getRetentionConfig,
+  replaceRetentionConfig,
+  retentionArchiveDir,
+  validateRetentionConfig,
+} from './retention';
 import { RequestListFilter } from './types';
 import { ENDPOINT_DEFINITIONS } from './endpoints';
 import {
@@ -29,6 +36,8 @@ import { getLogger, serializeError } from './logger';
 const serverLogger = getLogger('server');
 const apiLogger = getLogger('api');
 const passthroughLogger = getLogger('passthrough');
+/** 轮转探查定时器句柄：shutdown 时清理，避免关停窗口内的探查噪声日志 */
+let retentionProbeTimer: NodeJS.Timeout | null = null;
 const shutdownLogger = getLogger('shutdown');
 
 /**
@@ -83,6 +92,20 @@ async function start() {
   );
   await initializeProxy();
   await startRecorder();
+  // 数据轮转：固定间隔探查，超限时在 Worker 内分批归档+删除（配置见 retention.json，
+  // 未启用时每次探查仅一次 count 查询）
+  const RETENTION_PROBE_INTERVAL_MS = 60_000;
+  retentionProbeTimer = setInterval(() => {
+    void recorderRpc('retention.run')
+      .then(result => {
+        if ((result as { rotated?: boolean }).rotated) {
+          serverLogger.info(result, 'retention probe rotated records');
+        }
+      })
+      .catch(error => {
+        serverLogger.warn({ err: serializeError(error) }, 'retention probe failed');
+      });
+  }, RETENTION_PROBE_INTERVAL_MS);
   const app = express();
 
   app.use('/api', compression({
@@ -209,6 +232,45 @@ async function start() {
     res.json(getRoutingState());
   }));
 
+  // ---- 数据轮转 ----
+
+  app.get('/api/retention', route(async (_req, res) => {
+    const [stats, archives] = await Promise.all([
+      recorderRpc('requests.stats'),
+      recorderRpc('retention.archives'),
+    ]);
+    res.json({
+      config: getRetentionConfig(),
+      total: (stats as { total: number }).total,
+      archives,
+    });
+  }));
+
+  // 保存只写主线程侧文件；Worker 每次执行前强制重读，两端不会脱节
+  app.put('/api/retention', route(async (req, res) => {
+    const validated = validateRetentionConfig(req.body);
+    if (!validated.ok) {
+      res.status(400).json({ error: '轮转配置校验失败', details: validated.errors });
+      return;
+    }
+    replaceRetentionConfig(validated.config);
+    res.json(getRetentionConfig());
+  }));
+
+  app.post('/api/retention/run', route(async (_req, res) => {
+    res.json(await recorderRpc('retention.run'));
+  }));
+
+  // 归档下载：文件名白名单校验防路径穿越（模式与 Worker 归档侧共用同一来源）；文件 IO 不经 Worker（数据库红线只限数据访问）
+  app.get('/api/retention/archives/:name', route(async (req, res) => {
+    const name = req.params.name;
+    if (!ARCHIVE_FILE_PATTERN.test(name)) {
+      res.status(400).json({ error: '非法归档文件名' });
+      return;
+    }
+    res.download(path.join(retentionArchiveDir(), name));
+  }));
+
   // ---- Proxy 路由 ----
 
   for (const definition of ENDPOINT_DEFINITIONS) {
@@ -289,6 +351,7 @@ async function shutdown(signal: string): Promise<void> {
   if (shutdownStarted) return;
   shutdownStarted = true;
   shutdownLogger.info({ signal }, 'shutdown started');
+  if (retentionProbeTimer) clearInterval(retentionProbeTimer);
   server?.close(error => {
     if (error) shutdownLogger.error({ err: serializeError(error) }, 'HTTP server shutdown failed');
   });

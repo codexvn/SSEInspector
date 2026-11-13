@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { RequestContextAnalysis, ContextCompositionKind } from '../context-composition'
+import { formatBytes } from '../format'
 
 const props = defineProps<{ analysis: RequestContextAnalysis }>()
 
@@ -14,12 +15,6 @@ const LABELS: Record<ContextCompositionKind, string> = {
   other: '其他配置',
 }
 const visibleParts = computed(() => props.analysis.parts.filter(part => part.bytes > 0))
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
-  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`
-}
 </script>
 
 <template>

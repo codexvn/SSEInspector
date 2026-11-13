@@ -12,6 +12,8 @@ npm run build:all                                                   # 后端 + �
 npm run test:sse                                                    # SSE 合并回归测试
 npm run test:decode                                                 # 请求体解码纯函数测试
 npm run test:identity                                               # 记录身份解析测试
+npm run test:routing                                               # 分流路由测试
+npm run test:retention                                             # 数据轮转测试
 npm run test:passthrough-store                                      # 透传 store 读写 / filter / counts 测试
 npm run test:proxy                                                  # 代理数据面字节透传测试
 npm run test:worker                                                 # Recorder Worker dev/prod 测试

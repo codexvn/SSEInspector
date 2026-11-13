@@ -25,7 +25,9 @@ export type RecorderRpcMethod =
   | 'requests.stats'
   | 'requests.neighbors'
   | 'tools.list'
-  | 'tools.pair';
+  | 'tools.pair'
+  | 'retention.run'
+  | 'retention.archives';
 
 export interface RecorderRpcArgs {
   'requests.list': [number | undefined, number | undefined, RequestListFilter, string | undefined];
@@ -36,6 +38,8 @@ export interface RecorderRpcArgs {
   'requests.neighbors': [string];
   'tools.list': [string];
   'tools.pair': [string, string];
+  'retention.run': [];
+  'retention.archives': [];
 }
 
 export interface RecorderUiEvent {

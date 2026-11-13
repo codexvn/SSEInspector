@@ -29,6 +29,7 @@ export type RequestListFilter = (typeof RequestListFilter)[keyof typeof RequestL
 export interface RecordSummary {
   id: string
   timestamp: string
+  method: string
   model: string
   status: number
   preview: string
@@ -144,4 +145,34 @@ export interface RoutingState {
 export interface RoutingSavePayload {
   defaultUpstream: string | null
   routes: UpstreamRoute[]
+}
+
+/** 数据轮转配置：启用后按数据量轮转（总数超过触发阈值时删最老至保留量） */
+export interface RetentionConfig {
+  enabled: boolean
+  triggerCount: number
+  keepCount: number
+}
+
+/** 轮转归档文件条目 */
+export interface RetentionArchiveEntry {
+  name: string
+  size: number
+  modifiedAt: string
+}
+
+/** GET /api/retention 响应：配置 + 当前总数 + 归档列表 */
+export interface RetentionStatus {
+  config: RetentionConfig
+  total: number
+  archives: RetentionArchiveEntry[]
+}
+
+/** 手动或定时轮转的执行结果 */
+export interface RetentionRunResult {
+  rotated: boolean
+  enabled?: boolean
+  deleted?: number
+  archivedFile?: string
+  total: number
 }

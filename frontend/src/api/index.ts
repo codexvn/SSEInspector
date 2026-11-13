@@ -1,4 +1,4 @@
-import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter, RoutingState, RoutingSavePayload, UpstreamRoute } from '../types'
+import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter, RoutingState, RoutingSavePayload, UpstreamRoute, RetentionConfig, RetentionStatus, RetentionRunResult } from '../types'
 
 const BASE = '/api'
 
@@ -98,6 +98,46 @@ function parseRoutingState(value: unknown, label: string): RoutingState {
   if (!Array.isArray(state.routes)) throw new Error(`${label} 缺少 routes 数组`)
   state.routes.forEach((route, index) => assertRoutingRoute(route, `路由规则第 ${index + 1} 条`))
   return state as RoutingState
+}
+
+export async function fetchRetention(): Promise<RetentionStatus> {
+  const res = await fetch(`${BASE}/retention`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  if (typeof data !== 'object' || data === null
+    || typeof data.total !== 'number'
+    || !Array.isArray(data.archives)
+    || typeof data.config?.enabled !== 'boolean') {
+    throw new Error('轮转状态响应结构非法')
+  }
+  return data as RetentionStatus
+}
+
+/** 保存轮转配置（400 时透出后端校验的中文错误清单） */
+export async function saveRetention(config: RetentionConfig): Promise<RetentionConfig> {
+  const res = await fetch(`${BASE}/retention`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null) as { error?: string; details?: string[] } | null
+    const reasons = detail?.details?.length ? `：${detail.details.join('；')}` : ''
+    throw new Error(`${detail?.error ?? `HTTP ${res.status}`}${reasons}`)
+  }
+  return res.json()
+}
+
+/** 手动立即执行一次轮转 */
+export async function runRetention(): Promise<RetentionRunResult> {
+  const res = await fetch(`${BASE}/retention/run`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+/** 归档文件的下载地址（浏览器原生下载） */
+export function retentionArchiveUrl(name: string): string {
+  return `${BASE}/retention/archives/${encodeURIComponent(name)}`
 }
 
 function assertRoutingRoute(value: { id?: unknown; name?: unknown; enabled?: unknown; prefix?: unknown; upstream?: unknown }, label: string): asserts value is UpstreamRoute {
