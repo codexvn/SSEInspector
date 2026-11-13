@@ -30,7 +30,8 @@ export const useRequestsStore = defineStore('requests', () => {
         if (record.apiType !== 'passthrough') return false
         break
       case 'streaming':
-        if (record.state !== 'streaming') return false
+        // 进行中 = 等待响应（pending）或响应传输中（streaming）
+        if (record.state !== 'streaming' && record.state !== 'pending') return false
         break
       case 'error':
         if (record.state !== 'error') return false
@@ -59,7 +60,8 @@ export const useRequestsStore = defineStore('requests', () => {
     sseCleanup = connectSSE((summary) => {
       const idx = items.value.findIndex(r => r.id === summary.id)
       const previousState = sseStates.get(summary.id)
-      const wasStreaming = previousState === 'streaming'
+      // 进行中状态（等待响应/传输中）都可能随后完成，需触发详情页刷新
+      const wasLive = previousState === 'streaming' || previousState === 'pending'
       const structuralChange = previousState === undefined || previousState !== summary.state
       rememberSseState(summary)
       const matchesFilter = matchesActiveFilter(summary)
@@ -69,7 +71,7 @@ export const useRequestsStore = defineStore('requests', () => {
           total.value = Math.max(0, total.value - 1)
         }
         if (structuralChange) onListUpdate.value?.()
-        if (wasStreaming && summary.state === 'done') {
+        if (wasLive && summary.state === 'done') {
           onStreamDone.value?.(summary.id)
         }
         return
@@ -84,8 +86,8 @@ export const useRequestsStore = defineStore('requests', () => {
         }
       }
       if (structuralChange) onListUpdate.value?.()
-      // streaming → done 转换：通知详情页刷新
-      if (wasStreaming && summary.state === 'done') {
+      // 进行中 → done 转换：通知详情页刷新
+      if (wasLive && summary.state === 'done') {
         onStreamDone.value?.(summary.id)
       }
     })
@@ -146,9 +148,9 @@ export const useRequestsStore = defineStore('requests', () => {
   const detailCache = ref<Map<string, RecordedRequest>>(new Map())
 
   async function loadDetail(id: string): Promise<RecordedRequest | undefined> {
-    // 如果缓存的是 streaming 状态记录，重新 fetch（可能已完成）
+    // 缓存的是进行中状态（等待响应/传输中）时重新 fetch（可能已推进或完成）
     const cached = detailCache.value.get(id)
-    if (cached && cached.state !== 'streaming') return cached
+    if (cached && cached.state !== 'streaming' && cached.state !== 'pending') return cached
 
     try {
       const record = await fetchDetail(id)

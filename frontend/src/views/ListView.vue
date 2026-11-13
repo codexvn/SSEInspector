@@ -118,7 +118,7 @@ function groupStatusSummary(items: RecordSummary[]): string {
   let err = 0
   let streaming = 0
   for (const r of items) {
-    if (r.state === 'streaming') streaming++
+    if (r.state === 'streaming' || r.state === 'pending') streaming++
     else if (r.state === 'error' || r.status >= 400) err++
     else ok++
   }
@@ -273,13 +273,15 @@ function sessionLabel(sid?: string, key?: string): string {
               </td>
               <td class="cell-model" :title="row.record.apiType === 'passthrough' ? undefined : row.record.model">{{ row.record.apiType === 'passthrough' ? '-' : row.record.model }}</td>
               <td class="cell-status">
-                <span v-if="row.record.state === 'streaming'" class="badge badge-streaming">传输中</span>
+                <span v-if="row.record.state === 'pending'" class="badge badge-streaming">等待响应</span>
+                <span v-else-if="row.record.state === 'streaming'" class="badge badge-streaming">传输中</span>
                 <span v-else-if="row.record.status < 300" class="badge badge-ok">{{ row.record.status }}</span>
                 <span v-else-if="row.record.status < 500" class="badge badge-warn">{{ row.record.status }}</span>
                 <span v-else class="badge badge-err">{{ row.record.status }}</span>
               </td>
               <td class="cell-preview">
-                <em v-if="row.record.state === 'streaming'" style="color:var(--accent);margin-right:4px;">流式传输中…</em>
+                <em v-if="row.record.state === 'pending'" style="color:var(--accent);margin-right:4px;">等待响应…</em>
+                <em v-else-if="row.record.state === 'streaming'" style="color:var(--accent);margin-right:4px;">流式传输中…</em>
                 <span v-else>{{ row.record.preview }}</span>
               </td>
               <td class="cell-session" :title="row.record.sessionId || undefined">
@@ -292,7 +294,7 @@ function sessionLabel(sid?: string, key?: string): string {
                 <span v-else>-</span>
               </td>
               <td class="cell-duration">
-                <template v-if="row.record.state === 'streaming'">…</template>
+                <template v-if="row.record.state === 'streaming' || row.record.state === 'pending'">…</template>
                 <template v-else>{{ row.record.durationMs }}ms</template>
               </td>
               <td class="cell-cache">
@@ -302,7 +304,7 @@ function sessionLabel(sid?: string, key?: string): string {
                 </template>
                 <template v-else>-</template>
               </td>
-              <td class="cell-speed"><TokenSpeed :state="row.record.state" :output-tokens="row.record.outputTokens" :duration-ms="row.record.durationMs" /></td>
+              <td class="cell-speed"><TokenSpeed :state="row.record.state" :output-tokens="row.record.outputTokens" :duration-ms="row.record.durationMs" :response-chars="row.record.responseChars" /></td>
             </tr>
           </template>
         </tbody>

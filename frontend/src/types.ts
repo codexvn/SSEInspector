@@ -34,7 +34,8 @@ export interface RecordSummary {
   preview: string
   streaming: boolean
   durationMs: number
-  state: 'streaming' | 'done' | 'error'
+  /** pending = 请求已发出、上游尚未响应；streaming = 响应进行中 */
+  state: 'pending' | 'streaming' | 'done' | 'error'
   apiType: ApiType
   apiEndpoint: ApiEndpoint
   /** 请求路径仅用于展示。 */
@@ -46,6 +47,8 @@ export interface RecordSummary {
   sessionIdKey?: string
   /** API 报告输出 token 数（completion_tokens / output_tokens） */
   outputTokens?: number
+  /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
+  responseChars?: number
 }
 
 export interface RecordedRequest {
@@ -64,12 +67,14 @@ export interface RecordedRequest {
   apiType: ApiType
   apiEndpoint: ApiEndpoint
   error?: string
-  state: 'streaming' | 'done' | 'error'
+  state: 'pending' | 'streaming' | 'done' | 'error'
   finished?: string
   streamText?: string
   responseBody?: string
   /** API 报告输出 token 数（completion_tokens / output_tokens） */
   outputTokens?: number
+  /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
+  responseChars?: number
   sessionId?: string
   sessionIdKey?: string
 }

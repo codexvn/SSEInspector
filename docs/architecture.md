@@ -128,9 +128,9 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 升级处理器的分流判定先于路径注册表：只有 `Upgrade` 令牌为 `websocket` 且携带 `Sec-WebSocket-Key` 的请求才视为 WebSocket 升级。未命中注册表的 WebSocket 升级路径：开发模式让位（不碰 socket，供 Vite HMR 等监听者处理），生产模式显式销毁——挂了任意 upgrade 监听后 Node 不再自动销毁连接。带升级语义但不是 WebSocket 的请求（典型如 JDK HttpClient 在默认 HTTP/2 版本下对明文 `http://` 地址每个新连接先发的 h2c 升级尝试，即 `Connection: Upgrade` + `Upgrade: h2c` + `HTTP2-Settings`）按 RFC 语义优雅拒绝升级：处理器删除 `Upgrade` 与 `HTTP2-Settings` 头、从 `Connection` 头剥除对应令牌后，用 `req.rawHeaders` 重建请求字节塞回 socket，经 `server.emit('connection')` 重新走普通 HTTP/1.1 请求管线，客户端收到普通响应并在原连接上继续使用 HTTP/1.1——若直接销毁，这类客户端的每个请求都会收到零字节重置。被剥离的都是逐跳头（`filterHeaders` 转发上游时本就会剥除），上游收到的请求不变，仅记录中的请求头展示与线上原始字节存在此差异。桥接带防重入护栏（WeakSet 标记，重复进入即销毁）：若剥离失效导致重建字节再次触发 upgrade 事件，会形成解析循环耗尽内存。
 
-### 等待首包阶段
+### 请求与等待首包阶段
 
-上游返回响应头后（`response_start`）记录即创建，`state = streaming`；首个 body chunk 到达前 `streamText` 为空。详情页流式卡片的渲染条件是 `isStreaming` 而非 `isStreaming && streamText`，空内容时同样显示「实时接收中…」卡片，`StreamLive` 的 `min-height: 3em` 保证卡片有可见高度；列表页以「流式传输中…」标识。上游连响应头都未返回的阶段没有记录对象，不产生占位（既有设计明确不覆盖该阶段）。
+记录在请求体接收完成（`request_end`，通常即请求发出后毫秒级）就写入数据库：此时 `finished = pending`、`status = 0`，读取侧派生状态为「等待响应」，列表随即可见（upsert 自带 SSE `update` 推送，无需等轮询），请求体与 model 均已可解析。上游返回响应头（`response_start`）后 `status` 列更新，同一行自动派生为 `streaming`；首个 body chunk 到达前 `streamText` 为空。详情页流式卡片的渲染条件是 `isStreaming` 而非 `isStreaming && streamText`，空内容时同样显示「实时接收中…」卡片，`StreamLive` 的 `min-height: 3em` 保证卡片有可见高度；列表页以「等待响应…」「流式传输中…」分别标识两个阶段。上游早于请求体结束回包的早响应场景由 Worker 兜底（响应阶段接管落库，请求阶段不再重复写）。
 
 ### 透传流量
 
@@ -152,7 +152,7 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 时间与耗时记录
 
-每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。主线程日志的 `durationMs` 与 Worker 各持久化点（完成 / 部分保存 / 中断 / 上游失败）的 `record.durationMs` 均由 `Date.now() - metadata.startedAt` 计算——两次计算发生在不同时刻、数值可能略有差异，但同源于同一 startedAt，语义一致；响应开始（`response_start`）时同样刷新一次 `durationMs`，因此等首包阶段的时长可以从记录读出。
+每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。主线程日志的 `durationMs` 与 Worker 各持久化点（请求阶段 / 完成 / 部分保存 / 中断 / 上游失败）的 `record.durationMs` 均由 `Date.now() - metadata.startedAt` 计算——两次计算发生在不同时刻、数值可能略有差异，但同源于同一 startedAt，语义一致。请求阶段落库的记录携带当时的耗时（即请求发出到请求体完成的时长），响应开始后的流式快照会继续刷新该值。
 
 ## 分层职责
 
@@ -174,7 +174,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 
 ### 前端：展示面
 
-列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
+列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`（「进行中」= 等待响应与传输中两态之和）。列表的速度列不做实时估算：进行中显示状态文案（等待响应 / 接收中），终态以 usage 返回的输出 token 为主计算 `tok/s`，usage 缺失时以记录的响应字符数（`responseChars`，请求完成落库时随响应文本长度一并写入）兜底显示 `字/s`，两者单位区分、不做 token 数的换算猜测。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
 
 ## 关键目录与文件职责
 

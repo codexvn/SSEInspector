@@ -71,6 +71,20 @@ async function runWorker(dev: boolean): Promise<void> {
   })
   worker.postMessage({ type: 'capture.request_chunk', id: captureId, chunk: Uint8Array.from(requestBody) })
   worker.postMessage({ type: 'capture.request_end', id: captureId })
+  // 请求阶段（request_end 后、响应开始前）记录即入库：状态派生为 pending
+  //（等待响应），列表无需等首包即可见；请求体此时已可解析
+  worker.postMessage({ type: 'rpc', correlationId: 90, method: 'requests.detail', args: [captureId] })
+  const pendingResult = await waitForMessage(
+    worker,
+    message => message.type === 'rpc.result' && message.correlationId === 90,
+  )
+  assert.equal(pendingResult.type, 'rpc.result')
+  assert.equal(pendingResult.ok, true)
+  if (pendingResult.ok) {
+    const pending = pendingResult.value as { state: string; requestBody: string }
+    assert.equal(pending.state, 'pending')
+    assert.deepEqual(JSON.parse(pending.requestBody), { model: 'unknown', input: 'hello' })
+  }
   worker.postMessage({
     type: 'capture.response_start',
     id: captureId,
@@ -93,12 +107,15 @@ async function runWorker(dev: boolean): Promise<void> {
       apiEndpoint: string
       requestBody: string
       responseBody: string
+      responseChars?: number
       tokenBreakdown?: unknown
     }
     assert.equal(detail.state, 'done')
     assert.equal(detail.apiEndpoint, 'openai-responses')
     assert.deepEqual(JSON.parse(detail.requestBody), { model: 'unknown', input: 'hello' })
     assert.equal(detail.responseBody, responseBody.toString())
+    // usage 缺失（usage: null）时速度兜底指标 = 响应字符数
+    assert.equal(detail.responseChars, responseBody.toString().length)
     assert.equal(detail.tokenBreakdown, undefined)
   }
 

@@ -48,6 +48,7 @@ function toSummary(r: RecordedRequest): RecordSummary {
     path: r.path,
     streamText: r.streamText,
     ...buildTokenSummary(r.apiEndpoint, r.apiUsage),
+    responseChars: r.responseChars,
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
   };
@@ -117,7 +118,7 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     // responseBody 可达 MB 级 ——透传 raw string，前端直接显示
     responseBody: row.response_body ?? undefined,
     streaming: row.streaming === 1,
-    state: deriveState(row.finished, row.error ?? null),
+    state: deriveState(row.finished, row.error ?? null, row.status),
     streamText: streamBuf.get(row.id),
     responseStatus: row.status,
     durationMs: row.duration_ms,
@@ -125,6 +126,7 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     finished: row.finished,
     apiUsage: row.api_usage ?? undefined,
     outputTokens: buildTokenSummary(identity.endpoint, row.api_usage).outputTokens,
+    responseChars: row.response_chars ?? undefined,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
     streamId: row.stream_id ?? undefined,
@@ -141,12 +143,13 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     preview: row.preview ?? '',
     streaming: row.streaming === 1,
     durationMs: row.duration_ms,
-    state: deriveState(row.finished, row.error ?? null),
+    state: deriveState(row.finished, row.error ?? null, row.status),
     apiType: identity.provider,
     apiEndpoint: identity.endpoint,
     path: row.path,
     streamText: streamBuf.get(row.id),
     ...buildTokenSummary(identity.endpoint, row.api_usage),
+    responseChars: row.response_chars ?? undefined,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -166,10 +169,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function deriveState(finished: string, error: string | null): RecordState {
+/**
+ * 读取侧派生记录状态（DB 无 state 列）：error 优先；finished 非 pending 为
+ * done；仍在 pending 时按响应头是否到达二分——status=0 是请求已发出、上游
+ * 尚未响应（worker 在 request_end 即入库），status>0 则响应已开始。
+ */
+function deriveState(finished: string, error: string | null, status: number): RecordState {
   if (error) return 'error';
   if (finished !== 'pending') return 'done';
-  return 'streaming';
+  return status > 0 ? 'streaming' : 'pending';
 }
 
 function buildSummaryWhere(
@@ -209,7 +217,7 @@ function buildSummaryWhere(
 const SUMMARY_SELECT = {
   id: true, timestamp: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
-  api_endpoint: true,
+  api_endpoint: true, response_chars: true,
   session_id: true, session_id_key: true,
   path: true, api_usage: true,
 };
@@ -285,6 +293,7 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       response_headers: r.responseHeaders ? JSON.stringify(r.responseHeaders) : undefined,
       response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
       response_body: r.responseBody ?? undefined,
+      response_chars: r.responseChars ?? null,
       api_usage: r.apiUsage ?? null,
       session_id: r.sessionId ?? null,
       session_id_key: r.sessionIdKey ?? null,

@@ -143,7 +143,8 @@ export const ApiEndpoint = {
 export type ApiEndpoint = (typeof ApiEndpoint)[keyof typeof ApiEndpoint];
 
 export type MergedContent = MergedResponse | OpenAIResponsesMergedResponse | AnthropicMergedResponse;
-export type RecordState = 'streaming' | 'done' | 'error';
+/** pending = 请求已发出、上游尚未响应（status=0）；streaming = 响应已开始 */
+export type RecordState = 'pending' | 'streaming' | 'done' | 'error';
 
 export const RequestListFilter = {
   All: 'all',
@@ -185,6 +186,8 @@ export interface RecordedRequest {
   apiUsage?: string;
   /** API 报告输出 token 数（从 apiUsage 解析：completion_tokens / output_tokens） */
   outputTokens?: number;
+  /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
+  responseChars?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */
@@ -213,6 +216,8 @@ export interface RecordSummary {
   apiReportedInput?: number;
   /** API 报告输出 token 数（来自 apiUsage 解析：completion_tokens / output_tokens） */
   outputTokens?: number;
+  /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
+  responseChars?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */

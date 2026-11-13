@@ -543,7 +543,7 @@ function createRequestAnalysisWorker(): Worker {
         <span>流式: {{ record.streaming ? '是' : '否' }}</span>
         <span>耗时: {{ isStreaming ? '…' : record.durationMs + 'ms' }}</span>
         <span>状态: <span :class="`badge ${record.responseStatus < 300 ? 'badge-ok' : record.responseStatus < 500 ? 'badge-warn' : 'badge-err'}`">{{ record.responseStatus }}</span></span>
-        <span v-if="!isPassthrough">速度: <TokenSpeed :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" /></span>
+        <span v-if="!isPassthrough">速度: <TokenSpeed :state="record.state" :output-tokens="record.outputTokens" :duration-ms="record.durationMs" :response-chars="record.responseChars" /></span>
         <span v-else>速度: -</span>
         <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>

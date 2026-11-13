@@ -3,12 +3,13 @@ import { computed } from 'vue'
 import { formatTokenSpeed } from '../token-speed'
 
 const props = defineProps<{
-  state: 'streaming' | 'done' | 'error'
+  state: 'pending' | 'streaming' | 'done' | 'error'
   outputTokens?: number
   durationMs?: number
+  responseChars?: number
 }>()
 
-const speedText = computed(() => formatTokenSpeed(props.state, props.outputTokens, props.durationMs))
+const speedText = computed(() => formatTokenSpeed(props.state, props.outputTokens, props.durationMs, props.responseChars))
 </script>
 
 <template>

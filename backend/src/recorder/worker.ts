@@ -102,6 +102,14 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       const state = requireCapture(message.id);
       state.requestEnded = true;
       await finishRequestCapture(state);
+      // 请求体接收完成即入库（status=0，读取侧派生为 pending/等待响应）：
+      // 列表在首包到达前就能看到记录，不必等上游响应。上游可能早于请求体
+      // 结束就回包（早响应场景），此时响应阶段已接管落库，跳过避免状态回退
+      if (!state.streaming && state.responseStatus === undefined) {
+        state.record = buildRecord(state, 'pending');
+        const { upsertRecord } = require('../store') as typeof import('../store');
+        await upsertRecord(state.record);
+      }
       return;
     }
     case 'capture.response_start':
@@ -247,6 +255,8 @@ async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'cl
   const responseContent = await buildResponseContent(state);
   state.record.responseContent = responseContent;
   state.record.responseBody = state.rawResponseText ?? state.responseText;
+  // 响应字符数：速度兜底指标（usage 输出 token 缺失时按字符/秒估算）
+  state.record.responseChars = (state.rawResponseText ?? state.responseText).length;
   state.record.responseHeaders = state.responseHeaders;
   state.record.responseStatus = state.responseStatus ?? 0;
   state.record.durationMs = Date.now() - state.metadata.startedAt;
@@ -278,6 +288,7 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
+  record.responseChars = (state.rawResponseText ?? state.responseText).length;
   record.responseContent = responseContent;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
@@ -311,6 +322,7 @@ async function persistAbortedCapture(state: CaptureState, status: number): Promi
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
+  record.responseChars = (state.rawResponseText ?? state.responseText).length;
   record.responseContent = null;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
@@ -328,6 +340,7 @@ async function failCapture(state: CaptureState, status: number, error: string): 
   record.responseStatus = status;
   record.responseHeaders = state.responseHeaders;
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
+  record.responseChars = (state.rawResponseText ?? state.responseText).length;
   record.durationMs = Date.now() - state.metadata.startedAt;
   record.state = 'error';
   record.finished = 'error';
@@ -346,7 +359,12 @@ function isTerminalCapture(state: CaptureState): boolean {
   return isTerminalSSE(parseSSEWithMetadata(state.responseText), state.metadata.apiEndpoint);
 }
 
-function buildRecord(state: CaptureState, stateName: 'streaming' | 'done'): RecordedRequest {
+/**
+ * 从 capture 状态构造持久化记录。stateName 为落库时的生命周期标记：
+ * pending（请求已发出待响应）/ streaming（响应已开始）/ done（完成）。
+ * DB 无 state 列，读取侧由 deriveState 按 finished+error+status 派生。
+ */
+function buildRecord(state: CaptureState, stateName: 'pending' | 'streaming' | 'done'): RecordedRequest {
   const metadata = state.metadata;
   return {
     id: metadata.id,
@@ -364,7 +382,7 @@ function buildRecord(state: CaptureState, stateName: 'streaming' | 'done'): Reco
     apiType: metadata.apiType,
     apiEndpoint: metadata.apiEndpoint,
     state: stateName,
-    finished: stateName === 'streaming' ? 'pending' : 'ok',
+    finished: stateName === 'done' ? 'ok' : 'pending',
     sessionId: metadata.sessionId,
     sessionIdKey: metadata.sessionIdKey,
     streamId: metadata.streamId,

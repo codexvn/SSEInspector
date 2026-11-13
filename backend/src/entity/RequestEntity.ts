@@ -84,6 +84,10 @@ export class RequestEntity {
   @Column('text', { nullable: true })
   response_body?: string | null;
 
+  /** 响应文本字符数：速度兜底指标（usage 输出 token 缺失时按字符/秒估算） */
+  @Column('integer', { nullable: true })
+  response_chars?: number | null;
+
   /** JSON 接口原始 usage 对象，字段因供应商而异 */
   @Column('text', { nullable: true })
   api_usage?: string | null;
