@@ -161,9 +161,11 @@ function openDetail(id: string) {
   router.push({ name: 'detail', params: { id } })
 }
 
+/** 列表时间：完整日期到秒（毫秒按需求省略） */
 function fmtTime(iso: string) {
   const d = new Date(iso)
-  return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0')
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 function formatCacheHit(cache: number, total: number): string {
   if (!total) return '0%'
@@ -368,16 +370,17 @@ function sessionLabel(sid?: string, key?: string): string {
 }
 
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.col-time { width: 8.5%; }
+/* 13.5% ≈ 173px，容纳 yyyy-MM-dd HH:mm:ss（19 等宽字符约 142px）单行 */
+.col-time { width: 13.5%; }
 /* API 列只放徽章 + 传输标签；路径独立成列，14% ≈ 179px 可完整显示 /easytier/v1/messages（21 字符） */
 .col-api { width: 10.5%; }
 .col-path { width: 14%; }
 .col-model { width: 9.5%; }
 .col-status { width: 6%; }
-.col-preview { width: 22%; }
-.col-session { width: 9%; }
-.col-duration { width: 7%; }
-.col-cache { width: 6.5%; }
+.col-preview { width: 18.5%; }
+.col-session { width: 8.5%; }
+.col-duration { width: 6.5%; }
+.col-cache { width: 6%; }
 .col-speed { width: 7%; }
 thead { background: var(--bg-inset); border-bottom: 1px solid var(--border); }
 th {
