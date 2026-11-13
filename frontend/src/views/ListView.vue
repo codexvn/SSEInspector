@@ -5,6 +5,7 @@ import { useRequestsStore } from '../stores/requests'
 import type { RecordSummary } from '../types'
 import Pagination from '../components/Pagination.vue'
 import TokenSpeed from '../components/TokenSpeed.vue'
+import { transportTag } from '../format'
 
 const store = useRequestsStore()
 const router = useRouter()
@@ -270,6 +271,10 @@ function sessionLabel(sid?: string, key?: string): string {
                 <span v-if="row.record.apiType === 'passthrough'" class="badge badge-passthrough">透传</span>
                 <span v-else-if="row.record.apiType === 'anthropic'" class="badge badge-anthropic">Anthropic</span>
                 <span v-else class="badge badge-openai">OpenAI</span>
+                <div class="api-path" :title="row.record.path">
+                  <span class="endpoint-tag">{{ transportTag(row.record) }}</span>
+                  <span class="path-text">{{ row.record.path }}</span>
+                </div>
               </td>
               <td class="cell-model" :title="row.record.apiType === 'passthrough' ? undefined : row.record.model">{{ row.record.apiType === 'passthrough' ? '-' : row.record.model }}</td>
               <td class="cell-status">
@@ -380,7 +385,18 @@ tbody tr:last-child td { border-bottom: none; }
 
 .cell-time { white-space: nowrap; color: var(--text-secondary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
 .cell-model { overflow-wrap: anywhere; font-weight: 500; text-align: center; }
-.cell-api { white-space: nowrap; font-size: 0.75rem; text-align: center; }
+.cell-api { font-size: 0.75rem; text-align: center; }
+/* API 徽章下方的传输标签 + 路径（超长省略，title 提示完整值） */
+.api-path { display: flex; align-items: center; gap: 5px; margin-top: 4px; min-width: 0; justify-content: center; }
+.api-path .path-text {
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+}
+.endpoint-tag {
+  flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: 0.68rem; font-weight: 600;
+  color: var(--accent); border: 1px solid var(--accent); line-height: 1.4;
+}
 .cell-status { white-space: nowrap; text-align: center; }
 .cell-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .cell-session { white-space: nowrap; font-family: var(--font-mono); font-size: 0.76rem; color: var(--text-muted); text-align: center; }

@@ -115,17 +115,30 @@ export function createUpgradeHandler(options: UpgradeHandlerOptions) {
       return;
     }
     let pathname = '/';
+    let search = '';
     try {
-      pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-    } catch {
-      // 无法解析的 url 按未注册路径处理
+      const parsed = new URL(req.url ?? '/', 'http://localhost');
+      pathname = parsed.pathname;
+      search = parsed.search;
+    } catch (error) {
+      // 解析失败按未注册路径处理（销毁/让位分支），debug 留痕便于排查畸形升级请求
+      logger.debug({ url: req.url, err: serializeError(error) }, 'upgrade request url parse failed');
     }
-    const definition = findWsEndpointDefinition(pathname);
+    // 分流解析先于路径注册表（与 HTTP 数据面同一规则表）：命中规则先剥离
+    // 前缀再做协议判定（/easytier/v1/responses → /v1/responses 命中注册表的
+    // wsRoutePattern），出网路径同步改写 req.url（proxyUpgrade 以 req.url 建连）
+    const resolved = resolveUpstream(pathname);
+    let effectivePathname = pathname;
+    if (resolved?.source === 'route' && resolved.prefix && resolved.prefix !== '/') {
+      effectivePathname = pathname === resolved.prefix ? '/' : pathname.slice(resolved.prefix.length);
+      req.url = effectivePathname + search;
+    }
+    const definition = findWsEndpointDefinition(effectivePathname);
     if (!definition) {
       if (!options.isDev) socket.destroy();
       return;
     }
-    bridge(definition, req, socket, head, pathname).catch(error => {
+    bridge(definition, req, socket, head, pathname, effectivePathname, resolved).catch(error => {
       logger.error({ path: pathname, err: serializeError(error) }, 'ws bridge failed');
       // 拨号失败时 httpxy 可能已回写错误响应；兜底销毁避免悬挂半开连接
       socket.destroy();
@@ -138,33 +151,34 @@ async function bridge(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
-  pathname: string,
+  /** 客户端原始路径（录制记录保留），可能与出网路径不同（规则命中剥离前缀） */
+  clientPathname: string,
+  effectivePathname: string,
+  resolved: ReturnType<typeof resolveUpstream>,
 ): Promise<void> {
-  // 分流解析与 HTTP 数据面同一规则表；无上游可用时以 503 明确拒绝握手，
-  // 让 WS 客户端拿到状态码而非裸重置。WS 桥接只取上游 origin：路径前缀
-  // 对升级请求不生效（proxyUpgrade 以 origin 建连，已知限制）
-  const resolved = resolveUpstream(pathname);
+  // 无上游可用时以 503 明确拒绝握手，让 WS 客户端拿到状态码而非裸重置。
+  // 出网路径已由调用方按分流规则改写进 req.url；此处 origin 建连、req.url 带出
   if (!resolved) {
-    logger.warn({ path: pathname }, 'no upstream resolved, rejecting websocket upgrade');
+    logger.warn({ path: clientPathname }, 'no upstream resolved, rejecting websocket upgrade');
     socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
     return;
   }
   const origin = new URL(resolved.upstream).origin;
   const id = crypto.randomUUID();
   const startedAt = Date.now();
-  const target = `${origin}${pathname}`;
+  const target = `${origin}${effectivePathname}`;
   const session = extractSessionId(req);
   // permessage-deflate 是逐跳扩展：入口剥离请求头，两个方向帧均不压缩，
   // Recorder 的帧解析器因此无需维护 inflate 上下文（代理逐跳重协商合法）
   delete req.headers['sec-websocket-extensions'];
 
-  logger.info({ requestId: id, method: 'WS', path: pathname, target }, 'ws connection started');
+  logger.info({ requestId: id, method: 'WS', path: clientPathname, target }, 'ws connection started');
   beginWsCapture({
     id,
     startedAt,
     timestamp: new Date().toISOString(),
     method: 'WS',
-    path: pathname,
+    path: clientPathname,
     upstreamUrl: target,
     requestHeaders: flattenHeaders(filterHeaders(req.headers)),
     apiType: definition.provider,

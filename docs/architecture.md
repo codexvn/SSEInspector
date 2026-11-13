@@ -142,9 +142,13 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 配置持久化在与 SQLite 同目录的 `routing.json`（数据卷内，随库备份），保存走整文档替换：校验通过后先写入临时文件并原子替换目标文件，再整体替换内存快照，因此保存即时生效、无需重启，在途请求继续读旧快照。默认上游有两个来源：CLI `--upstream`（可选参数）与设置页保存值；显式传入时以 CLI 传入值为准（仅本次运行生效，不回写文件），设置页会显示覆盖提示。
 
-启动时校验：生效默认上游与启用中的规则同时为空才退出。上游地址必须是 http(s)，允许携带路径前缀（规则命中时与剥离前缀后的路径拼接，默认上游与完整请求路径拼接，与历史 `--upstream` 的拼接语义一致），不得携带 query、hash 或凭证；CLI 传入值与规则中的上游按同一规格校验，CLI 非法值在启动阶段即终止进程。WebSocket 升级桥接只使用上游的 origin，路径前缀对 WS 流量不生效（已知限制）。
+启动时校验：生效默认上游与启用中的规则同时为空时，启动阶段即退出进程。上游地址必须使用 http(s) 协议，允许携带路径前缀（规则命中时与剥离前缀后的路径拼接，默认上游与完整请求路径拼接，与历史 `--upstream` 的拼接语义一致），不得携带 query、hash 或凭证；CLI 传入值与规则中的上游按同一规格校验，CLI 值非法时在启动阶段即终止进程。WebSocket 升级与 HTTP 同语义：分流解析先于路径注册表（带前缀的 `/easytier/v1/responses` 剥离后按 `/v1/responses` 命中注册表的 `wsRoutePattern`），发往上游的路径同样剥离前缀，录制记录保留客户端原始路径。
 
 设置页（`SettingsView`，入口在列表页顶栏）提供默认上游编辑、规则的增删改、上移下移排序与启用停用开关，保存失败的校验错误以中文清单展示。路由配置不属于录制数据，不经 Recorder Worker 与数据库，主线程只在启动与保存两个时机对 `routing.json` 做一次同步读写，数据面每请求只读内存快照（不触碰「代理主线程不访问数据库」红线）。
+
+### 数据轮转
+
+录制数据按数据量轮转：记录总数超过「触发阈值」时，把最老的记录删除到只剩「保留量」，删除前先把这部分记录（原始列全字段）与关联 tool_calls 导出为数据库同目录 `retention-archive/` 下的 `archive-<时间戳>.json` 归档文件，设置页可下载（文件名白名单校验以防路径穿越）。单次轮转最多处理 500 条——大批量首次清理由后续探查分批消化，归档以流式逐行写出避免单串内存峰值；两个阈值设有上界（100 万）作为误配防线；tool_calls 依赖数据库外键级联随主记录删除。主线程每 60 秒经 Worker RPC 探查一次记录总数是否超过触发阈值（未启用时每次仅一次 count 查询），设置页也可手动立即执行；导出与删除等全部数据操作在 Recorder Worker 的 `retention.run` RPC 内完成，Worker 串行消息链保证删除与录制互斥。配置存于数据库同目录的 `retention.json`（与 routing.json 同模式：校验 → 原子写 → 内存快照），主线程负责保存，Worker 每次执行前强制重读文件，保证两端一致；未启用时不执行清理（设置页以黄条提示该状态），启用时触发阈值与保留量必填，且保留量必须小于触发阈值。归档文件的自动清理与 VACUUM 磁盘回收为后续版本的非目标。
 
 ### 压缩请求体
 
@@ -184,6 +188,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 | `backend/src/index.ts` | Express 装配：内部 API、代理路由、静态资源、SSE 事件流、5 秒关停编排 |
 | `backend/src/proxy.ts` | 数据面转发与字节 tee，`forward()` 唯一转发入口 |
 | `backend/src/routing.ts` | 多上游分流：前缀规则与默认上游解析、校验、routing.json 持久化 |
+| `backend/src/retention.ts` | 数据轮转：retention.json 配置读写与校验、轮转判定纯函数 |
 | `backend/src/ws-proxy.ts` | WebSocket 升级接管：httpxy `proxyUpgrade` 桥接、入口剥离压缩扩展、双向字节 tee |
 | `backend/src/recorder/ws-frames.ts` | WS 帧解析纯函数（掩码解除、分片重组、控制帧观察） |
 | `backend/src/recorder/ws-capture.ts` | WS lane 管理器：帧 → turn → 合成 capture.* 消息（复用既有管线） |
@@ -221,6 +226,10 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 | `GET /api/tool-calls` | `tools.list` / `tools.pair` | 按 requestId 列出工具调用，或按 `toolName` + `toolCallId` 配对结果 |
 | `GET /api/routing` | ——（主线程 `routing.ts`） | 读取分流配置状态（CLI 上游、持久化默认上游、生效默认上游与规则列表） |
 | `PUT /api/routing` | ——（主线程 `routing.ts`） | 整文档替换分流配置；校验失败返回 400 与中文错误清单，成功即时生效 |
+| `GET /api/retention` | `requests.stats` + `retention.archives`（配置读取走主线程） | 读取轮转配置、当前记录总数与归档文件列表 |
+| `PUT /api/retention` | ——（主线程 `retention.ts`） | 保存轮转配置（retention.json 原子写）；启用时触发阈值与保留量必填，Worker 每次执行前强制重读文件 |
+| `POST /api/retention/run` | `retention.run` | 手动立即轮转：超限时先导出归档再删除最老记录 |
+| `GET /api/retention/archives/:name` | ——（主线程文件 IO） | 下载归档文件（文件名白名单校验防路径穿越） |
 
 ## 流式合并维护规则
 

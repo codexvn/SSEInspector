@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRequestsStore } from '../stores/requests'
 import type { RecordedRequest, GlobalNeighbors } from '../types'
 import { ApiEndpoint } from '../types'
+import { transportTag } from '../format'
 import { fetchPrev, fetchNext, fetchNeighbors } from '../api'
 import type { RequestContextAnalysis } from '../context-composition'
 import { buildResponseCards } from '../response-flow'
@@ -42,6 +43,11 @@ const isPassthrough = computed(
   () => record.value?.apiEndpoint === ApiEndpoint.Passthrough
     || record.value?.apiType === 'passthrough',
 )
+/** 请求地址旁的传输形态小标签（共享纯函数，与列表页同源）：WS 升级 / SSE 流式 / JSON 非流式 */
+const endpointLabel = computed(() => {
+  const r = record.value
+  return r ? transportTag(r) : 'JSON'
+})
 function parseBody(body: unknown, label: string): Record<string, unknown> | undefined {
   if (!body) return undefined
   if (typeof body === 'string') {
@@ -616,6 +622,7 @@ function createRequestAnalysisWorker(): Worker {
         <div class="card-title">请求地址</div>
         <div class="url-row">
           <code>{{ record.method }} {{ record.path }}</code>
+          <span class="endpoint-tag">{{ endpointLabel }}</span>
           <button class="curl-btn" @click="copyText(buildCurl(record.path))">curl</button>
         </div>
         <div class="url-row" style="margin-top:10px">
@@ -673,7 +680,7 @@ function createRequestAnalysisWorker(): Worker {
         <!-- 消息流弹窗 -->
         <Teleport to="body">
           <div v-if="flowOpen && parsedBody" class="diff-overlay" @click.self="flowOpen = false">
-            <div class="diff-modal">
+            <div class="diff-modal flow-modal">
               <div class="diff-modal-header">
                 <div class="diff-tabs-row">
                   <span class="diff-title">消息流</span>
@@ -822,6 +829,11 @@ function createRequestAnalysisWorker(): Worker {
   background: var(--bg-inset); padding: 8px 14px; border-radius: var(--radius-sm);
   flex: 1; word-break: break-all;
 }
+.endpoint-tag {
+  flex-shrink: 0; padding: 2px 8px; border-radius: var(--radius-sm);
+  font-family: var(--font-mono); font-size: 0.7rem; font-weight: 600;
+  color: var(--accent); border: 1px solid var(--accent); white-space: nowrap;
+}
 .curl-btn {
   position: static; opacity: 1; width: auto; height: auto;
   padding: 8px 18px; font-family: var(--font-mono); font-size: 0.78rem;
@@ -882,6 +894,16 @@ function createRequestAnalysisWorker(): Worker {
   margin: 2vh 2vw; flex: 1; background: var(--bg-card);
   border-radius: var(--radius); box-shadow: var(--shadow-lg);
   display: flex; flex-direction: column; overflow: hidden;
+}
+/* 消息流弹窗：高度与宽度均贴合内容（少量分组时不留大片空白），超出视口时封顶滚动 */
+.diff-modal.flow-modal {
+  flex: 0 1 auto;
+  margin: auto 2vw;
+  max-height: 96vh;
+  min-height: 30vh;
+  width: fit-content;
+  min-width: 560px;
+  max-width: min(1400px, 96vw);
 }
 .diff-modal-header {
   display: flex; justify-content: space-between; align-items: center;

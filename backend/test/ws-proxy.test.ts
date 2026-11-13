@@ -300,8 +300,10 @@ async function main(): Promise<void> {
   assert.equal(observation.opens.length, 0);
 
   // ---- 场景 F：WS 升级按分流规则走第二上游（默认路径不受影响）----
+  const upstreamBUrls: string[] = [];
   const upstreamB = http.createServer();
-  upstreamB.on('upgrade', (_req, socket) => {
+  upstreamB.on('upgrade', (req, socket) => {
+    upstreamBUrls.push(req.url ?? '');
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
     socket.destroy();
   });
@@ -318,6 +320,15 @@ async function main(): Promise<void> {
   const routedOpen = await waitFor(() => observation.opens.find(open => open.upstreamUrl.includes(`:${upstreamBPort}`)));
   assert.equal(routedOpen.path, '/other/responses');
   routedClient.socket.destroy();
+
+  // 场景 F2：带前缀的注册表路径（/other/v1/responses）——分流先于注册表判定，
+  // 出网路径剥离前缀（上游收到 /v1/responses），录制保留客户端原始路径
+  const prefixedClient = await dial(proxyPort, '/other/v1/responses?x=1');
+  const prefixedOpen = await waitFor(() => observation.opens.find(open => open.path === '/other/v1/responses'));
+  assert.ok(prefixedOpen.upstreamUrl.endsWith('/v1/responses'), '录制目标应为剥离前缀后的真实出网路径');
+  assert.equal(prefixedOpen.apiEndpoint, 'openai-responses', '剥离后的路径应命中 Responses WS 注册表');
+  await waitFor(() => upstreamBUrls.includes('/v1/responses?x=1'));
+  prefixedClient.socket.destroy();
 
   // ---- 场景 C：完整桥接与录制 ----
   const client = await dial(proxyPort, '/v1/responses?x=1', {
@@ -360,13 +371,14 @@ async function main(): Promise<void> {
   const close = await waitFor(() => observation.closes.find(c => c.reason === 'downstream_closed'));
   assert.equal(close.reason, 'downstream_closed');
 
-  // 让位与销毁场景不产生录制；场景 F 与场景 C 各产生一条 open/close
-  assert.equal(observation.opens.length, 2);
-  assert.equal(observation.closes.length, 2);
+  // 让位与销毁场景不产生录制；场景 F/F2 与场景 C 各产生一条 open/close
+  assert.equal(observation.opens.length, 3);
+  assert.equal(observation.closes.length, 3);
 
   // ---- 清理：升级连接可能半关闭导致 server.close() 永久等待，强制断开全部连接 ----
   client.socket.destroy();
   routedClient.socket.destroy();
+  prefixedClient.socket.destroy();
   for (const socket of upstreamSockets) socket.destroy();
   proxyServer.close();
   proxyServer.closeAllConnections();
