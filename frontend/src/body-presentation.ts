@@ -79,19 +79,19 @@ export function mediaTypeOf(contentType: string | undefined | null): string {
 function tryParseJson(text: string): unknown | undefined {
   const trimmed = text.trim()
   if (!trimmed) return undefined
-  if (
-    !(
-      (trimmed.startsWith('{') && trimmed.endsWith('}'))
-      || (trimmed.startsWith('[') && trimmed.endsWith(']'))
-      || trimmed === 'null'
-      || trimmed === 'true'
-      || trimmed === 'false'
-      || /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)
-      || (trimmed.startsWith('"') && trimmed.endsWith('"'))
-    )
-  ) {
-    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return undefined
-  }
+  // 快速排除明显不是 JSON 的形态：只尝试对象/数组与 JSON 字面量
+  const looksLikeJson = (
+    (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    || trimmed === 'null'
+    || trimmed === 'true'
+    || trimmed === 'false'
+    || /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)
+    || (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  )
+  // 兜底：花括号/方括号开头但形态不完整的（如被截断的对象）也交给解析器确认
+  const bracketPrefixed = trimmed.startsWith('{') || trimmed.startsWith('[')
+  if (!looksLikeJson && !bracketPrefixed) return undefined
   try {
     return JSON.parse(text)
   } catch {

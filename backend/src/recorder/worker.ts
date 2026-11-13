@@ -149,7 +149,12 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       return;
     case 'capture.ws_chunk': {
       const connection = wsConnections.get(message.id);
-      if (connection) connection.feed(message.dir, message.chunk);
+      if (connection) {
+        connection.feed(message.dir, message.chunk);
+      } else {
+        // ws_close 后仍可能到达的迟到 chunk 属预期竞态；debug 留痕便于排查录制缺尾
+        logger.debug({ id: message.id, dir: message.dir, bytes: message.chunk.byteLength }, 'ws chunk for unknown connection dropped');
+      }
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }

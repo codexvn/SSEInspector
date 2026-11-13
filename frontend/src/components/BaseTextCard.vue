@@ -26,15 +26,15 @@ type CardViewer = 'render' | 'json' | 'xml' | 'raw'
 
 const oversized = computed(() => (props.text ?? '').length > MAX_PRETTY_BODY_CHARS)
 
-// 只把对象/数组形态的文本视为结构化输出：裸数字、布尔等普通消息不触发 JSON 视图
-const isJson = computed(() => {
+// 只把对象/数组形态的文本视为结构化输出：裸数字、布尔等普通消息不触发 JSON 视图。
+// 解析与格式化只做一次：formatPrettyJson 返回 null 即非 JSON，isJson 由其派生
+const prettyJson = computed(() => {
   const text = (props.text ?? '').trimStart()
-  if (!text.startsWith('{') && !text.startsWith('[')) return false
-  if (oversized.value) return false
-  return formatPrettyJson(props.text ?? '') != null
+  if (!text.startsWith('{') && !text.startsWith('[')) return null
+  if (oversized.value) return null
+  return formatPrettyJson(props.text ?? '')
 })
-
-const prettyJson = computed(() => (isJson.value ? formatPrettyJson(props.text ?? '') : null))
+const isJson = computed(() => prettyJson.value != null)
 
 const isXml = computed(() => {
   const text = (props.text ?? '').trimStart()

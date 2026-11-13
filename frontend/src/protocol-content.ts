@@ -1,5 +1,3 @@
-import type { ApiEndpoint } from './types'
-
 const TEXT_TYPES = new Set(['text', 'input_text', 'output_text', 'thinking', 'summary_text', 'reasoning_text'])
 
 export function extractTextParts(value: unknown): string[] {
@@ -13,24 +11,6 @@ export function extractTextParts(value: unknown): string[] {
     if (direct.length > 0) return direct
   }
   return extractTextParts(value.content)
-}
-
-export function joinTextParts(value: unknown): string {
-  return extractTextParts(value).join('\n')
-}
-
-export function findLatestUserMessage(body: Record<string, unknown> | undefined, endpoint: ApiEndpoint): string {
-  if (!body) return ''
-  const source = endpoint === 'openai-responses' ? body.input : body.messages
-  if (endpoint === 'openai-responses' && typeof source === 'string') return source
-  if (!Array.isArray(source)) return ''
-  for (let index = source.length - 1; index >= 0; index--) {
-    const item = source[index]
-    if (!isRecord(item) || item.role !== 'user') continue
-    const text = joinTextParts(item.content ?? item)
-    if (text) return text
-  }
-  return ''
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

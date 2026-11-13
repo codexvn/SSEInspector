@@ -41,7 +41,18 @@ type RawType = 'unchanged' | 'added' | 'removed'
 interface RawLine { type: RawType; oldLineNum?: number; newLineNum?: number; text: string }
 
 // ---- LCS diff engine ----
+// O(m·n) 动态规划在主线程同步执行：AI 请求体可达数千至数万行，全量计算会
+// 卡死界面，超过行数预算时短路（模板提示改用原文查看），不被折叠模式影响
+const MAX_DIFF_LINES = 2000
+const diffSkipped = computed(() => {
+  const count = (text: string) => (text ? text.split('\n').length : 0)
+  return count(props.oldString) > MAX_DIFF_LINES || count(props.newString) > MAX_DIFF_LINES
+})
+const skipNotice = computed(() =>
+  `差异输入超过 ${MAX_DIFF_LINES} 行（旧 ${props.oldString.split('\n').length} 行 / 新 ${props.newString.split('\n').length} 行），已跳过逐行对比，请用原文标签查看完整内容。`)
+
 const rawLines = computed<RawLine[]>(() => {
+  if (diffSkipped.value) return []
   const oldLines = props.oldString ? props.oldString.split('\n') : []
   const newLines = props.newString ? props.newString.split('\n') : []
   const m = oldLines.length, n = newLines.length
@@ -210,8 +221,10 @@ defineExpose({ jumpToChange })
 
 <template>
   <div class="diff-viewer" :class="`diff-mode-${mode}`">
+    <!-- 超过行数预算：短路提示，避免主线程 O(m·n) 计算卡死界面 -->
+    <div v-if="diffSkipped" class="diff-skip-notice">{{ skipNotice }}</div>
     <!-- unified 模式 -->
-    <template v-if="mode === 'unified'">
+    <template v-else-if="mode === 'unified'">
       <div class="diff-file-header">
         <span class="diff-file old">--- {{ oldLabel }}</span>
         <span class="diff-file new">+++ {{ newLabel }}</span>

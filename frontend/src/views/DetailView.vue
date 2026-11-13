@@ -5,6 +5,7 @@ import { useRequestsStore } from '../stores/requests'
 import type { RecordedRequest, GlobalNeighbors } from '../types'
 import { ApiEndpoint } from '../types'
 import { transportTag } from '../format'
+import { formatErrorChain } from '../error'
 import { fetchPrev, fetchNext, fetchNeighbors } from '../api'
 import type { RequestContextAnalysis } from '../context-composition'
 import { buildResponseCards } from '../response-flow'
@@ -189,21 +190,6 @@ function formatDiffJSON(val: unknown): string {
   return JSON.stringify(val, null, 2)
 }
 
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = []
-  let current: unknown = error
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`)
-      current = current.cause
-      continue
-    }
-    messages.push(String(current))
-    break
-  }
-  return messages.join(' -> ')
-}
-
 function resetSessionNeighbors() {
   prevRecord.value = null
   nextRecord.value = null
@@ -277,12 +263,19 @@ async function openDiff(dir: 'prev' | 'next') {
   }
 }
 
+/** 消息流打开失败的行内提示（请求体缺失或解析失败时），随下次尝试清空 */
+const flowError = ref('')
+
 async function openMessageFlow() {
   if (flowLoading.value || !record.value || isPassthrough.value) return
   flowLoading.value = true
+  flowError.value = ''
   try {
     parsedBody.value ??= parseRecordBody(record.value, '当前请求体')
-    if (!parsedBody.value) return
+    if (!parsedBody.value) {
+      flowError.value = '请求体缺失或不是可解析的 JSON，无法构建消息流'
+      return
+    }
     if (!previousBodyResolved.value) {
       const previous = await ensureSessionNeighbor('prev')
       if (!hasSession.value || prevResolved.value) {
@@ -674,6 +667,7 @@ function createRequestAnalysisWorker(): Worker {
             <button class="curl-btn" :disabled="flowLoading" @click.prevent.stop="openMessageFlow">
               {{ flowLoading ? '加载中…' : '消息流' }}
             </button>
+            <span v-if="flowError" class="flow-error">{{ flowError }}</span>
           </template>
         </BodyInspector>
 
@@ -842,37 +836,11 @@ function createRequestAnalysisWorker(): Worker {
 }
 .curl-btn:hover { background: var(--accent); color: #fff; }
 .curl-btn::after { display: none; }
-
-/* Reasoning */
-.reasoning-card { margin-bottom: 12px; }
-.reasoning-card + .reasoning-card { margin-top: 0; }
-.reasoning-content { border-top: 1px solid var(--border); }
-
-/* Content */
-.content-text { min-height: 40px; }
-
-/* Anthropic blocks */
-.content-blocks { display: flex; flex-direction: column; gap: 8px; }
-.anthropic-block {
-  background: var(--bg-card); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden;
-}
-.anthropic-block .block-header {
-  padding: 10px 16px; font-size: 0.75rem; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
-}
-.anthropic-block .block-body { padding: 16px; font-size: 0.88rem; line-height: 1.65; }
-.anthropic-block.text .block-header { background: #e8f5e9; color: #2e7d32; }
-.anthropic-block.thinking .block-header { background: #e3f2fd; color: #1565c0; }
-.anthropic-block.tool_use .block-header { background: #eef2ff; color: #4338ca; }
+/* 消息流打开失败的行内提示 */
+.flow-error { color: var(--error); font-size: 0.78rem; margin-left: 8px; }
 
 /* Section labels */
-.label-reasoning { background: #e3f2fd; color: #1565c0; }
-.label-content { background: #e8f5e9; color: #2e7d32; }
-.label-tool { background: #eef2ff; color: #4338ca; }
 .label-streaming { background: #e0e7ff; color: #3730a3; animation: pulse 1.5s ease-in-out infinite; }
-
-/* Streaming */
-.streaming-card .stream-card { border-left: none; }
 
 /* Finish reason */
 .finish-reason { font-size: 0.8rem; color: var(--text-secondary); margin-top: 8px; }
@@ -955,15 +923,5 @@ function createRequestAnalysisWorker(): Worker {
 .diff-title {
   font-size: 0.84rem; font-weight: 700; color: var(--accent);
   text-transform: uppercase; letter-spacing: 0.04em;
-}
-
-.headers-box {
-  background: var(--bg-card); border-radius: var(--radius);
-  box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 12px; padding: 0;
-}
-.headers-box summary {
-  cursor: pointer; padding: 12px 18px; font-size: 0.82rem;
-  font-weight: 600; color: var(--text-secondary); user-select: none;
-  position: relative;
 }
 </style>

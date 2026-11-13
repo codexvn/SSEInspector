@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { RecordSummary, RecordedRequest, RequestListFilter } from '../types'
 import { fetchList, fetchDetail, connectSSE, fetchStats } from '../api'
+import { formatErrorChain } from '../error'
 
 export const useRequestsStore = defineStore('requests', () => {
   // ---- 列表状态 ----
@@ -90,12 +91,21 @@ export const useRequestsStore = defineStore('requests', () => {
       if (wasLive && summary.state === 'done') {
         onStreamDone.value?.(summary.id)
       }
+    }, {
+      // EventSource 自动重连，但断线期间推送的更新已丢失：
+      // 重连成功后全量刷新当前页与统计对齐
+      onReconnect: () => {
+        void loadPage(page.value)
+      },
     })
   }
 
   // ---- 操作 ----
+  /** 列表加载失败的错误信息（空串表示无错误）：与「暂无记录」空态区分，供界面展示与重试 */
+  const listError = ref('')
   async function loadPage(p: number) {
     loading.value = true
+    listError.value = ''
     try {
       const data = await fetchList(p, pageSize, activeFilter.value, sessionFilter.value ?? undefined)
       items.value = data.items
@@ -104,6 +114,8 @@ export const useRequestsStore = defineStore('requests', () => {
       page.value = data.page
       // 统一通过 /api/stats 实时查询统计，避免增量维护偏差
       await loadStats()
+    } catch (e) {
+      listError.value = `列表加载失败: ${formatErrorChain(e)}`
     } finally {
       loading.value = false
     }
@@ -146,6 +158,19 @@ export const useRequestsStore = defineStore('requests', () => {
 
   // ---- 详情缓存 ----
   const detailCache = ref<Map<string, RecordedRequest>>(new Map())
+  /** 缓存容量上限：done 记录含 MB 级正文，超出后按插入序淘汰最旧（Map 迭代序即插入序） */
+  const DETAIL_CACHE_LIMIT = 50
+
+  /** 写入并保持 LRU 语义：命中即提升为最新，超限淘汰最旧 */
+  function touchDetailCache(id: string, record: RecordedRequest) {
+    detailCache.value.delete(id)
+    detailCache.value.set(id, record)
+    while (detailCache.value.size > DETAIL_CACHE_LIMIT) {
+      const oldest = detailCache.value.keys().next().value
+      if (oldest === undefined) break
+      detailCache.value.delete(oldest)
+    }
+  }
 
   async function loadDetail(id: string): Promise<RecordedRequest | undefined> {
     // 缓存的是进行中状态（等待响应/传输中）时重新 fetch（可能已推进或完成）
@@ -154,7 +179,7 @@ export const useRequestsStore = defineStore('requests', () => {
 
     try {
       const record = await fetchDetail(id)
-      detailCache.value.set(id, record)
+      touchDetailCache(id, record)
       return record
     } catch (e) {
       console.warn(`[store] 加载详情失败: ${formatErrorChain(e)}`)
@@ -166,7 +191,7 @@ export const useRequestsStore = defineStore('requests', () => {
   function updateDetailInCache(id: string, patch: Partial<RecordedRequest>) {
     const existing = detailCache.value.get(id)
     if (existing) {
-      detailCache.value.set(id, { ...existing, ...patch })
+      touchDetailCache(id, { ...existing, ...patch })
     }
   }
 
@@ -174,24 +199,10 @@ export const useRequestsStore = defineStore('requests', () => {
   startSSE()
 
   return {
-    items, page, pageSize, total, loading, totalPages, counts, activeFilter, sessionFilter,
+    items, page, pageSize, total, loading, totalPages, counts, activeFilter, sessionFilter, listError,
     loadPage, loadStats, setFilter, setSessionFilter,
     detailCache, loadDetail, updateDetailInCache,
     onStreamDone, onListUpdate,
   }
 })
 
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = []
-  let current: unknown = error
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`)
-      current = current.cause
-      continue
-    }
-    messages.push(String(current))
-    break
-  }
-  return messages.join(' -> ')
-}

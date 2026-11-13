@@ -12,7 +12,6 @@ const router = createRouter({
       path: '/request/:id',
       name: 'detail',
       component: () => import('./views/DetailView.vue'),
-      props: true,
     },
     {
       path: '/settings',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { buildResponseCards } from '../src/response-flow'
-import { findLatestUserMessage } from '../src/protocol-content'
+import { extractTextParts } from '../src/protocol-content'
 import { assertApiRecord } from '../src/api'
 
 assert.throws(
@@ -51,15 +51,11 @@ assert.deepEqual(fallbackCards.map(card => card.type), ['assistant_thinking', 'a
 const rawCards = buildResponseCards({ output: [] }, 'openai-responses')
 assert.equal(rawCards[0].type, 'raw_item')
 
-const latestUser = findLatestUserMessage({
-  input: [
-    { type: 'message', role: 'user', content: [
-      { type: 'input_text', text: '第一块' },
-      { type: 'input_image', image_url: 'https://example.com/image.png' },
-      { type: 'input_text', text: '第二块' },
-    ] },
-  ],
-}, 'openai-responses')
-assert.equal(latestUser, '第一块\n第二块')
+const userTextParts = extractTextParts([
+  { type: 'input_text', text: '第一块' },
+  { type: 'input_image', image_url: 'https://example.com/image.png' },
+  { type: 'input_text', text: '第二块' },
+])
+assert.deepEqual(userTextParts, ['第一块', '第二块'])
 
 console.log('response flow tests passed')

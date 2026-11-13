@@ -89,7 +89,6 @@ function setGroupElement(groupId: string, element: Element | ComponentPublicInst
   else groupElements.delete(groupId)
 }
 
-/** 查找最近的纵向可滚动祖先（消息流弹窗内为 .diff-modal-body.flow-body） */
 /** 消息流内容的滚动容器（顶栏固定，仅 .msg-flow-body 滚动） */
 function scrollContainerOf(el: HTMLElement | null): HTMLElement | null {
   return el?.querySelector<HTMLElement>('.msg-flow-body') ?? null

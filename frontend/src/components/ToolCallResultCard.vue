@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { fetchToolCallPair } from '../api'
 import JsonViewer from './JsonViewer.vue'
 import { formatErrorChain } from '../error'
@@ -13,20 +13,32 @@ const props = defineProps<{
 
 const hoverData = ref<string | null>(null)
 const loading = ref(false)
+// 组件可能被复用（:key 变化前的过渡窗口）：代际计数丢弃过期响应，
+// props 变化时重置悬停态，与 ToolCallCard 的防护对齐
+let generation = 0
 
 async function onEnter() {
   if (!props.toolName || hoverData.value || loading.value) return
+  const current = ++generation
   loading.value = true
   try {
     const pair = await fetchToolCallPair(props.toolName, props.toolCallId)
+    if (current !== generation) return
     hoverData.value = pair.nextRequest ?? null
   } catch (error) {
+    if (current !== generation) return
     console.warn(`[ToolCallResultCard] 加载工具配对失败: ${formatErrorChain(error)}`)
     hoverData.value = null
   } finally {
-    loading.value = false
+    if (current === generation) loading.value = false
   }
 }
+
+watch(() => [props.toolCallId, props.toolName], () => {
+  generation++
+  hoverData.value = null
+  loading.value = false
+})
 
 function onLeave() {
   hoverData.value = null

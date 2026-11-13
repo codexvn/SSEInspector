@@ -1,4 +1,5 @@
 import type { ApiEndpoint, ApiType, RecordSummary, RecordedRequest, ListResult, StatsResult, GlobalNeighbors, ToolCallEntry, SSEEvent, RequestListFilter, RoutingState, RoutingSavePayload, UpstreamRoute, RetentionConfig, RetentionStatus, RetentionRunResult } from '../types'
+import { formatErrorChain } from '../error'
 
 const BASE = '/api'
 
@@ -147,10 +148,18 @@ function assertRoutingRoute(value: { id?: unknown; name?: unknown; enabled?: unk
   }
 }
 
-/** 连接 SSE 实时推送，返回取消函数 */
-export function connectSSE(onUpdate: (r: RecordSummary) => void): () => void {
+/** 连接 SSE 实时推送，返回取消函数；onReconnect 在断线后重连成功时触发（首次连接不算） */
+export function connectSSE(
+  onUpdate: (r: RecordSummary) => void,
+  handlers?: { onReconnect?: () => void },
+): () => void {
   const es = new EventSource(`${BASE}/events`)
+  let everConnected = false
 
+  es.addEventListener('open', () => {
+    if (everConnected) handlers?.onReconnect?.()
+    everConnected = true
+  })
   es.addEventListener('message', (e) => {
     try {
       const msg: SSEEvent = JSON.parse(e.data)
@@ -200,17 +209,3 @@ function parseNullableRecordedRequest(value: unknown, label: string): RecordedRe
   return value === null ? null : parseRecordedRequest(value, label)
 }
 
-function formatErrorChain(error: unknown): string {
-  const messages: string[] = []
-  let current: unknown = error
-  while (current) {
-    if (current instanceof Error) {
-      messages.push(`${current.name}: ${current.message}`)
-      current = current.cause
-      continue
-    }
-    messages.push(String(current))
-    break
-  }
-  return messages.join(' -> ')
-}

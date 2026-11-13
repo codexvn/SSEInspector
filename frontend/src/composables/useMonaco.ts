@@ -20,6 +20,12 @@ export function useMonaco() {
     const m = await loadMonaco()
     if (editor) {
       if (editor.getValue() !== value) editor.setValue(value)
+      // 复用实例时同步语言：编辑器按内容类型切换（如 JSON → XML/Markdown），
+      // 模型语言不同步会让高亮停留在首次创建的语言
+      const model = editor.getModel()
+      if (model && model.getLanguageId() !== lang) {
+        m.editor.setModelLanguage(model, lang)
+      }
       return editor
     }
     editor = m.editor.create(el, {

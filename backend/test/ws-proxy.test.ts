@@ -388,6 +388,12 @@ async function main(): Promise<void> {
   upstream.closeAllConnections();
   upstreamB.close();
   upstreamB.closeAllConnections();
+  // 清理分流配置的临时目录（句柄已随连接销毁，失败仅提示）
+  try {
+    fs.rmSync(path.dirname(routingFile), { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`[ws-proxy-test] 临时目录清理失败: ${path.dirname(routingFile)}`, error);
+  }
   console.log('ws-proxy tests passed');
   // Node 24 / Windows 在 socket 拆除后的空闲窗口存在偶发进程竞态，测试完成后立即退出
   process.exit(0);

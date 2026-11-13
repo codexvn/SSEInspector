@@ -32,31 +32,41 @@ type ListRow =
       expanded: boolean
     }
 
+/** 扫描连续透传 run（≥2 才成组），返回 [起点, 终点) 区间与组 id */
+function scanPassthroughRuns(items: RecordSummary[]): Array<{ start: number; end: number; id: string }> {
+  const runs: Array<{ start: number; end: number; id: string }> = []
+  let i = 0
+  while (i < items.length) {
+    if (items[i].apiType !== 'passthrough') { i++; continue }
+    let j = i + 1
+    while (j < items.length && items[j].apiType === 'passthrough') j++
+    if (j - i >= 2) {
+      runs.push({ start: i, end: j, id: `${items[i].id}:${items[j - 1].id}:${j - i}` })
+    }
+    i = j
+  }
+  return runs
+}
+
 /** 将连续透传（≥2）收成分组；单条透传仍为普通行。 */
 function groupConsecutivePassthrough(items: RecordSummary[], expanded: Set<string>): ListRow[] {
   const rows: ListRow[] = []
+  const runsByStart = new Map(scanPassthroughRuns(items).map(run => [run.start, run]))
   let i = 0
   while (i < items.length) {
-    const cur = items[i]
-    if (cur.apiType !== 'passthrough') {
-      rows.push({ kind: 'record', record: cur })
+    const run = runsByStart.get(i)
+    if (!run) {
+      rows.push({ kind: 'record', record: items[i] })
       i++
       continue
     }
-    let j = i + 1
-    while (j < items.length && items[j].apiType === 'passthrough') j++
-    const run = items.slice(i, j)
-    if (run.length < 2) {
-      rows.push({ kind: 'record', record: cur })
-    } else {
-      const id = `${run[0].id}:${run[run.length - 1].id}:${run.length}`
-      const isExpanded = expanded.has(id)
-      rows.push({ kind: 'passthrough-group', id, items: run, expanded: isExpanded })
-      if (isExpanded) {
-        for (const rec of run) rows.push({ kind: 'record', record: rec, nested: true })
-      }
+    const groupItems = items.slice(run.start, run.end)
+    const isExpanded = expanded.has(run.id)
+    rows.push({ kind: 'passthrough-group', id: run.id, items: groupItems, expanded: isExpanded })
+    if (isExpanded) {
+      for (const rec of groupItems) rows.push({ kind: 'record', record: rec, nested: true })
     }
-    i = j
+    i = run.end
   }
   return rows
 }
@@ -66,18 +76,7 @@ const listRows = computed(() => groupConsecutivePassthrough(filtered.value, expa
 // 列表数据变化时清掉已不存在的 expanded id，避免 Set 无限涨
 watch(filtered, (items) => {
   if (expandedPassthroughGroups.value.size === 0) return
-  const valid = new Set<string>()
-  let i = 0
-  while (i < items.length) {
-    if (items[i].apiType !== 'passthrough') { i++; continue }
-    let j = i + 1
-    while (j < items.length && items[j].apiType === 'passthrough') j++
-    if (j - i >= 2) {
-      const run = items.slice(i, j)
-      valid.add(`${run[0].id}:${run[run.length - 1].id}:${run.length}`)
-    }
-    i = j
-  }
+  const valid = new Set(scanPassthroughRuns(items).map(run => run.id))
   const next = new Set<string>()
   for (const id of expandedPassthroughGroups.value) {
     if (valid.has(id)) next.add(id)
@@ -315,6 +314,11 @@ function sessionLabel(sid?: string, key?: string): string {
         </tbody>
       </table>
 
+      <div v-if="store.listError" class="list-error">
+        <span>{{ store.listError }}</span>
+        <button class="retry-btn" @click="store.loadPage(store.page)">重试</button>
+      </div>
+
       <div v-else class="empty-state">
         {{ searchQuery ? '无匹配请求' : (store.sessionFilter ? '当前会话无记录' : '暂无记录，发送请求到代理即可看到') }}
       </div>
@@ -353,8 +357,7 @@ function sessionLabel(sid?: string, key?: string): string {
 
 .settings-btn {
   padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-size: 0.84rem; background: var(--bg-card); color: var(--text-primary);
-  cursor: pointer; transition: border-color .15s, color .15s; white-space: nowrap;
+  font-size: 0.84rem; background: var(--bg-card); color: var(--text-primary);  cursor: pointer; transition: border-color .15s, color .15s; white-space: nowrap;
 }
 .settings-btn:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -475,6 +478,17 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 .empty-state { text-align: center; padding: 64px 20px; color: var(--text-muted); font-size: 0.95rem; }
+
+/* 列表加载失败：与空态区分，提供重试 */
+.list-error {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 48px 20px; color: var(--error); font-size: 0.88rem;
+}
+.retry-btn {
+  padding: 6px 14px; border: 1px solid var(--error); border-radius: var(--radius-sm);
+  background: transparent; color: var(--error); font-size: 0.8rem; cursor: pointer;
+}
+.retry-btn:hover { background: var(--error); color: #fff; }
 
 @media (max-width: 768px) {
   .list-page { width: calc(100% - 24px); }
