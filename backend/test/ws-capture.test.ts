@@ -201,6 +201,59 @@ function testFragmentedCreateEventReassembled(): void {
   assert.deepEqual(signature(h.dispatched), ['start', 'request_chunk', 'request_end', 'response_start']);
 }
 
+/** 原生 Responses WS 协议：服务端帧本身即事件（无 message 信封包装），按最近活跃 turn 归属 */
+function testNativeResponsesEvents(): void {
+  const h = createHarness();
+  h.feed('request', clientJsonFrame({ type: 'response.create', model: 'gpt-test', input: [] }));
+  const turnId = 'conn-1:1';
+
+  h.dispatched.length = 0;
+  h.feed('response', serverJsonFrame({ type: 'response.created', response: { id: 'resp_n1' } }));
+  h.feed('response', serverJsonFrame({ type: 'response.output_text.delta', delta: '原生' }));
+  h.feed('response', serverJsonFrame({ type: 'response.completed', response: { id: 'resp_n1', usage: {} } }));
+  assert.deepEqual(signature(h.dispatched), ['response_chunk', 'response_chunk', 'response_chunk', 'complete']);
+  const chunk = h.dispatched[0];
+  assert.ok(chunk.type === 'capture.response_chunk');
+  assert.equal(chunk.id, turnId);
+  assert.equal(Buffer.from(chunk.chunk).toString('utf8'), 'data: {"type":"response.created","response":{"id":"resp_n1"}}\n\n');
+  assert.equal(h.warnings.length, 0, '原生事件应被正常归属而非告警跳过');
+
+  // turn 终态后，连接保持期间的迟到原生事件：无归属 turn，告警跳过
+  h.dispatched.length = 0;
+  h.feed('response', serverJsonFrame({ type: 'response.output_text.delta', delta: 'late' }));
+  assert.deepEqual(signature(h.dispatched), []);
+  assert.ok(h.warnings.some(text => text.includes('没有对应进行中的 turn')));
+}
+
+/** 信封 lane 学习：客户端 create 未带 stream_id、服务端信封补全时，重挂 lane 键后续路由正确 */
+function testEnvelopeLaneLearning(): void {
+  const h = createHarness();
+  h.feed('request', clientJsonFrame({ type: 'response.create', model: 'gpt-test' }));
+  const turnId = 'conn-1:1';
+
+  // 服务端信封带了服务端分配的 stream_id：应归属隐式默认 turn 并学习映射
+  h.dispatched.length = 0;
+  h.feed('response', serverJsonFrame({ type: 'message', stream_id: 'server-lane-9', message: { type: 'response.created', response: { id: 'resp_s' } } }));
+  assert.deepEqual(signature(h.dispatched), ['response_chunk']);
+
+  // 后续同 stream_id 信封正常路由；终态收尾
+  h.dispatched.length = 0;
+  h.feed('response', serverJsonFrame({ type: 'message', stream_id: 'server-lane-9', message: { type: 'response.completed', response: { id: 'resp_s', usage: {} } } }));
+  assert.deepEqual(signature(h.dispatched), ['response_chunk', 'complete']);
+  assert.equal(h.dispatched[1].type === 'capture.complete' ? h.dispatched[1].id : '', turnId);
+  assert.equal(h.warnings.length, 0);
+}
+
+/** 未知服务端帧类型：告警跳过（不再静默） */
+function testUnknownServerFrameWarns(): void {
+  const h = createHarness();
+  h.feed('request', clientJsonFrame({ type: 'response.create', model: 'gpt-test' }));
+  h.dispatched.length = 0;
+  h.feed('response', serverJsonFrame({ type: 'something.else', payload: 1 }));
+  assert.deepEqual(signature(h.dispatched), []);
+  assert.ok(h.warnings.some(text => text.includes('未知 WS 服务端帧类型')));
+}
+
 function main(): void {
   testFullTurnLifecycle();
   testImplicitDefaultLane();
@@ -210,6 +263,9 @@ function main(): void {
   testDuplicateCreateOnSameLane();
   testDefensiveSkips();
   testFragmentedCreateEventReassembled();
+  testNativeResponsesEvents();
+  testEnvelopeLaneLearning();
+  testUnknownServerFrameWarns();
   console.log('ws-capture tests passed');
 }
 

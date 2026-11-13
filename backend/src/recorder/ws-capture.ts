@@ -50,12 +50,19 @@ interface WsTurn {
   turnId: string;
 }
 
+/** 原生 Responses 事件类型前缀：帧本身即内层事件（无 message 信封包装） */
+function isNativeResponsesEvent(type: string): boolean {
+  return type.startsWith('response.');
+}
+
 export function createWsConnectionCapture(
   metadata: CaptureMetadata,
   hooks: WsCaptureHooks,
 ): WsConnectionCapture {
   let turnCounter = 0;
   const turns = new Map<string, WsTurn>();
+  /** 最近创建且仍在进行中的 turn：原生协议帧不带 lane 标识时的归属目标 */
+  let latestTurn: WsTurn | null = null;
   // 两个方向各一个帧解析器；客户端方向帧带掩码，解析器内部统一解除
   const parsers = {
     request: createWebSocketFrameParser({
@@ -85,6 +92,7 @@ export function createWsConnectionCapture(
         }
       }
       turns.clear();
+      latestTurn = null;
     },
   };
 
@@ -100,7 +108,7 @@ export function createWsConnectionCapture(
     }
     if (!isRecord(parsed)) return;
     if (dir === 'request') handleClientEvent(parsed, frame.payload);
-    else handleServerEnvelope(parsed);
+    else handleServerFrame(parsed);
   }
 
   function handleClientEvent(event: Record<string, unknown>, payload: Buffer): void {
@@ -119,53 +127,87 @@ export function createWsConnectionCapture(
         status: 502,
         error: '同 stream_id 在上一 turn 结束前收到新的 response.create',
       });
+      if (latestTurn === existing) latestTurn = null;
     }
 
-    const turnId = `${metadata.id}:${++turnCounter}`;
-    turns.set(laneId, { laneId, turnId });
+    const turn: WsTurn = { laneId, turnId: `${metadata.id}:${++turnCounter}` };
+    turns.set(laneId, turn);
+    latestTurn = turn;
     // 一个 turn 一条记录：create 事件原文作为请求体，随后立即进入 streaming 等首包状态
     hooks.dispatch({
       type: 'capture.start',
       metadata: {
         ...metadata,
-        id: turnId,
+        id: turn.turnId,
         startedAt: Date.now(),
         timestamp: new Date().toISOString(),
         streamId: laneId || undefined,
       },
     });
-    hooks.dispatch({ type: 'capture.request_chunk', id: turnId, chunk: payload });
-    hooks.dispatch({ type: 'capture.request_end', id: turnId });
-    hooks.dispatch({ type: 'capture.response_start', id: turnId, status: 101, headers: {}, streaming: true });
+    hooks.dispatch({ type: 'capture.request_chunk', id: turn.turnId, chunk: payload });
+    hooks.dispatch({ type: 'capture.request_end', id: turn.turnId });
+    hooks.dispatch({ type: 'capture.response_start', id: turn.turnId, status: 101, headers: {}, streaming: true });
   }
 
-  function handleServerEnvelope(envelope: Record<string, unknown>): void {
-    const laneId = typeof envelope.stream_id === 'string' ? envelope.stream_id : '';
-    const turn = turns.get(laneId);
-    if (!turn) {
-      // turn 已终态后的迟到事件或无主信封：跳过（原文不进任何记录，属已知限制）
-      hooks.warn(
-        { requestId: metadata.id, streamId: laneId, type: String(envelope.type) },
-        'WS 信封没有对应进行中的 turn，跳过',
-      );
-      return;
-    }
+  /**
+   * 服务端帧兼容两种协议形态：
+   * 1. 信封包装（CLIProxyAPI 风格网关）：{"type":"message","stream_id":..,"message":{内层事件}}；
+   * 2. 原生 Responses 事件（OpenAI / 多数中转直透）：帧本身即 {"type":"response.*",...}，
+   *    不携带 stream_id，按最近活跃 turn 归属。
+   * 信封携带 stream_id 而客户端 create 未带时，学习该映射（重挂 lane 键）。
+   */
+  function handleServerFrame(frame: Record<string, unknown>): void {
+    const frameLane = typeof frame.stream_id === 'string' ? frame.stream_id : '';
+    const type = typeof frame.type === 'string' ? frame.type : '';
 
-    if (envelope.type === 'error') {
-      // 请求级错误信封：原文入 raw，等价的内层 error 事件进合并管线并终结该 turn
-      hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(envelope)}\n`);
-      emitInner(turn, { type: 'error', error: envelope.error ?? null });
+    // 请求级错误信封：原文入 raw，等价的内层 error 事件进合并管线并终结归属 turn
+    if (type === 'error') {
+      const turn = turns.get(frameLane) ?? latestTurn;
+      if (!turn) {
+        hooks.warn({ requestId: metadata.id, type }, 'WS 错误帧没有对应进行中的 turn，跳过');
+        return;
+      }
+      hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
+      emitInner(turn, { type: 'error', error: frame.error ?? null });
       finishTurn(turn);
       return;
     }
 
     // steer.accepted / steer.pending / steer.failed 等 WS 专属回执 v1 不进记录
-    if (envelope.type !== 'message' || !isRecord(envelope.message)) return;
+    if (type.startsWith('steer.')) return;
 
-    const inner = envelope.message;
-    hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(envelope)}\n`);
-    emitInner(turn, inner);
-    if (typeof inner.type === 'string' && TURN_TERMINAL_INNER_TYPES.has(inner.type)) finishTurn(turn);
+    if (type === 'message' && isRecord(frame.message)) {
+      const turn = turns.get(frameLane) ?? turns.get('');
+      if (!turn) {
+        hooks.warn({ requestId: metadata.id, streamId: frameLane, type }, 'WS 信封没有对应进行中的 turn，跳过');
+        return;
+      }
+      // 信封 lane 与 turn 键不同（服务端补全的 stream_id）：学习映射并重挂键
+      if (frameLane !== turn.laneId) {
+        turns.delete(turn.laneId);
+        turn.laneId = frameLane;
+        turns.set(frameLane, turn);
+      }
+      const inner = frame.message;
+      hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
+      emitInner(turn, inner);
+      if (typeof inner.type === 'string' && TURN_TERMINAL_INNER_TYPES.has(inner.type)) finishTurn(turn);
+      return;
+    }
+
+    if (isNativeResponsesEvent(type)) {
+      const turn = turns.get(frameLane) ?? latestTurn;
+      if (!turn) {
+        hooks.warn({ requestId: metadata.id, type }, '原生 Responses 事件没有对应进行中的 turn，跳过');
+        return;
+      }
+      hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
+      emitInner(turn, frame);
+      if (TURN_TERMINAL_INNER_TYPES.has(type)) finishTurn(turn);
+      return;
+    }
+
+    hooks.warn({ requestId: metadata.id, type: type || '(missing)' }, '未知 WS 服务端帧类型，跳过');
   }
 
   function emitInner(turn: WsTurn, inner: unknown): void {
@@ -180,6 +222,7 @@ export function createWsConnectionCapture(
   function finishTurn(turn: WsTurn): void {
     hooks.dispatch({ type: 'capture.complete', id: turn.turnId });
     turns.delete(turn.laneId);
+    if (latestTurn === turn) latestTurn = null;
   }
 }
 
