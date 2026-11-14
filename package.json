@@ -45,11 +45,12 @@
     "test:capture-queue": "tsx backend/test/recorder-capture-queue.test.ts",
     "test:token-speed": "tsx frontend/test/token-speed.test.ts",
     "test:format": "tsx frontend/test/format.test.ts",
+    "test:format-timing": "tsx frontend/test/format-timing.test.ts",
     "test:context": "tsx frontend/test/context-composition.test.ts",
     "test:body-presentation": "tsx frontend/test/body-presentation.test.ts",
     "test:logger": "tsx backend/test/logger.test.ts",
     "test:cli-logging": "tsx backend/test/cli-logging.test.ts",
-    "test:all": "npm run test:sse && npm run test:decode && npm run test:identity && npm run test:endpoints && npm run test:usage && npm run test:preview && npm run test:passthrough-store && npm run test:response-flow && npm run test:proxy && npm run test:routing && npm run test:ws-frames && npm run test:ws-capture && npm run test:ws-proxy && npm run test:worker && npm run test:ui-buffer && npm run test:shutdown && npm run test:capture-queue && npm run test:token-speed && npm run test:format && npm run test:context && npm run test:body-presentation && npm run test:logger && npm run test:cli-logging && tsx backend/test/db-logger.test.ts"
+    "test:all": "npm run test:sse && npm run test:decode && npm run test:identity && npm run test:endpoints && npm run test:usage && npm run test:preview && npm run test:passthrough-store && npm run test:response-flow && npm run test:proxy && npm run test:routing && npm run test:ws-frames && npm run test:ws-capture && npm run test:ws-proxy && npm run test:worker && npm run test:ui-buffer && npm run test:shutdown && npm run test:capture-queue && npm run test:token-speed && npm run test:format && npm run test:format-timing && npm run test:context && npm run test:body-presentation && npm run test:logger && npm run test:cli-logging && tsx backend/test/db-logger.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.10.1",

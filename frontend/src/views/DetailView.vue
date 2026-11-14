@@ -15,6 +15,7 @@ import ToolCallCard from '../components/ToolCallCard.vue'
 import { getHeaderValue } from '../body-presentation'
 import StreamLive from '../components/StreamLive.vue'
 import TokenSpeed from '../components/TokenSpeed.vue'
+import TimingWaterfall from '../components/TimingWaterfall.vue'
 import DiffViewer from '../components/DiffViewer.vue'
 import MessageFlow from '../components/MessageFlow.vue'
 import UserMessageCard from '../components/UserMessageCard.vue'
@@ -547,6 +548,21 @@ function createRequestAnalysisWorker(): Worker {
         <span v-if="record.error" style="color:var(--error);font-weight:600;">错误: {{ record.error }}</span>
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
+
+      <!-- F12 Network 风格的耗时分解（发送/响应头/等待首字/内容下载 + 字节吞吐与停顿统计） -->
+      <TimingWaterfall
+        :state="record.state"
+        :request-sent-ms="record.requestSentMs"
+        :response-start-ms="record.responseStartMs"
+        :first-chunk-ms="record.firstChunkMs"
+        :duration-ms="record.durationMs"
+        :request-bytes="record.requestBytes"
+        :response-bytes="record.responseBytes"
+        :response-chunk-count="record.responseChunkCount"
+        :response-max-gap-ms="record.responseMaxGapMs"
+        :response-stall-count="record.responseStallCount"
+        :response-decoded-bytes="record.responseDecodedBytes"
+      />
 
 
       <!-- Diff 弹窗 -->

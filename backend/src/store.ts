@@ -50,6 +50,15 @@ function toSummary(r: RecordedRequest): RecordSummary {
     streamText: r.streamText,
     ...buildTokenSummary(r.apiEndpoint, r.apiUsage),
     responseChars: r.responseChars,
+    requestSentMs: r.requestSentMs,
+    firstChunkMs: r.firstChunkMs,
+    responseStartMs: r.responseStartMs,
+    requestBytes: r.requestBytes,
+    responseBytes: r.responseBytes,
+    responseChunkCount: r.responseChunkCount,
+    responseMaxGapMs: r.responseMaxGapMs,
+    responseStallCount: r.responseStallCount,
+    responseDecodedBytes: r.responseDecodedBytes,
     sessionId: r.sessionId,
     sessionIdKey: r.sessionIdKey,
   };
@@ -128,6 +137,15 @@ function entityToRecord(row: RequestEntity): RecordedRequest {
     apiUsage: row.api_usage ?? undefined,
     outputTokens: buildTokenSummary(identity.endpoint, row.api_usage).outputTokens,
     responseChars: row.response_chars ?? undefined,
+    requestSentMs: row.request_sent_ms ?? undefined,
+    firstChunkMs: row.first_chunk_ms ?? undefined,
+    responseStartMs: row.response_start_ms ?? undefined,
+    requestBytes: row.request_bytes ?? undefined,
+    responseBytes: row.response_bytes ?? undefined,
+    responseChunkCount: row.response_chunk_count ?? undefined,
+    responseMaxGapMs: row.response_max_gap_ms ?? undefined,
+    responseStallCount: row.response_stall_count ?? undefined,
+    responseDecodedBytes: row.response_decoded_bytes ?? undefined,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
     streamId: row.stream_id ?? undefined,
@@ -152,6 +170,15 @@ function entityToSummary(row: RequestEntity): RecordSummary {
     streamText: streamBuf.get(row.id),
     ...buildTokenSummary(identity.endpoint, row.api_usage),
     responseChars: row.response_chars ?? undefined,
+    requestSentMs: row.request_sent_ms ?? undefined,
+    firstChunkMs: row.first_chunk_ms ?? undefined,
+    responseStartMs: row.response_start_ms ?? undefined,
+    requestBytes: row.request_bytes ?? undefined,
+    responseBytes: row.response_bytes ?? undefined,
+    responseChunkCount: row.response_chunk_count ?? undefined,
+    responseMaxGapMs: row.response_max_gap_ms ?? undefined,
+    responseStallCount: row.response_stall_count ?? undefined,
+    responseDecodedBytes: row.response_decoded_bytes ?? undefined,
     sessionId: row.session_id ?? undefined,
     sessionIdKey: row.session_id_key ?? undefined,
   };
@@ -220,6 +247,9 @@ const SUMMARY_SELECT = {
   id: true, timestamp: true, method: true, model: true, status: true, preview: true,
   streaming: true, duration_ms: true, finished: true, error: true, api_type: true,
   api_endpoint: true, response_chars: true,
+  request_sent_ms: true, first_chunk_ms: true, response_start_ms: true,
+  request_bytes: true, response_bytes: true,
+  response_chunk_count: true, response_max_gap_ms: true, response_stall_count: true, response_decoded_bytes: true,
   session_id: true, session_id_key: true,
   path: true, api_usage: true,
 };
@@ -296,6 +326,15 @@ export async function upsertRecord(r: RecordedRequest): Promise<void> {
       response_content: r.responseContent ? JSON.stringify(r.responseContent) : undefined,
       response_body: r.responseBody ?? undefined,
       response_chars: r.responseChars ?? null,
+      request_sent_ms: r.requestSentMs ?? null,
+      first_chunk_ms: r.firstChunkMs ?? null,
+      response_start_ms: r.responseStartMs ?? null,
+      request_bytes: r.requestBytes ?? null,
+      response_bytes: r.responseBytes ?? null,
+      response_chunk_count: r.responseChunkCount ?? null,
+      response_max_gap_ms: r.responseMaxGapMs ?? null,
+      response_stall_count: r.responseStallCount ?? null,
+      response_decoded_bytes: r.responseDecodedBytes ?? null,
       api_usage: r.apiUsage ?? null,
       session_id: r.sessionId ?? null,
       session_id_key: r.sessionIdKey ?? null,
@@ -318,7 +357,12 @@ export async function getAll(page?: number, pageSize?: number, filter: RequestLi
       take: pageSize,
     };
     if (where) options.where = where;
-    const [rows, total] = await repo.findAndCount(options);
+    // 分开 find 与 count：findAndCount 的计数会生成 COUNT(DISTINCT(所有 select 列拼接))，
+    // 在大库上每次要秒级；裸 count(主键) 走同一 where 且结果等价
+    const [rows, total] = await Promise.all([
+      repo.find(options),
+      repo.count({ where }),
+    ]);
     // 全量统计（不受分页影响）
     const counts = await countListBuckets(repo);
     return { items: rows.map(entityToSummary), total, page, pageSize, counts };

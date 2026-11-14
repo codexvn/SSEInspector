@@ -188,6 +188,20 @@ export interface RecordedRequest {
   outputTokens?: number;
   /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
   responseChars?: number;
+  /** 分段耗时（ms）：请求体发送完成（客户端→代理收完）；首字 = 首个响应 chunk 到达（TTFT 近似，无 chunk 时退回响应头到达） */
+  requestSentMs?: number;
+  firstChunkMs?: number;
+  /** 响应头到达耗时（ms），与首字分开记录（JSON 单包响应两者几乎相等，SSE 场景头先到） */
+  responseStartMs?: number;
+  /** 网络层累计字节（线上原始字节，压缩体按实际传输计）：请求方向 / 响应方向 */
+  requestBytes?: number;
+  responseBytes?: number;
+  /** 流式统计：chunk 总数 / 相邻 chunk 最大间隔（ms）/ 停顿次数（间隔 ≥1s，VPN 抖动信号） */
+  responseChunkCount?: number;
+  responseMaxGapMs?: number;
+  responseStallCount?: number;
+  /** 压缩响应解压后的字节数（与 responseBytes 相除即压缩比）；明文响应为空 */
+  responseDecodedBytes?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */
@@ -219,6 +233,19 @@ export interface RecordSummary {
   outputTokens?: number;
   /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
   responseChars?: number;
+  /** 分段耗时（ms）：请求体发送完成 / 首个响应 chunk 到达（TTFT 近似）/ 响应头到达 */
+  requestSentMs?: number;
+  firstChunkMs?: number;
+  responseStartMs?: number;
+  /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
+  requestBytes?: number;
+  responseBytes?: number;
+  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  responseChunkCount?: number;
+  responseMaxGapMs?: number;
+  responseStallCount?: number;
+  /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
+  responseDecodedBytes?: number;
   /** 会话标识（从已知请求头提取） */
   sessionId?: string;
   /** 会话标识来源头名称 */

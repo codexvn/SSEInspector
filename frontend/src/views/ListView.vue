@@ -215,7 +215,6 @@ function sessionLabel(sid?: string, key?: string): string {
         <colgroup>
           <col class="col-time" />
           <col class="col-api" />
-          <col class="col-path" />
           <col class="col-model" />
           <col class="col-status" />
           <col class="col-preview" />
@@ -228,7 +227,6 @@ function sessionLabel(sid?: string, key?: string): string {
           <tr>
             <th>时间</th>
             <th>API</th>
-            <th class="th-path">路径</th>
             <th>模型</th>
             <th>状态</th>
             <th>预览</th>
@@ -251,7 +249,6 @@ function sessionLabel(sid?: string, key?: string): string {
               <td class="cell-api">
                 <span class="badge badge-passthrough">透传</span>
               </td>
-              <td class="cell-path">-</td>
               <td class="cell-model group-count">×{{ row.items.length }}</td>
               <td class="cell-status group-status">{{ groupStatusSummary(row.items) }}</td>
               <td class="cell-preview group-preview" :title="groupPreview(row.items)">
@@ -277,7 +274,6 @@ function sessionLabel(sid?: string, key?: string): string {
                 <span v-else class="badge badge-openai">OpenAI</span>
                 <span class="endpoint-tag">{{ transportTag(row.record) }}</span>
               </td>
-              <td class="cell-path" :title="row.record.path">{{ row.record.path }}</td>
               <td class="cell-model" :title="row.record.apiType === 'passthrough' ? undefined : row.record.model">{{ row.record.apiType === 'passthrough' ? '-' : row.record.model }}</td>
               <td class="cell-status">
                 <span v-if="row.record.state === 'pending'" class="badge badge-streaming">等待响应</span>
@@ -372,16 +368,15 @@ function sessionLabel(sid?: string, key?: string): string {
 table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 /* 13.5% ≈ 173px，容纳 yyyy-MM-dd HH:mm:ss（19 等宽字符约 142px）单行 */
 .col-time { width: 13.5%; }
-/* API 列只放徽章 + 传输标签；路径独立成列，14% ≈ 179px 可完整显示 /easytier/v1/messages（21 字符） */
+/* API 列只放徽章 + 传输标签 */
 .col-api { width: 10.5%; }
-.col-path { width: 14%; }
-.col-model { width: 9.5%; }
+.col-model { width: 10%; }
 .col-status { width: 6%; }
-.col-preview { width: 18.5%; }
+.col-preview { width: 28.5%; }
 .col-session { width: 8.5%; }
 .col-duration { width: 6.5%; }
-.col-cache { width: 6%; }
-.col-speed { width: 7%; }
+.col-cache { width: 6.5%; }
+.col-speed { width: 10%; }
 thead { background: var(--bg-inset); border-bottom: 1px solid var(--border); }
 th {
   text-align: center; padding: 11px 10px; font-size: 0.75rem;
@@ -398,13 +393,6 @@ tbody tr:last-child td { border-bottom: none; }
 .cell-api { font-size: 0.75rem; text-align: center; white-space: nowrap; }
 /* 协议徽章 + 传输标签（SSE/WS/JSON）同行居中，标签与徽章留一点间距 */
 .cell-api .endpoint-tag { margin-left: 5px; }
-/* 路径独立列：左对齐等宽字体，超长省略（count_tokens 等），title 提示完整值 */
-.cell-path {
-  font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-secondary);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* 表头跟随内容左对齐，避免「路径」居中而单元格左对齐的错位观感 */
-.th-path { text-align: left; }
 .endpoint-tag {
   flex-shrink: 0; padding: 1px 6px; border-radius: var(--radius-sm);
   font-family: var(--font-mono); font-size: 0.68rem; font-weight: 600;

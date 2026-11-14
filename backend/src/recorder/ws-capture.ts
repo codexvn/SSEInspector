@@ -37,10 +37,14 @@ export interface WsCaptureHooks {
 }
 
 export interface WsConnectionCapture {
-  /** 投喂一个方向的原始 socket 字节（request = 下游→上游，response = 上游→下游） */
-  feed(dir: 'request' | 'response', chunk: Uint8Array): void;
-  /** 连接结束：把所有未完成 turn 按来源转译为 closed / failed 后清理状态 */
-  close(reason: WsCaptureCloseReason, error?: string): void;
+  /**
+   * 投喂一个方向的原始 socket 字节（request = 下游→上游，response = 上游→下游）。
+   * at 为该 chunk 在主线程 tee 处的到达时刻（epoch ms），作为其中全部帧的事件
+   * 时刻贯通到合成 capture.* 消息，使 turn 的分段耗时与 HTTP 路径同源。
+   */
+  feed(dir: 'request' | 'response', chunk: Uint8Array, at: number): void;
+  /** 连接结束：把所有未完成 turn 按来源转译为 closed / failed 后清理状态；at 为 ws_close 事件时刻 */
+  close(reason: WsCaptureCloseReason, error?: string, at?: number): void;
 }
 
 interface WsTurn {
@@ -74,20 +78,22 @@ export function createWsConnectionCapture(
   };
 
   return {
-    feed(dir, chunk) {
-      for (const frame of parsers[dir].push(chunk)) handleFrame(dir, frame);
+    feed(dir, chunk, at) {
+      for (const frame of parsers[dir].push(chunk)) handleFrame(dir, frame, at);
     },
 
-    close(reason, error) {
+    close(reason, error, at) {
+      const endedAt = at ?? Date.now();
       for (const turn of turns.values()) {
         if (reason === 'downstream_closed') {
-          hooks.dispatch({ type: 'capture.closed', id: turn.turnId, status: 101, reason: 'downstream_closed' });
+          hooks.dispatch({ type: 'capture.closed', id: turn.turnId, status: 101, reason: 'downstream_closed', at: endedAt });
         } else {
           hooks.dispatch({
             type: 'capture.failed',
             id: turn.turnId,
             status: 502,
             error: error ?? (reason === 'upstream_error' ? '上游 WebSocket 连接错误' : '上游 WebSocket 连接关闭'),
+            at: endedAt,
           });
         }
       }
@@ -96,7 +102,7 @@ export function createWsConnectionCapture(
     },
   };
 
-  function handleFrame(dir: 'request' | 'response', frame: WsFrame): void {
+  function handleFrame(dir: 'request' | 'response', frame: WsFrame, at: number): void {
     // 二进制帧与控制帧不参与 lane 语义（字节层已由 httpxy 管道原样透传）
     if (frame.opcode !== WS_OPCODE_TEXT) return;
     let parsed: unknown;
@@ -107,11 +113,11 @@ export function createWsConnectionCapture(
       return;
     }
     if (!isRecord(parsed)) return;
-    if (dir === 'request') handleClientEvent(parsed, frame.payload);
-    else handleServerFrame(parsed);
+    if (dir === 'request') handleClientEvent(parsed, frame.payload, at);
+    else handleServerFrame(parsed, at);
   }
 
-  function handleClientEvent(event: Record<string, unknown>, payload: Buffer): void {
+  function handleClientEvent(event: Record<string, unknown>, payload: Buffer, at: number): void {
     // response.steer 等 WS 专属客户端事件 v1 不单独记录（透传不落库）
     if (event.type !== 'response.create') return;
     const laneId = typeof event.stream_id === 'string' ? event.stream_id : '';
@@ -126,6 +132,7 @@ export function createWsConnectionCapture(
         id: existing.turnId,
         status: 502,
         error: '同 stream_id 在上一 turn 结束前收到新的 response.create',
+        at,
       });
       if (latestTurn === existing) latestTurn = null;
     }
@@ -139,14 +146,14 @@ export function createWsConnectionCapture(
       metadata: {
         ...metadata,
         id: turn.turnId,
-        startedAt: Date.now(),
-        timestamp: new Date().toISOString(),
+        startedAt: at,
+        timestamp: new Date(at).toISOString(),
         streamId: laneId || undefined,
       },
     });
     hooks.dispatch({ type: 'capture.request_chunk', id: turn.turnId, chunk: payload });
-    hooks.dispatch({ type: 'capture.request_end', id: turn.turnId });
-    hooks.dispatch({ type: 'capture.response_start', id: turn.turnId, status: 101, headers: {}, streaming: true });
+    hooks.dispatch({ type: 'capture.request_end', id: turn.turnId, at });
+    hooks.dispatch({ type: 'capture.response_start', id: turn.turnId, status: 101, headers: {}, streaming: true, at });
   }
 
   /**
@@ -156,7 +163,7 @@ export function createWsConnectionCapture(
    *    不携带 stream_id，按最近活跃 turn 归属。
    * 信封携带 stream_id 而客户端 create 未带时，学习该映射（重挂 lane 键）。
    */
-  function handleServerFrame(frame: Record<string, unknown>): void {
+  function handleServerFrame(frame: Record<string, unknown>, at: number): void {
     const frameLane = typeof frame.stream_id === 'string' ? frame.stream_id : '';
     const type = typeof frame.type === 'string' ? frame.type : '';
 
@@ -168,8 +175,8 @@ export function createWsConnectionCapture(
         return;
       }
       hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
-      emitInner(turn, { type: 'error', error: frame.error ?? null });
-      finishTurn(turn);
+      emitInner(turn, { type: 'error', error: frame.error ?? null }, at);
+      finishTurn(turn, at);
       return;
     }
 
@@ -190,8 +197,8 @@ export function createWsConnectionCapture(
       }
       const inner = frame.message;
       hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
-      emitInner(turn, inner);
-      if (typeof inner.type === 'string' && TURN_TERMINAL_INNER_TYPES.has(inner.type)) finishTurn(turn);
+      emitInner(turn, inner, at);
+      if (typeof inner.type === 'string' && TURN_TERMINAL_INNER_TYPES.has(inner.type)) finishTurn(turn, at);
       return;
     }
 
@@ -202,25 +209,26 @@ export function createWsConnectionCapture(
         return;
       }
       hooks.appendRawResponseText(turn.turnId, `${JSON.stringify(frame)}\n`);
-      emitInner(turn, frame);
-      if (TURN_TERMINAL_INNER_TYPES.has(type)) finishTurn(turn);
+      emitInner(turn, frame, at);
+      if (TURN_TERMINAL_INNER_TYPES.has(type)) finishTurn(turn, at);
       return;
     }
 
     hooks.warn({ requestId: metadata.id, type: type || '(missing)' }, '未知 WS 服务端帧类型，跳过');
   }
 
-  function emitInner(turn: WsTurn, inner: unknown): void {
+  function emitInner(turn: WsTurn, inner: unknown, at: number): void {
     // 内层事件序列化为 SSE data 行喂给现有 responseText 管线（live/合并/终态三路复用）
     hooks.dispatch({
       type: 'capture.response_chunk',
       id: turn.turnId,
       chunk: Buffer.from(`data: ${JSON.stringify(inner)}\n\n`, 'utf8'),
+      at,
     });
   }
 
-  function finishTurn(turn: WsTurn): void {
-    hooks.dispatch({ type: 'capture.complete', id: turn.turnId });
+  function finishTurn(turn: WsTurn, at: number): void {
+    hooks.dispatch({ type: 'capture.complete', id: turn.turnId, at });
     turns.delete(turn.laneId);
     if (latestTurn === turn) latestTurn = null;
   }

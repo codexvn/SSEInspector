@@ -88,6 +88,42 @@ export class RequestEntity {
   @Column('integer', { nullable: true })
   response_chars?: number | null;
 
+  /** 请求体发送完成耗时（ms）：主线程在 request_end 事件时刻打点，排除投递队列延迟 */
+  @Column('integer', { nullable: true })
+  request_sent_ms?: number | null;
+
+  /** 首字耗时（ms）：首个响应 chunk 到达时刻（TTFT 近似），无 chunk 时退回响应头到达 */
+  @Column('integer', { nullable: true })
+  first_chunk_ms?: number | null;
+
+  /** 网络层请求方向累计字节（线上原始字节，压缩体按实际传输计） */
+  @Column('integer', { nullable: true })
+  request_bytes?: number | null;
+
+  /** 网络层响应方向累计字节 */
+  @Column('integer', { nullable: true })
+  response_bytes?: number | null;
+
+  /** 响应头到达耗时（ms）：与首字分开记录（SSE 场景头先于首个数据 chunk） */
+  @Column('integer', { nullable: true })
+  response_start_ms?: number | null;
+
+  /** 响应 chunk 总数（流式统计） */
+  @Column('integer', { nullable: true })
+  response_chunk_count?: number | null;
+
+  /** 相邻响应 chunk 的最大间隔（ms） */
+  @Column('integer', { nullable: true })
+  response_max_gap_ms?: number | null;
+
+  /** 流式停顿次数（相邻 chunk 间隔 ≥1s，VPN 抖动信号） */
+  @Column('integer', { nullable: true })
+  response_stall_count?: number | null;
+
+  /** 压缩响应解压后的字节数（与 response_bytes 相除即压缩比） */
+  @Column('integer', { nullable: true })
+  response_decoded_bytes?: number | null;
+
   /** JSON 接口原始 usage 对象，字段因供应商而异 */
   @Column('text', { nullable: true })
   api_usage?: string | null;

@@ -156,7 +156,9 @@ WebSocket 升级请求（`GET /v1/responses` 携带 `Upgrade: websocket` 头）�
 
 ### 时间与耗时记录
 
-每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。主线程日志的 `durationMs` 与 Worker 各持久化点（请求阶段 / 完成 / 部分保存 / 中断 / 上游失败）的 `record.durationMs` 均由 `Date.now() - metadata.startedAt` 计算——主线程与 Worker 两侧的计算发生在不同时刻、数值可能略有差异，但都取自同一个 `startedAt`，语义一致。请求阶段落库的记录携带当时的耗时（即从请求发出到请求体接收完成的时长），响应开始后的流式实时快照（`publishLiveSnapshot`，与持久化点不同，仅推送不落库）会继续刷新记录中的该值。
+每个请求在进入 `forward()` 时取一次 `startedAt`（`Date.now()`）并生成 ISO 8601 格式的 `timestamp`，两者随 capture metadata 进入 Worker。除 `startedAt` 外，主线程还在事件发生的同步位置为 capture 控制消息与响应 chunk 打点 `at`（epoch ms）：`request_end`（客户端请求体发送完成）、`response_start`（上游响应头到达）、首个 `response_chunk`（首字）、`complete/closed/failed`（终态）。打点随消息经延迟投递队列携带，Worker 一律以 `at` 结算耗时——投递队列的排队延迟（背压时可达秒级）不会扭曲统计。WebSocket 路径同源：`ws_chunk`/`ws_close` 携带 `at`，lane 管理器把帧到达时刻贯通进合成 capture 消息（turn 的起点也取首帧到达时刻）。
+
+持久化的分段指标（均可空，旧记录为 null）：`request_sent_ms`（发送耗时，客户端→代理请求体收完）、`response_start_ms`（响应头到达）、`first_chunk_ms`（首字耗时，首个响应 chunk 到达的 TTFT 近似；无 chunk 的空响应退回响应头到达时刻）、`duration_ms`（总计，终态 `at - startedAt`）、`request_bytes` / `response_bytes`（网络层线上原始字节，压缩体按实际传输字节计）、`response_chunk_count` / `response_max_gap_ms` / `response_stall_count`（响应 chunk 总数、相邻 chunk 最大间隔、间隔 ≥1s 的停顿次数——VPN 抖动的直接信号）、`response_decoded_bytes`（gzip/deflate/br 响应解压后的字节数，与线上字节相除即压缩比；解压仅做字节计数，失败记 debug 不影响录制）。接收耗时与吞吐为读取侧派生值：接收 = 总计 − 首字，吞吐 = 响应字节 ÷ 接收耗时。指标口径参考 CLIProxyAPI 的 Latency/TTFT 模型（其 TTFT 刻意忽略服务端工具流量；本代理数据面不解析内容，以首个响应 chunk 为协议无关近似）。主线程日志的 `durationMs` 仍由 `Date.now() - startedAt` 计算，与 Worker 落库值语义一致、数值可能略有差异。请求阶段落库的记录已携带发送耗时与请求字节；响应开始后的流式实时快照（`publishLiveSnapshot`，仅推送不落库）会继续刷新首字耗时、累计响应字节与流式统计，列表在传输中即可见。
 
 ## 分层职责
 
@@ -178,7 +180,7 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 
 ### 前端：展示面
 
-列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`（「进行中」= 等待响应与传输中两态之和）。列表的速度列不做实时估算：进行中的记录显示状态文案（等待响应 / 接收中，速度列的短文案），终态记录以 usage 返回的输出 token 为主计算 `tok/s`，usage 缺失时以响应字符数（`responseChars`，终态落库时取原始响应文本长度写入）兜底显示 `字/s`，两种单位明确区分，不做 token 数的换算猜测。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
+列表页（`ListView`）承担筛选与统计，顶栏顺序为 `总计 · OpenAI · Anthropic · 透传 · 进行中 · 错误`（「进行中」= 等待响应与传输中两态之和）。列表的速度列不做实时估算：进行中的记录显示状态文案，终态记录以 usage 返回的输出 token 为主计算 `tok/s`，usage 缺失时以响应字符数（`responseChars`）兜底显示 `字/s`，两种单位明确区分，不做 token 数的换算猜测。详情页在元信息下方提供 F12 Network「时间」面板风格的「耗时分解」（`TimingWaterfall`）：分段彩条与图例展示 发送请求（含请求字节）→ 响应头到达 → 等待首字（TTFB）→ 内容下载（含响应字节、吞吐、chunk 数与压缩比）四段；出现停顿时追加红色「流式停顿」行（次数与最长间隔）。传输中的记录实时刷新；旧记录无打点时整卡隐藏，等待首字阶段显示进行态。详情页（`DetailView`）按记录身份分叉：AI 记录走协议合并视图（`MessageFlow` 消息卡片流、工具配对、上下文组成分析），透传记录走 raw inspector（headers + 正文多查看器）。正文块（`BodyInspector`）提供「原始 + 按内容格式预览」的查看器切换：JSON 提供格式化视图、XML/HTML 提供缩进视图（`formatPrettyXml` 尽力而为，不校验标签配对）、文本类提供 Markdown 渲染（默认选中，与消息卡片共用 `MarkdownRender` 渲染管线）、form 提供字段表；AI 响应体的 JSON 查看器展示协议合并结果。消息卡片（`BaseTextCard`）对消息文本做同款识别：内容本身是对象/数组形态的 JSON 或 XML 字符串（如模型输出的结构化标注）时默认展示对应格式化视图，否则保持 Markdown 渲染与原文两态。可用查看器按 Content-Type 优先、内容嗅探兜底给出；内容过大时 JSON / XML / Markdown 查看器默认退回原始，仍可手动切换，格式化在首次切换时懒生成。前端不从 path 推断协议，一律使用 API 返回的 `apiEndpoint`。大体积内容按需挂载：请求体和响应体的 Monaco 编辑器只在对应折叠区打开时创建，上下文组成分析在独立的 `request-analysis.worker.ts` 中解析，主线程不同步解析大型请求体。
 
 ## 关键目录与文件职责
 
@@ -208,9 +210,9 @@ TypeORM 以 `synchronize: true` 同步 schema，不维护 migration；实体不�
 | `backend/src/protocol-content.ts` + `tool-calls.ts` | 协议内容提取与工具调用 / 结果配对 |
 | `backend/src/logger.ts` + `db/slow-query-logger.ts` | Pino 统一日志入口与慢 SQL 日志 |
 | `frontend/src/views/` | `ListView`（列表筛选统计）、`DetailView`（详情分叉视图）与 `SettingsView`（多上游分流设置） |
-| `frontend/src/components/` | 消息卡片族（user / assistant / thinking / tool call 等）、`MessageFlow`、`BodyInspector`（正文多查看器）、`MarkdownRender`（共享 Markdown/图表渲染）、`StreamLive`、`TokenSpeed`、`HeadersViewer`、`DiffViewer` 等 |
+| `frontend/src/components/` | 消息卡片族（user / assistant / thinking / tool call 等）、`MessageFlow`、`BodyInspector`（正文多查看器）、`MarkdownRender`（共享 Markdown/图表渲染）、`StreamLive`、`TokenSpeed`、`TimingWaterfall`（F12 风格耗时分解）、`HeadersViewer`、`DiffViewer` 等 |
 | `frontend/src/stores/requests.ts` + `api/index.ts` | Pinia 状态与 `/api` 客户端（含 EventSource 实时更新） |
-| `frontend/src/response-flow.ts` 等 | 前端纯函数：响应卡片 descriptor、body 展示、token 速度、上下文组成 |
+| `frontend/src/response-flow.ts` 等 | 前端纯函数：响应卡片 descriptor、body 展示、token 速度、耗时分解（`format-timing.ts`）、上下文组成 |
 | `frontend/src/workers/request-analysis.worker.ts` | 请求体上下文组成分析（避免主线程解析大 body） |
 
 ## 内部 API 一览

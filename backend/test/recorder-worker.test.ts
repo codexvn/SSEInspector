@@ -55,12 +55,14 @@ async function runWorker(dev: boolean): Promise<void> {
   const captureId = `${mode}-capture`
   const requestBody = Buffer.from(JSON.stringify({ model: 'unknown', input: 'hello' }))
   const responseBody = Buffer.from(JSON.stringify({ id: 'response-1', object: 'response', output: [], usage: null }))
+  // 分段耗时的确定性打点：t0 为请求起点，后续事件按固定偏移推进
+  const t0 = Date.now();
   worker.postMessage({
     type: 'capture.start',
     metadata: {
       id: captureId,
-      startedAt: Date.now(),
-      timestamp: new Date().toISOString(),
+      startedAt: t0,
+      timestamp: new Date(t0).toISOString(),
       method: 'POST',
       path: '/v1/responses',
       upstreamUrl: 'http://127.0.0.1:1/v1/responses',
@@ -70,7 +72,7 @@ async function runWorker(dev: boolean): Promise<void> {
     },
   })
   worker.postMessage({ type: 'capture.request_chunk', id: captureId, chunk: Uint8Array.from(requestBody) })
-  worker.postMessage({ type: 'capture.request_end', id: captureId })
+  worker.postMessage({ type: 'capture.request_end', id: captureId, at: t0 + 100 })
   // 请求阶段（request_end 后、响应开始前）记录即入库：状态派生为 pending
   //（等待响应），列表无需等首包即可见；请求体此时已可解析
   worker.postMessage({ type: 'rpc', correlationId: 90, method: 'requests.detail', args: [captureId] })
@@ -81,9 +83,12 @@ async function runWorker(dev: boolean): Promise<void> {
   assert.equal(pendingResult.type, 'rpc.result')
   assert.equal(pendingResult.ok, true)
   if (pendingResult.ok) {
-    const pending = pendingResult.value as { state: string; requestBody: string }
+    const pending = pendingResult.value as { state: string; requestBody: string; requestSentMs?: number; requestBytes?: number }
     assert.equal(pending.state, 'pending')
     assert.deepEqual(JSON.parse(pending.requestBody), { model: 'unknown', input: 'hello' })
+    // pending 阶段即携带发送耗时与请求字节数（列表可显示发送指标）
+    assert.equal(pending.requestSentMs, 100)
+    assert.equal(pending.requestBytes, requestBody.byteLength)
   }
   worker.postMessage({
     type: 'capture.response_start',
@@ -91,9 +96,12 @@ async function runWorker(dev: boolean): Promise<void> {
     status: 200,
     headers: { 'content-type': 'application/json' },
     streaming: false,
+    at: t0 + 900,
   })
-  worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody) })
-  worker.postMessage({ type: 'capture.complete', id: captureId })
+  // 响应体拆两个 chunk 投递（中间隔 1500ms ≥ 停顿阈值）：同时验证流式统计
+  worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody.subarray(0, 20)), at: t0 + 1000 })
+  worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody.subarray(20)), at: t0 + 2500 })
+  worker.postMessage({ type: 'capture.complete', id: captureId, at: t0 + 5000 })
   worker.postMessage({ type: 'rpc', correlationId: 2, method: 'requests.detail', args: [captureId] })
   const detailResult = await waitForMessage(
     worker,
@@ -109,6 +117,15 @@ async function runWorker(dev: boolean): Promise<void> {
       responseBody: string
       responseChars?: number
       tokenBreakdown?: unknown
+      requestSentMs?: number
+      responseStartMs?: number
+      firstChunkMs?: number
+      durationMs: number
+      requestBytes?: number
+      responseBytes?: number
+      responseChunkCount?: number
+      responseMaxGapMs?: number
+      responseStallCount?: number
     }
     assert.equal(detail.state, 'done')
     assert.equal(detail.apiEndpoint, 'openai-responses')
@@ -117,6 +134,17 @@ async function runWorker(dev: boolean): Promise<void> {
     // usage 缺失（usage: null）时速度兜底指标 = 响应字符数
     assert.equal(detail.responseChars, responseBody.toString().length)
     assert.equal(detail.tokenBreakdown, undefined)
+    // 分段耗时按主线程打点结算：发送 100ms、响应头 900ms、首字 1000ms（首个 chunk）、总计 5000ms
+    assert.equal(detail.requestSentMs, 100)
+    assert.equal(detail.responseStartMs, 900)
+    assert.equal(detail.firstChunkMs, 1000)
+    assert.equal(detail.durationMs, 5000)
+    assert.equal(detail.requestBytes, requestBody.byteLength)
+    assert.equal(detail.responseBytes, responseBody.byteLength)
+    // 流式统计：2 个 chunk，最大间隔 1500ms，其中 ≥1s 的停顿 1 次
+    assert.equal(detail.responseChunkCount, 2)
+    assert.equal(detail.responseMaxGapMs, 1500)
+    assert.equal(detail.responseStallCount, 1)
   }
 
   await assertClientCloseCapture(worker, mode, true, 3)
@@ -429,7 +457,8 @@ async function main(): Promise<void> {
 
 main().catch(error => {
   console.error(formatErrorChain(error))
-  process.exitCode = 1
+  // 失败必须立即退出：未退出的 worker 线程会吊住事件循环，表现为测试挂起
+  process.exit(1)
 })
 
 function formatErrorChain(error: unknown): string {

@@ -4,6 +4,8 @@ export interface DeferredCaptureItem {
   kind: CaptureChunkKind
   id: string
   chunk: Uint8Array<ArrayBuffer>
+  /** 入队时刻（epoch ms）：chunk 对应事件的真实发生时间，投递延迟不影响它 */
+  at: number
 }
 
 interface DeferredCaptureQueueOptions {
@@ -17,6 +19,7 @@ interface QueuedChunkItem {
   kind: CaptureChunkKind
   id: string
   chunk: Uint8Array
+  at: number
 }
 
 interface QueuedControlItem {
@@ -39,7 +42,7 @@ export class DeferredCaptureQueue {
   }
 
   enqueue(kind: CaptureChunkKind, id: string, chunk: Uint8Array): void {
-    this.items.push({ type: 'chunk', kind, id, chunk })
+    this.items.push({ type: 'chunk', kind, id, chunk, at: Date.now() })
     this.totalPendingBytes += chunk.byteLength
     this.ensureScheduled()
   }

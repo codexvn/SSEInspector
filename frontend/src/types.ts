@@ -50,6 +50,19 @@ export interface RecordSummary {
   outputTokens?: number
   /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
   responseChars?: number
+  /** 分段耗时（ms）：请求体发送完成 / 首个响应 chunk 到达（TTFT 近似）/ 响应头到达 */
+  requestSentMs?: number
+  firstChunkMs?: number
+  responseStartMs?: number
+  /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
+  requestBytes?: number
+  responseBytes?: number
+  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  responseChunkCount?: number
+  responseMaxGapMs?: number
+  responseStallCount?: number
+  /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
+  responseDecodedBytes?: number
 }
 
 export interface RecordedRequest {
@@ -76,6 +89,19 @@ export interface RecordedRequest {
   outputTokens?: number
   /** 响应文本字符数：usage 输出 token 缺失时的速度兜底指标 */
   responseChars?: number
+  /** 分段耗时（ms）：请求体发送完成 / 首个响应 chunk 到达（TTFT 近似）/ 响应头到达 */
+  requestSentMs?: number
+  firstChunkMs?: number
+  responseStartMs?: number
+  /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
+  requestBytes?: number
+  responseBytes?: number
+  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  responseChunkCount?: number
+  responseMaxGapMs?: number
+  responseStallCount?: number
+  /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
+  responseDecodedBytes?: number
   sessionId?: string
   sessionIdKey?: string
 }

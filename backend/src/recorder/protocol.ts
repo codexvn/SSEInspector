@@ -57,18 +57,22 @@ export type CaptureCloseReason = 'downstream_closed' | 'request_aborted';
  */
 export type WsCaptureCloseReason = 'downstream_closed' | 'upstream_closed' | 'upstream_error';
 
+/**
+ * 事件发生时刻（epoch ms）。由主线程在事件发生的同步位置打点后随消息携带，
+ * 排除延迟投递队列的排队延迟对耗时统计的扭曲；Worker 一律以 at 为准。
+ */
 export type MainToRecorderMessage =
   | { type: 'capture.start'; metadata: CaptureMetadata }
   | { type: 'capture.request_chunk'; id: string; chunk: Uint8Array }
-  | { type: 'capture.request_end'; id: string }
-  | { type: 'capture.response_start'; id: string; status: number; headers: Record<string, string>; streaming: boolean }
-  | { type: 'capture.response_chunk'; id: string; chunk: Uint8Array }
-  | { type: 'capture.complete'; id: string }
-  | { type: 'capture.closed'; id: string; status: number; reason: CaptureCloseReason }
-  | { type: 'capture.failed'; id: string; status: number; error: string }
+  | { type: 'capture.request_end'; id: string; at: number }
+  | { type: 'capture.response_start'; id: string; status: number; headers: Record<string, string>; streaming: boolean; at: number }
+  | { type: 'capture.response_chunk'; id: string; chunk: Uint8Array; at: number }
+  | { type: 'capture.complete'; id: string; at: number }
+  | { type: 'capture.closed'; id: string; status: number; reason: CaptureCloseReason; at: number }
+  | { type: 'capture.failed'; id: string; status: number; error: string; at: number }
   | { type: 'capture.ws_open'; metadata: CaptureMetadata }
-  | { type: 'capture.ws_chunk'; id: string; dir: 'request' | 'response'; chunk: Uint8Array }
-  | { type: 'capture.ws_close'; id: string; reason: WsCaptureCloseReason; error?: string }
+  | { type: 'capture.ws_chunk'; id: string; dir: 'request' | 'response'; chunk: Uint8Array; at: number }
+  | { type: 'capture.ws_close'; id: string; reason: WsCaptureCloseReason; error?: string; at: number }
   | { type: 'rpc'; correlationId: number; method: RecorderRpcMethod; args: unknown[] }
   | { type: 'shutdown' };
 

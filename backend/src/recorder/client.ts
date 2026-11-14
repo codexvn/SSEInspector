@@ -61,12 +61,18 @@ export function beginCapture(metadata: CaptureMetadata): void {
 }
 
 export function captureRequestChunk(id: string, chunk: Uint8Array): void {
-  postCaptureChunk({ type: 'capture.request_chunk', id, chunk }, id, chunk);
+  postCaptureChunk('request', id, chunk);
+}
+
+/** 控制消息入队：at 在事件发生时刻打点，闭包只负责延后投递 */
+function enqueueControlAt(deliver: (at: number) => void): void {
+  const at = Date.now();
+  captureQueue.enqueueControl(() => deliver(at));
 }
 
 export function endCaptureRequest(id: string): void {
   if (!activeCaptures.has(id)) return;
-  captureQueue.enqueueControl(() => postQueued({ type: 'capture.request_end', id }));
+  enqueueControlAt(at => postQueued({ type: 'capture.request_end', id, at }));
 }
 
 export function beginCaptureResponse(
@@ -76,26 +82,26 @@ export function beginCaptureResponse(
   streaming: boolean,
 ): void {
   if (!activeCaptures.has(id)) return;
-  captureQueue.enqueueControl(() => postQueued({ type: 'capture.response_start', id, status, headers, streaming }));
+  enqueueControlAt(at => postQueued({ type: 'capture.response_start', id, status, headers, streaming, at }));
 }
 
 export function captureResponseChunk(id: string, chunk: Uint8Array): void {
-  postCaptureChunk({ type: 'capture.response_chunk', id, chunk }, id, chunk);
+  postCaptureChunk('response', id, chunk);
 }
 
 export function completeCapture(id: string): void {
   if (!activeCaptures.delete(id)) return;
-  captureQueue.enqueueControl(() => finalizeCaptureQueue(id, { type: 'capture.complete', id }));
+  enqueueControlAt(at => finalizeCaptureQueue(id, { type: 'capture.complete', id, at }));
 }
 
 export function closeCapture(id: string, status: number, reason: CaptureCloseReason): void {
   if (!activeCaptures.delete(id)) return;
-  captureQueue.enqueueControl(() => finalizeCaptureQueue(id, { type: 'capture.closed', id, status, reason }));
+  enqueueControlAt(at => finalizeCaptureQueue(id, { type: 'capture.closed', id, status, reason, at }));
 }
 
 export function failCapture(id: string, status: number, error: string): void {
   if (!activeCaptures.delete(id)) return;
-  captureQueue.enqueueControl(() => finalizeCaptureQueue(id, { type: 'capture.failed', id, status, error }));
+  enqueueControlAt(at => finalizeCaptureQueue(id, { type: 'capture.failed', id, status, error, at }));
 }
 
 /** WebSocket 连接开启录制：连接 id 同时登记到 activeCaptures 与 wsCaptures */
@@ -118,8 +124,8 @@ export function wsCaptureChunk(id: string, dir: 'request' | 'response', chunk: U
  */
 export function endWsCapture(id: string, reason: WsCaptureCloseReason, error?: string): void {
   if (!activeCaptures.delete(id)) return;
-  captureQueue.enqueueControl(() => {
-    postQueued({ type: 'capture.ws_close', id, reason, error });
+  enqueueControlAt(at => {
+    postQueued({ type: 'capture.ws_close', id, reason, error, at });
     wsCaptures.delete(id);
   });
 }
@@ -196,20 +202,22 @@ function waitForPromise(promise: Promise<void>, timeoutMs: number): Promise<void
   });
 }
 
-function postCaptureChunk(message: MainToRecorderMessage, id: string, chunk: Uint8Array): void {
+function postCaptureChunk(kind: 'request' | 'response', id: string, chunk: Uint8Array): void {
   if (!recorderAvailable() || !activeCaptures.has(id)) return;
-  const kind = message.type === 'capture.request_chunk' ? 'request' : 'response';
   captureQueue.enqueue(kind, id, chunk);
 }
 
 function deliverCaptureChunk(item: DeferredCaptureItem): void {
   if (!ready || !worker) return;
   if (wsCaptures.has(item.id)) {
-    worker!.postMessage({ type: 'capture.ws_chunk', id: item.id, dir: item.kind, chunk: item.chunk }, [item.chunk.buffer]);
+    worker!.postMessage({ type: 'capture.ws_chunk', id: item.id, dir: item.kind, chunk: item.chunk, at: item.at }, [item.chunk.buffer]);
     return;
   }
-  const type = item.kind === 'request' ? 'capture.request_chunk' : 'capture.response_chunk';
-  worker!.postMessage({ type, id: item.id, chunk: item.chunk }, [item.chunk.buffer]);
+  if (item.kind === 'request') {
+    worker!.postMessage({ type: 'capture.request_chunk', id: item.id, chunk: item.chunk }, [item.chunk.buffer]);
+    return;
+  }
+  worker!.postMessage({ type: 'capture.response_chunk', id: item.id, chunk: item.chunk, at: item.at }, [item.chunk.buffer]);
 }
 
 function finalizeCaptureQueue(id: string, message: MainToRecorderMessage): void {

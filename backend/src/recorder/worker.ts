@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'worker_threads';
 import { TextDecoder } from 'util';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { config, setConfig } from '../config';
 import { isPassthroughEndpoint } from '../record-identity';
 import { MainToRecorderMessage, RecorderRpcMethod, RecorderToMainMessage, CaptureMetadata } from './protocol';
@@ -28,7 +29,25 @@ interface CaptureState {
   lastPublishedAt: number;
   /** WebSocket turn 专属：原始信封 NDJSON 累积，持久化时优先作为 response_body；HTTP 路径恒为空 */
   rawResponseText?: string;
+  /** 分段耗时打点（epoch ms，主线程在事件发生时刻携带）：请求体发送完成 / 响应头到达 / 首个响应 chunk 到达 */
+  requestEndAt?: number;
+  responseStartAt?: number;
+  firstChunkAt?: number;
+  /** 网络层累计字节数（线上原始字节，压缩体按实际传输字节计）：请求方向 / 响应方向 */
+  requestBytes: number;
+  responseBytes: number;
+  /** 响应侧流式统计：chunk 计数 / 上一 chunk 时刻 / 最大 chunk 间隔 / 停顿（间隔 ≥1s）次数 */
+  chunkCount: number;
+  lastChunkAt?: number;
+  maxChunkGapMs?: number;
+  stallCount: number;
+  /** 响应体带内容编码（gzip/deflate/br）时保留的原始压缩字节，持久化时解压得解压后字节数；identity 不保留 */
+  responseRawChunks?: Buffer[];
+  responseEncoding?: string;
 }
+
+/** 流式停顿判定阈值：相邻响应 chunk 间隔达到该值记一次停顿（VPN 抖动的直接信号） */
+const RESPONSE_STALL_GAP_MS = 1000;
 
 const captures = new Map<string, CaptureState>();
 /** WS 连接级 capture 状态（lane 管理器持有 turn 明细，与 HTTP 的 captures 分离） */
@@ -92,16 +111,25 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
         responseText: '',
         streaming: false,
         lastPublishedAt: 0,
+        requestBytes: 0,
+        responseBytes: 0,
+        chunkCount: 0,
+        stallCount: 0,
       });
       return;
     case 'capture.request_chunk': {
       const state = captures.get(message.id);
-      if (state) state.requestChunks.push(Buffer.from(message.chunk));
+      if (state) {
+        const chunk = Buffer.from(message.chunk);
+        state.requestChunks.push(chunk);
+        state.requestBytes += chunk.length;
+      }
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }
     case 'capture.request_end': {
       const state = requireCapture(message.id);
+      if (Number.isFinite(message.at)) state.requestEndAt ??= message.at;
       state.requestEnded = true;
       await finishRequestCapture(state);
       // 请求体接收完成即入库（status=0，读取侧派生为 pending/等待响应）：
@@ -115,26 +143,49 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       return;
     }
     case 'capture.response_start':
-      await startResponseCapture(requireCapture(message.id), message.status, message.headers, message.streaming);
+      await startResponseCapture(requireCapture(message.id), message.status, message.headers, message.streaming, message.at);
       return;
     case 'capture.response_chunk': {
       const state = requireCapture(message.id);
       const chunk = Buffer.from(message.chunk);
+      state.responseBytes += chunk.length;
+      state.firstChunkAt ??= message.at;
+      if (state.responseRawChunks) state.responseRawChunks.push(chunk);
+      // 流式卡顿统计：相邻 chunk 间隔（停顿阈值见 RESPONSE_STALL_GAP_MS）
+      if (state.lastChunkAt != null && Number.isFinite(message.at)) {
+        const gap = message.at - state.lastChunkAt;
+        if (gap > 0) {
+          state.maxChunkGapMs = Math.max(state.maxChunkGapMs ?? 0, gap);
+          if (gap >= RESPONSE_STALL_GAP_MS) state.stallCount += 1;
+        }
+      }
+      state.lastChunkAt = message.at;
+      state.chunkCount += 1;
+      // 首字耗时、累计字节与流式统计即时进入流式快照，列表在传输中就能看到
+      if (state.record && Number.isFinite(message.at)) {
+        if (state.record.firstChunkMs === undefined) {
+          state.record.firstChunkMs = Math.max(0, message.at - state.metadata.startedAt);
+        }
+        state.record.responseBytes = state.responseBytes;
+        state.record.responseChunkCount = state.chunkCount;
+        state.record.responseMaxGapMs = state.maxChunkGapMs;
+        state.record.responseStallCount = state.stallCount;
+      }
       state.responseText += state.responseDecoder.decode(chunk, { stream: true });
       await publishLiveSnapshot(state);
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
       return;
     }
     case 'capture.complete':
-      await completeCapture(requireCapture(message.id));
+      await completeCapture(requireCapture(message.id), message.at);
       captures.delete(message.id);
       return;
     case 'capture.closed':
-      await closeCapture(requireCapture(message.id), message.status, message.reason);
+      await closeCapture(requireCapture(message.id), message.status, message.reason, message.at);
       captures.delete(message.id);
       return;
     case 'capture.failed':
-      await failCapture(requireCapture(message.id), message.status, message.error);
+      await failCapture(requireCapture(message.id), message.status, message.error, message.at);
       captures.delete(message.id);
       return;
     case 'capture.ws_open':
@@ -150,7 +201,7 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
     case 'capture.ws_chunk': {
       const connection = wsConnections.get(message.id);
       if (connection) {
-        connection.feed(message.dir, message.chunk);
+        connection.feed(message.dir, message.chunk, message.at);
       } else {
         // ws_close 后仍可能到达的迟到 chunk 属预期竞态；debug 留痕便于排查录制缺尾
         logger.debug({ id: message.id, dir: message.dir, bytes: message.chunk.byteLength }, 'ws chunk for unknown connection dropped');
@@ -161,7 +212,7 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
     case 'capture.ws_close': {
       const connection = wsConnections.get(message.id);
       if (connection) {
-        connection.close(message.reason, message.error);
+        connection.close(message.reason, message.error, message.at);
         wsConnections.delete(message.id);
       }
       return;
@@ -200,11 +251,19 @@ async function startResponseCapture(
   status: number,
   headers: Record<string, string>,
   streaming: boolean,
+  responseStartAt: number,
 ): Promise<void> {
   await finishRequestCapture(state);
+  if (Number.isFinite(responseStartAt)) state.responseStartAt ??= responseStartAt;
   state.responseStatus = status;
   state.responseHeaders = headers;
   state.streaming = streaming;
+  // 压缩响应保留原始字节用于解压统计（解压后字节数 → 压缩比）；解压只做字节计数，不影响录制文本
+  const encoding = String(headers['content-encoding'] ?? '').toLowerCase();
+  if (encoding === 'gzip' || encoding === 'deflate' || encoding === 'br') {
+    state.responseEncoding = encoding;
+    state.responseRawChunks = [];
+  }
   state.record = buildRecord(state, 'streaming');
   const { upsertRecord } = require('../store') as typeof import('../store');
   await upsertRecord(state.record);
@@ -221,18 +280,19 @@ async function publishLiveSnapshot(state: CaptureState): Promise<void> {
   state.lastPublishedAt = now;
 }
 
-async function completeCapture(state: CaptureState): Promise<void> {
-  await persistCompletedCapture(state, 'ok');
+async function completeCapture(state: CaptureState, endedAt: number): Promise<void> {
+  await persistCompletedCapture(state, 'ok', endedAt);
 }
 
 async function closeCapture(
   state: CaptureState,
   status: number,
   reason: 'downstream_closed' | 'request_aborted',
+  endedAt: number,
 ): Promise<void> {
   state.responseStatus ??= status;
   if (reason === 'request_aborted') {
-    await persistAbortedCapture(state, status);
+    await persistAbortedCapture(state, status, endedAt);
     return;
   }
 
@@ -240,22 +300,72 @@ async function closeCapture(
   if (isPassthroughEndpoint(state.metadata.apiEndpoint)) {
     // 透传不做 terminal SSE 判断；有 response_start 则记为完成，否则 partial
     if (state.record) {
-      await persistCompletedCapture(state, 'client_close');
+      await persistCompletedCapture(state, 'client_close', endedAt);
       return;
     }
-    await persistPartialCapture(state, status, '客户端在响应完成前断开');
+    await persistPartialCapture(state, status, '客户端在响应完成前断开', endedAt);
     return;
   }
 
   if (state.streaming && isTerminalCapture(state)) {
-    await persistCompletedCapture(state, 'client_close');
+    await persistCompletedCapture(state, 'client_close', endedAt);
     return;
   }
 
-  await persistPartialCapture(state, status, '客户端在响应完成前断开');
+  await persistPartialCapture(state, status, '客户端在响应完成前断开', endedAt);
 }
 
-async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'client_close'): Promise<void> {
+/**
+ * 压缩响应的解压后字节数：对保留的原始压缩字节整体解压一次，只取长度。
+ * 解压失败（坏数据 / 中途截断）记 debug 返回 null，不影响其余指标。
+ */
+function decodedResponseBytes(state: CaptureState): number | undefined {
+  if (!state.responseRawChunks || state.responseEncoding == null) return undefined;
+  try {
+    const raw = Buffer.concat(state.responseRawChunks);
+    const encoding = state.responseEncoding;
+    if (encoding === 'gzip') return zlib.gunzipSync(raw).length;
+    if (encoding === 'br') return zlib.brotliDecompressSync(raw).length;
+    // deflate：标准 zlib 包装优先，失败退回裸 deflate（部分服务端发裸流）
+    try {
+      return zlib.inflateSync(raw).length;
+    } catch {
+      return zlib.inflateRawSync(raw).length;
+    }
+  } catch (error) {
+    logger.debug({ requestId: state.metadata.id, encoding: state.responseEncoding, err: serializeError(error) }, 'response bytes decompression failed');
+    return undefined;
+  }
+}
+
+/**
+ * 分段耗时、网络字节与总耗时统一在这里结算：endedAt 是主线程在事件发生
+ * 时刻打的点，用它替代处理时刻的 Date.now()，排除投递队列延迟对耗时的扭曲。
+ */
+function applyTimingFields(state: CaptureState, record: RecordedRequest, endedAt: number): void {
+  // endedAt 非有限值（防御异常路径）时退回处理时刻，保证落库耗时恒为数字
+  const end = Number.isFinite(endedAt) ? endedAt : Date.now();
+  record.durationMs = Math.max(0, end - state.metadata.startedAt);
+  if (state.requestEndAt != null && Number.isFinite(state.requestEndAt)) {
+    record.requestSentMs = Math.max(0, state.requestEndAt - state.metadata.startedAt);
+  }
+  if (state.responseStartAt != null && Number.isFinite(state.responseStartAt)) {
+    record.responseStartMs = Math.max(0, state.responseStartAt - state.metadata.startedAt);
+  }
+  const firstAt = state.firstChunkAt ?? state.responseStartAt;
+  if (firstAt != null && Number.isFinite(firstAt)) {
+    record.firstChunkMs = Math.max(0, firstAt - state.metadata.startedAt);
+  }
+  record.requestBytes = state.requestBytes;
+  record.responseBytes = state.responseBytes;
+  record.responseChunkCount = state.chunkCount;
+  if (state.maxChunkGapMs != null) record.responseMaxGapMs = state.maxChunkGapMs;
+  record.responseStallCount = state.stallCount;
+  const decoded = decodedResponseBytes(state);
+  if (decoded != null) record.responseDecodedBytes = decoded;
+}
+
+async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'client_close', endedAt: number): Promise<void> {
   await finishRequestCapture(state);
   finishResponseText(state);
   if (!state.record) throw new Error(`响应完成前缺少 response_start: id=${state.metadata.id}`);
@@ -266,7 +376,7 @@ async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'cl
   state.record.responseChars = (state.rawResponseText ?? state.responseText).length;
   state.record.responseHeaders = state.responseHeaders;
   state.record.responseStatus = state.responseStatus ?? 0;
-  state.record.durationMs = Date.now() - state.metadata.startedAt;
+  applyTimingFields(state, state.record, endedAt);
   state.record.streaming = state.streaming;
   state.record.state = 'done';
   state.record.finished = finished;
@@ -287,7 +397,7 @@ async function persistCompletedCapture(state: CaptureState, finished: 'ok' | 'cl
   await upsertRecord(state.record);
 }
 
-async function persistPartialCapture(state: CaptureState, status: number, error: string): Promise<void> {
+async function persistPartialCapture(state: CaptureState, status: number, error: string, endedAt: number): Promise<void> {
   await finishRequestCapture(state);
   finishResponseText(state);
   const record = state.record ?? buildRecord(state, 'streaming');
@@ -297,7 +407,7 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.responseChars = (state.rawResponseText ?? state.responseText).length;
   record.responseContent = responseContent;
-  record.durationMs = Date.now() - state.metadata.startedAt;
+  applyTimingFields(state, record, endedAt);
   record.state = 'error';
   record.finished = 'client_close';
   record.error = error;
@@ -323,7 +433,7 @@ async function persistPartialCapture(state: CaptureState, status: number, error:
   await upsertRecord(record);
 }
 
-async function persistAbortedCapture(state: CaptureState, status: number): Promise<void> {
+async function persistAbortedCapture(state: CaptureState, status: number, endedAt: number): Promise<void> {
   finishResponseText(state);
   const record = state.record ?? buildRecord(state, 'streaming');
   record.responseStatus = status;
@@ -331,7 +441,7 @@ async function persistAbortedCapture(state: CaptureState, status: number): Promi
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.responseChars = (state.rawResponseText ?? state.responseText).length;
   record.responseContent = null;
-  record.durationMs = Date.now() - state.metadata.startedAt;
+  applyTimingFields(state, record, endedAt);
   record.state = 'error';
   record.finished = 'client_close';
   record.error = '客户端在请求上传完成前断开';
@@ -340,7 +450,7 @@ async function persistAbortedCapture(state: CaptureState, status: number): Promi
   await upsertRecord(record);
 }
 
-async function failCapture(state: CaptureState, status: number, error: string): Promise<void> {
+async function failCapture(state: CaptureState, status: number, error: string, endedAt: number): Promise<void> {
   await finishRequestCapture(state);
   finishResponseText(state);
   const record = state.record ?? buildRecord(state, 'streaming');
@@ -348,7 +458,7 @@ async function failCapture(state: CaptureState, status: number, error: string): 
   record.responseHeaders = state.responseHeaders;
   record.responseBody = (state.rawResponseText ?? state.responseText) || undefined;
   record.responseChars = (state.rawResponseText ?? state.responseText).length;
-  record.durationMs = Date.now() - state.metadata.startedAt;
+  applyTimingFields(state, record, endedAt);
   record.state = 'error';
   record.finished = 'error';
   record.error = error;
@@ -393,6 +503,23 @@ function buildRecord(state: CaptureState, stateName: 'pending' | 'streaming' | '
     sessionId: metadata.sessionId,
     sessionIdKey: metadata.sessionIdKey,
     streamId: metadata.streamId,
+    // 已知即带上分段耗时与网络字节（pending 记录可显示发送耗时，streaming 可显示首字）
+    requestSentMs: state.requestEndAt != null && Number.isFinite(state.requestEndAt)
+      ? Math.max(0, state.requestEndAt - metadata.startedAt)
+      : undefined,
+    responseStartMs: state.responseStartAt != null && Number.isFinite(state.responseStartAt)
+      ? Math.max(0, state.responseStartAt - metadata.startedAt)
+      : undefined,
+    firstChunkMs: state.firstChunkAt != null && Number.isFinite(state.firstChunkAt)
+      ? Math.max(0, state.firstChunkAt - metadata.startedAt)
+      : state.responseStartAt != null && Number.isFinite(state.responseStartAt)
+        ? Math.max(0, state.responseStartAt - metadata.startedAt)
+        : undefined,
+    requestBytes: state.requestBytes,
+    responseBytes: state.responseBytes,
+    responseChunkCount: state.chunkCount,
+    responseMaxGapMs: state.maxChunkGapMs,
+    responseStallCount: state.stallCount,
   };
 }
 

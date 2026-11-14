@@ -47,8 +47,8 @@ function createHarness(metadata: CaptureMetadata = testMetadata()): Harness {
     dispatched,
     rawLines,
     warnings,
-    feed: (dir, chunk) => capture.feed(dir, chunk),
-    close: (reason, error) => capture.close(reason, error),
+    feed: (dir, chunk) => capture.feed(dir, chunk, Date.now()),
+    close: (reason, error) => capture.close(reason, error, Date.now()),
   };
 }
 
