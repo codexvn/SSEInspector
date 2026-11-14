@@ -125,7 +125,10 @@ async function runWorker(dev: boolean): Promise<void> {
       responseBytes?: number
       responseChunkCount?: number
       responseMaxGapMs?: number
+      responseMaxGapAt?: number
+      responseMaxGapChunksBefore?: number
       responseStallCount?: number
+      responseChunkTimeline?: Array<[number, number, number, number, number]>
     }
     assert.equal(detail.state, 'done')
     assert.equal(detail.apiEndpoint, 'openai-responses')
@@ -141,10 +144,24 @@ async function runWorker(dev: boolean): Promise<void> {
     assert.equal(detail.durationMs, 5000)
     assert.equal(detail.requestBytes, requestBody.byteLength)
     assert.equal(detail.responseBytes, responseBody.byteLength)
-    // 流式统计：2 个 chunk，最大间隔 1500ms，其中 ≥1s 的停顿 1 次
+    // 流式统计：2 个 chunk，最大间隔 1500ms，其中 ≥1s 的停顿 1 次；
+    // 证据字段：间隔起点为第 1 个 chunk 的到达时刻（t0+1000），停顿前已到 1 个 chunk
     assert.equal(detail.responseChunkCount, 2)
     assert.equal(detail.responseMaxGapMs, 1500)
+    assert.equal(detail.responseMaxGapAt, t0 + 1000)
+    assert.equal(detail.responseMaxGapChunksBefore, 1)
     assert.equal(detail.responseStallCount, 1)
+    // 时间线五元组：[距首 chunk 偏移, 原始字节, 距上一 chunk 间隔, 解码后起始字符, 解码后结束字符]；
+    // 字符区间用于详情页按区间从响应体切出单个 chunk 的内容
+    assert.equal(detail.responseBody, responseBody.toString())
+    assert.deepEqual(detail.responseChunkTimeline, [
+      [0, 20, 0, 0, 20],
+      [1500, responseBody.byteLength - 20, 1500, 20, responseBody.toString().length],
+    ])
+    if (detail.responseChunkTimeline) {
+      const [start, end] = [detail.responseChunkTimeline[1][3], detail.responseChunkTimeline[1][4]]
+      assert.equal(detail.responseBody.slice(start, end), responseBody.toString().slice(20))
+    }
   }
 
   await assertClientCloseCapture(worker, mode, true, 3)
