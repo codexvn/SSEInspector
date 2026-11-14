@@ -98,7 +98,7 @@ async function runWorker(dev: boolean): Promise<void> {
     streaming: false,
     at: t0 + 900,
   })
-  // 响应体拆两个 chunk 投递（中间隔 1500ms ≥ 停顿阈值）：同时验证流式统计
+  // 响应体拆两个 chunk 投递（中间隔 1500ms）：验证时间线偏移与字符区间
   worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody.subarray(0, 20)), at: t0 + 1000 })
   worker.postMessage({ type: 'capture.response_chunk', id: captureId, chunk: Uint8Array.from(responseBody.subarray(20)), at: t0 + 2500 })
   worker.postMessage({ type: 'capture.complete', id: captureId, at: t0 + 5000 })
@@ -124,11 +124,7 @@ async function runWorker(dev: boolean): Promise<void> {
       requestBytes?: number
       responseBytes?: number
       responseChunkCount?: number
-      responseMaxGapMs?: number
-      responseMaxGapAt?: number
-      responseMaxGapChunksBefore?: number
-      responseStallCount?: number
-      responseChunkTimeline?: Array<[number, number, number, number, number]>
+      responseChunkTimeline?: Array<[number, number, number, number]>
     }
     assert.equal(detail.state, 'done')
     assert.equal(detail.apiEndpoint, 'openai-responses')
@@ -144,22 +140,18 @@ async function runWorker(dev: boolean): Promise<void> {
     assert.equal(detail.durationMs, 5000)
     assert.equal(detail.requestBytes, requestBody.byteLength)
     assert.equal(detail.responseBytes, responseBody.byteLength)
-    // 流式统计：2 个 chunk，最大间隔 1500ms，其中 ≥1s 的停顿 1 次；
-    // 证据字段：间隔起点为第 1 个 chunk 的到达时刻（t0+1000），停顿前已到 1 个 chunk
+    // 流式统计：chunk 总数
+    // 流式统计：chunk 总数
     assert.equal(detail.responseChunkCount, 2)
-    assert.equal(detail.responseMaxGapMs, 1500)
-    assert.equal(detail.responseMaxGapAt, t0 + 1000)
-    assert.equal(detail.responseMaxGapChunksBefore, 1)
-    assert.equal(detail.responseStallCount, 1)
-    // 时间线五元组：[距首 chunk 偏移, 原始字节, 距上一 chunk 间隔, 解码后起始字符, 解码后结束字符]；
+    // 时间线四元组：[距首 chunk 偏移, 原始字节, 解码后起始字符, 解码后结束字符]；
     // 字符区间用于详情页按区间从响应体切出单个 chunk 的内容
     assert.equal(detail.responseBody, responseBody.toString())
     assert.deepEqual(detail.responseChunkTimeline, [
-      [0, 20, 0, 0, 20],
-      [1500, responseBody.byteLength - 20, 1500, 20, responseBody.toString().length],
+      [0, 20, 0, 20],
+      [1500, responseBody.byteLength - 20, 20, responseBody.toString().length],
     ])
     if (detail.responseChunkTimeline) {
-      const [start, end] = [detail.responseChunkTimeline[1][3], detail.responseChunkTimeline[1][4]]
+      const [start, end] = [detail.responseChunkTimeline[1][2], detail.responseChunkTimeline[1][3]]
       assert.equal(detail.responseBody.slice(start, end), responseBody.toString().slice(20))
     }
   }

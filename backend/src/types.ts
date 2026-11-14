@@ -196,16 +196,11 @@ export interface RecordedRequest {
   /** 网络层累计字节（线上原始字节，压缩体按实际传输计）：请求方向 / 响应方向 */
   requestBytes?: number;
   responseBytes?: number;
-  /** 流式统计：chunk 总数 / 相邻 chunk 最大间隔（ms）/ 停顿次数（间隔 ≥1s，VPN 抖动信号） */
+  /** 流式统计：chunk 总数 */
   responseChunkCount?: number;
-  responseMaxGapMs?: number;
-  responseStallCount?: number;
-  /** 最大间隔证据：发生时刻（epoch ms，间隔起点）与停顿前已到的 chunk 数——并发请求间关联停顿可区分网络停流与服务端调度 */
-  responseMaxGapAt?: number;
-  responseMaxGapChunksBefore?: number;
-  /** chunk 时间线：五元组 [距首 chunk 偏移 ms, 原始字节, 距上一 chunk 间隔 ms, 解码后起始字符, 解码后结束字符]，
+  /** chunk 时间线：四元组 [距首 chunk 偏移 ms, 原始字节, 解码后起始字符, 解码后结束字符]，
    *  仅供详情页时间线可视化与按区间切出单个 chunk 的内容（数量多时仅详情接口返回，列表不带） */
-  responseChunkTimeline?: Array<[number, number, number, number, number]>;
+  responseChunkTimeline?: Array<[number, number, number, number]>;
   /** 压缩响应解压后的字节数（与 responseBytes 相除即压缩比）；明文响应为空 */
   responseDecodedBytes?: number;
   /** 会话标识（从已知请求头提取） */
@@ -246,13 +241,8 @@ export interface RecordSummary {
   /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
   requestBytes?: number;
   responseBytes?: number;
-  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  /** 流式统计：chunk 总数 */
   responseChunkCount?: number;
-  responseMaxGapMs?: number;
-  responseStallCount?: number;
-  /** 最大间隔证据：发生时刻（epoch ms）与停顿前 chunk 数 */
-  responseMaxGapAt?: number;
-  responseMaxGapChunksBefore?: number;
   /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
   responseDecodedBytes?: number;
   /** 会话标识（从已知请求头提取） */

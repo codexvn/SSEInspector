@@ -36,27 +36,17 @@ interface CaptureState {
   /** 网络层累计字节数（线上原始字节，压缩体按实际传输字节计）：请求方向 / 响应方向 */
   requestBytes: number;
   responseBytes: number;
-  /** 响应侧流式统计：chunk 计数 / 上一 chunk 时刻 / 最大 chunk 间隔 / 停顿（间隔 ≥1s）次数 */
+  /** 响应侧流式统计：chunk 计数 */
   chunkCount: number;
-  lastChunkAt?: number;
-  maxChunkGapMs?: number;
-  stallCount: number;
-  /** 最大间隔的证据：发生时刻（间隔起点 = 前一 chunk 到达时刻）与停顿前已到的 chunk 数，
-   *  用于并发请求间的停顿关联分析（同一墙钟时刻一起停 = 网络；各自随机停 = 服务端调度） */
-  maxGapAt?: number;
-  maxGapChunksBefore?: number;
-  /** chunk 时间线：五元组 [距首 chunk 偏移 ms, 原始字节, 距上一 chunk 间隔 ms, 解码后起始字符, 解码后结束字符]，
+  /** chunk 时间线：四元组 [距首 chunk 偏移 ms, 原始字节, 解码后起始字符, 解码后结束字符]，
    *  供详情页时间线可视化与按区间切出单个 chunk 的内容；设上限防止异常流撑爆内存与库 */
-  chunkTimeline: Array<[number, number, number, number, number]>;
+  chunkTimeline: Array<[number, number, number, number]>;
   /** 已解码响应文本的累计字符数（chunk 字符区间的游标） */
   decodedChars: number;
   /** 响应体带内容编码（gzip/deflate/br）时保留的原始压缩字节，持久化时解压得解压后字节数；identity 不保留 */
   responseRawChunks?: Buffer[];
   responseEncoding?: string;
 }
-
-/** 流式停顿判定阈值：相邻响应 chunk 间隔达到该值记一次停顿（VPN 抖动的直接信号） */
-const RESPONSE_STALL_GAP_MS = 1000;
 
 /** chunk 时间线记录上限：超出后统计照常，仅不再逐 chunk 记录（防御异常超大流） */
 const CHUNK_TIMELINE_LIMIT = 10_000;
@@ -126,7 +116,6 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
         requestBytes: 0,
         responseBytes: 0,
         chunkCount: 0,
-        stallCount: 0,
         chunkTimeline: [],
         decodedChars: 0,
       });
@@ -165,23 +154,8 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
       state.responseBytes += chunk.length;
       state.firstChunkAt ??= message.at;
       if (state.responseRawChunks) state.responseRawChunks.push(chunk);
-      // 流式卡顿统计：相邻 chunk 间隔（停顿阈值见 RESPONSE_STALL_GAP_MS）；
-      // 破纪录的间隔同时记下发生时刻与当时已到的 chunk 数（证据字段）
-      const prevChunkAt = state.lastChunkAt;
-      if (prevChunkAt != null && Number.isFinite(message.at)) {
-        const gap = message.at - prevChunkAt;
-        if (gap > 0) {
-          if (gap > (state.maxChunkGapMs ?? 0)) {
-            state.maxChunkGapMs = gap;
-            state.maxGapAt = prevChunkAt;
-            state.maxGapChunksBefore = state.chunkCount;
-          }
-          if (gap >= RESPONSE_STALL_GAP_MS) state.stallCount += 1;
-        }
-      }
-      state.lastChunkAt = message.at;
+      // chunk 时间线随解码同步记录：偏移、字节与解码后字符区间（带上限）
       state.chunkCount += 1;
-      // 解码后的字符区间随 chunk 记录：详情页按区间从响应体切出该 chunk 的内容
       const charStart = state.decodedChars;
       state.responseText += state.responseDecoder.decode(chunk, { stream: true });
       state.decodedChars = state.responseText.length;
@@ -191,22 +165,17 @@ async function handleMessage(message: MainToRecorderMessage): Promise<void> {
             ? Math.max(0, message.at - state.firstChunkAt)
             : 0,
           chunk.length,
-          prevChunkAt != null && Number.isFinite(message.at) ? Math.max(0, message.at - prevChunkAt) : 0,
           charStart,
           state.decodedChars,
         ]);
       }
-      // 首字耗时、累计字节与流式统计即时进入流式快照，列表在传输中就能看到
+      // 首字耗时、累计字节与 chunk 数即时进入流式快照，列表在传输中就能看到
       if (state.record && Number.isFinite(message.at)) {
         if (state.record.firstChunkMs === undefined) {
           state.record.firstChunkMs = Math.max(0, message.at - state.metadata.startedAt);
         }
         state.record.responseBytes = state.responseBytes;
         state.record.responseChunkCount = state.chunkCount;
-        state.record.responseMaxGapMs = state.maxChunkGapMs;
-        state.record.responseMaxGapAt = state.maxGapAt;
-        state.record.responseMaxGapChunksBefore = state.maxGapChunksBefore;
-        state.record.responseStallCount = state.stallCount;
       }
       await publishLiveSnapshot(state);
       send({ type: 'ack', id: message.id, bytes: message.chunk.byteLength });
@@ -395,10 +364,6 @@ function applyTimingFields(state: CaptureState, record: RecordedRequest, endedAt
   record.requestBytes = state.requestBytes;
   record.responseBytes = state.responseBytes;
   record.responseChunkCount = state.chunkCount;
-  if (state.maxChunkGapMs != null) record.responseMaxGapMs = state.maxChunkGapMs;
-  if (state.maxGapAt != null) record.responseMaxGapAt = state.maxGapAt;
-  if (state.maxGapChunksBefore != null) record.responseMaxGapChunksBefore = state.maxGapChunksBefore;
-  record.responseStallCount = state.stallCount;
   if (state.chunkTimeline.length > 0) record.responseChunkTimeline = state.chunkTimeline;
   const decoded = decodedResponseBytes(state);
   if (decoded != null) record.responseDecodedBytes = decoded;
@@ -557,10 +522,6 @@ function buildRecord(state: CaptureState, stateName: 'pending' | 'streaming' | '
     requestBytes: state.requestBytes,
     responseBytes: state.responseBytes,
     responseChunkCount: state.chunkCount,
-    responseMaxGapMs: state.maxChunkGapMs,
-    responseMaxGapAt: state.maxGapAt,
-    responseMaxGapChunksBefore: state.maxGapChunksBefore,
-    responseStallCount: state.stallCount,
   };
 }
 

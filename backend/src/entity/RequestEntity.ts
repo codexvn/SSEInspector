@@ -112,25 +112,9 @@ export class RequestEntity {
   @Column('integer', { nullable: true })
   response_chunk_count?: number | null;
 
-  /** 相邻响应 chunk 的最大间隔（ms） */
-  @Column('integer', { nullable: true })
-  response_max_gap_ms?: number | null;
-
-  /** 最大间隔的发生时刻（epoch ms，间隔起点 = 前一 chunk 到达时刻）——并发请求关联停顿用 */
-  @Column('integer', { nullable: true })
-  response_max_gap_at?: number | null;
-
-  /** 最大间隔发生前已到达的 chunk 数（停顿前/后分布的证据） */
-  @Column('integer', { nullable: true })
-  response_max_gap_chunks?: number | null;
-
-  /** chunk 时间线 JSON：[[偏移 ms, 字节, 距上一 chunk 间隔 ms], ...]，详情页时间线可视化用 */
+  /** chunk 时间线 JSON：[[偏移 ms, 字节, 解码后起始字符, 解码后结束字符], ...]，详情页时间线可视化用 */
   @Column('text', { nullable: true })
   response_chunk_timeline?: string | null;
-
-  /** 流式停顿次数（相邻 chunk 间隔 ≥1s，VPN 抖动信号） */
-  @Column('integer', { nullable: true })
-  response_stall_count?: number | null;
 
   /** 压缩响应解压后的字节数（与 response_bytes 相除即压缩比） */
   @Column('integer', { nullable: true })

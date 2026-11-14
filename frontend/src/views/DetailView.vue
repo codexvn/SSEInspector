@@ -549,7 +549,7 @@ function createRequestAnalysisWorker(): Worker {
         <span v-if="isStreaming" style="color:var(--accent);font-weight:600;">● 传输中…</span>
       </div>
 
-      <!-- F12 Network 风格的耗时分解（发送/响应头/等待首字/内容下载 + 字节吞吐与停顿统计） -->
+      <!-- F12 Network 风格的耗时分解（发送/响应头/等待首字/内容下载 + 字节吞吐 + chunk 时间线） -->
       <TimingWaterfall
         :state="record.state"
         :timestamp="record.timestamp"
@@ -561,10 +561,6 @@ function createRequestAnalysisWorker(): Worker {
         :request-bytes="record.requestBytes"
         :response-bytes="record.responseBytes"
         :response-chunk-count="record.responseChunkCount"
-        :response-max-gap-ms="record.responseMaxGapMs"
-        :response-max-gap-at="record.responseMaxGapAt"
-        :response-max-gap-chunks-before="record.responseMaxGapChunksBefore"
-        :response-stall-count="record.responseStallCount"
         :response-decoded-bytes="record.responseDecodedBytes"
         :response-chunk-timeline="record.responseChunkTimeline"
         :response-body="record.responseBody"

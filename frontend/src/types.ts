@@ -57,13 +57,8 @@ export interface RecordSummary {
   /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
   requestBytes?: number
   responseBytes?: number
-  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  /** 流式统计：chunk 总数 */
   responseChunkCount?: number
-  responseMaxGapMs?: number
-  responseStallCount?: number
-  /** 最大间隔证据：发生时刻（epoch ms，间隔起点）与停顿前已到的 chunk 数 */
-  responseMaxGapAt?: number
-  responseMaxGapChunksBefore?: number
   /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
   responseDecodedBytes?: number
 }
@@ -99,15 +94,10 @@ export interface RecordedRequest {
   /** 网络层累计字节（线上原始字节，压缩体按实际传输计） */
   requestBytes?: number
   responseBytes?: number
-  /** 流式统计：chunk 总数 / 最大间隔（ms）/ 停顿次数（间隔 ≥1s） */
+  /** 流式统计：chunk 总数 */
   responseChunkCount?: number
-  responseMaxGapMs?: number
-  responseStallCount?: number
-  /** 最大间隔证据：发生时刻（epoch ms，间隔起点）与停顿前已到的 chunk 数 */
-  responseMaxGapAt?: number
-  responseMaxGapChunksBefore?: number
-  /** chunk 时间线：五元组 [距首 chunk 偏移 ms, 原始字节, 距上一 chunk 间隔 ms, 解码后起始字符, 解码后结束字符]（仅详情接口返回） */
-  responseChunkTimeline?: Array<[number, number, number, number, number]>
+  /** chunk 时间线：[距首 chunk 偏移 ms, 原始字节, 解码后起始字符, 解码后结束字符] 四元组数组（仅详情接口返回） */
+  responseChunkTimeline?: Array<[number, number, number, number]>
   /** 压缩响应解压后字节数（压缩比 = responseDecodedBytes ÷ responseBytes） */
   responseDecodedBytes?: number
   sessionId?: string
